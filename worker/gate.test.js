@@ -10,6 +10,17 @@ test('Gate API v4 signature is deterministic and keeps secrets out of the URL', 
   assert.doesNotMatch(FUTURES_ACCOUNT_PATH, /api-key|secret-key/);
 });
 
+test('Gate API v4 signature matches the official authentication example', () => {
+  const headers = buildGateHeaders({
+    apiKey: 'key',
+    secretKey: 'secret',
+    path: '/api/v4/futures/orders',
+    query: 'contract=BTC_USD&status=finished&limit=50',
+    timestamp: 1541993715,
+  });
+  assert.equal(headers.SIGN, '55f84ea195d6fe57ce62464daaa7c3c02fa9d1dde954e4c898289c9a2407a3d6fb3faf24deff16790d726b66ac9f74526668b13bd01029199cc4fcc522418b8a');
+});
+
 test('Gate account verification rejects a mismatched UID', async () => {
   const result = await verifyGateAccount({ gateUid: '1234', apiKey: 'api-key', secretKey: 'secret-key', fetchImpl: async () => new Response(JSON.stringify({ user: 9999 }), { status: 200 }) });
   assert.equal(result.success, false);
