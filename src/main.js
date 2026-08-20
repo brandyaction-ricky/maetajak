@@ -5,6 +5,7 @@ import './theme.css';
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
 const configured = Boolean(supabaseUrl && supabaseAnonKey);
+const workerPublicIp = import.meta.env.VITE_TRADING_WORKER_IP || '146.56.140.75';
 const supabase = configured
   ? createClient(supabaseUrl, supabaseAnonKey, {
       auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true },
@@ -32,6 +33,7 @@ const byId = (id) => document.getElementById(id);
 let currentProfile = null;
 let authBusy = false;
 let gateApiBusy = false;
+let gateStatusTimer = null;
 
 function extendCopySettingOptions() {
   const selects = [...document.querySelectorAll('select')];
@@ -66,18 +68,19 @@ function enhanceGateApiForm() {
       <div class="field"><label for="gateApiKey">API Key</label><input id="gateApiKey" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="API Key 입력" required></div>
       <div class="field"><label for="gateSecretKey">Secret Key</label><input id="gateSecretKey" type="password" autocomplete="new-password" autocapitalize="off" spellcheck="false" placeholder="Secret Key 입력" required></div>
       <label class="permission-check"><input id="gatePermissionConfirmed" type="checkbox" required><span>Trading Account · Perpetual Futures Read/Write만 허용하고 출금 권한은 사용하지 않았습니다.</span></label>
-      <button id="gateApiConnect" class="btn primary" type="submit">API 연결 요청</button>
+      <button id="gateApiConnect" class="btn primary" type="submit">저장 및 연결 검증</button>
     </form>
-    <details class="api-guide"><summary>Gate.io API 발급 설정 확인</summary><ol><li>Trading Account를 선택합니다.</li><li>Perpetual Futures의 Read and Write만 허용합니다.</li><li>출금 권한은 절대 활성화하지 않습니다.</li><li>Trading Worker 고정 IP를 Whitelist에 등록합니다.</li></ol></details>
+    <details class="api-guide"><summary>Gate.io API 발급 설정 확인</summary><ol><li>Trading Account를 선택합니다.</li><li>Perpetual Futures의 Read and Write만 허용합니다.</li><li>출금 권한은 절대 활성화하지 않습니다.</li><li>Trading Worker 고정 IP <code>${workerPublicIp}</code>를 Whitelist에 등록합니다.</li></ol></details>
     <p class="secret-warning">Secret Key는 화면이나 브라우저 저장소에 보관하지 않고 서버에서 암호화해 저장합니다.</p>
   `;
 
   securityCard.innerHTML = `
     <div class="section-head"><h3>API 보안 체크</h3></div>
     <div class="metric"><span>Futures Read</span><b id="gateFuturesRead" class="warn">확인 대기</b></div>
-    <div class="metric"><span>Futures Trade</span><b id="gateFuturesTrade" class="warn">확인 대기</b></div>
-    <div class="metric"><span>IP Whitelist</span><b id="gateIpWhitelist" class="warn">Worker 연결 필요</b></div>
-    <div class="metric"><span>Withdrawal</span><b id="gateWithdrawal" class="pos">사용 금지</b></div>
+    <div class="metric"><span>Futures Trade</span><b id="gateFuturesTrade" class="warn">사용자 확인 필요</b></div>
+    <div class="metric"><span>Worker IP 접속</span><b id="gateIpWhitelist" class="warn">검증 대기</b></div>
+    <div class="metric"><span>Withdrawal</span><b id="gateWithdrawal" class="warn">사용자 확인 필요</b></div>
+    <p id="gateVerificationDetail" class="verification-detail">실제 연결 검증 전입니다.</p>
   `;
 }
 
@@ -85,6 +88,23 @@ function enhancePauseModal() {
   const modal = document.querySelector('#pauseModal .modal');
   if (!modal || byId('pauseModalClose')) return;
   modal.insertAdjacentHTML('afterbegin', '<button id="pauseModalClose" class="modal-close" type="button" aria-label="일시중지 창 닫기" onclick="closePause()">×</button>');
+}
+
+function enhanceAdminApiPage() {
+  const page = byId('admin-api');
+  if (!page) return;
+  page.innerHTML = `
+    <div class="grid kpis">
+      <div class="card kpi"><label>전체 회원</label><strong id="adminApiTotal">0</strong></div>
+      <div class="card kpi"><label>연결 정상</label><strong id="adminApiVerified" class="pos">0</strong></div>
+      <div class="card kpi"><label>오류</label><strong id="adminApiErrors" class="warn">0</strong></div>
+      <div class="card kpi"><label>미연결</label><strong id="adminApiDisconnected">0</strong></div>
+    </div>
+    <div class="card section" style="margin-top:14px">
+      <div class="section-head"><h3>Gate.io API 연결 현황</h3></div>
+      <div class="table"><table><thead><tr><th>회원</th><th>UID</th><th>상태</th><th>Futures 권한</th><th>Worker IP</th><th>최근 확인</th></tr></thead>
+      <tbody id="adminGateConnections"><tr><td colspan="6" class="empty-cell">API 연결 현황을 불러오는 중입니다.</td></tr></tbody></table></div>
+    </div>`;
 }
 
 function setAuthMessage(message = '', kind = 'error') {
@@ -101,6 +121,7 @@ function setPendingMessage(status, detail) {
 }
 
 function showAuth(view = 'login') {
+  stopGateStatusPolling();
   byId('app').classList.add('hidden');
   byId('auth').classList.remove('hidden');
   ['login', 'signup', 'pending'].forEach((id) => byId(id).classList.toggle('hidden', id !== view));
@@ -121,7 +142,10 @@ function showApp(profile) {
   if (byId('maxPositionRatioSelect')) byId('maxPositionRatioSelect').value = `${Number(profile.max_position_ratio ?? 30)}%`;
   openPage(role === 'admin' ? 'admin-dashboard' : 'member-dashboard');
   if (role === 'admin') loadAdminMembers();
-  if (role === 'member') loadGateConnection();
+  if (role === 'member') {
+    loadGateConnection();
+    startGateStatusPolling();
+  }
 }
 
 async function loadProfile(userId) {
@@ -205,6 +229,7 @@ window.login = () => withAuthBusy(async () => {
 });
 
 window.logout = () => withAuthBusy(async () => {
+  stopGateStatusPolling();
   if (supabase) await supabase.auth.signOut();
   currentProfile = null;
   showAuth('login');
@@ -220,6 +245,7 @@ window.openPage = (id) => {
   byId('side').classList.remove('open');
   window.scrollTo(0, 0);
   if (id === 'admin-members' && currentProfile?.role === 'ADMIN') loadAdminMembers();
+  if (id === 'admin-api' && currentProfile?.role === 'ADMIN') loadAdminGateConnections();
 };
 
 window.openPause = () => byId('pauseModal').classList.add('open');
@@ -244,27 +270,59 @@ function renderGateConnection(connection) {
   if (!connection) {
     status.textContent = '미연결';
     status.className = 'chip yellow';
+    byId('gateVerificationDetail').textContent = 'UID, API Key, Secret Key를 입력해 연결을 검증해 주세요.';
     return;
   }
   byId('gateUid').value = connection.gate_uid || '';
   byId('gateApiKey').placeholder = connection.api_key_last4 ? `저장됨 ····${connection.api_key_last4}` : 'API Key 입력';
   const verified = connection.status === 'VERIFIED';
-  status.textContent = verified ? '연결됨' : '검증 대기';
-  status.className = verified ? 'chip' : 'chip yellow';
+  const statusLabels = { VERIFIED: '연결됨', VERIFYING: '검증 중', ERROR: '연결 오류', DISABLED: '비활성', PENDING_VERIFICATION: '검증 대기' };
+  status.textContent = statusLabels[connection.status] || '검증 대기';
+  status.className = verified ? 'chip' : connection.status === 'ERROR' ? 'chip red' : 'chip yellow';
   byId('gateFuturesRead').textContent = verified && connection.futures_read ? 'PASS' : '확인 대기';
   byId('gateFuturesRead').className = verified && connection.futures_read ? 'pos' : 'warn';
-  byId('gateFuturesTrade').textContent = verified && connection.futures_trade ? 'PASS' : '확인 대기';
-  byId('gateFuturesTrade').className = verified && connection.futures_trade ? 'pos' : 'warn';
-  byId('gateIpWhitelist').textContent = connection.ip_whitelisted ? 'ENABLED' : 'Worker 연결 필요';
+  byId('gateFuturesTrade').textContent = connection.permissions_confirmed ? '사용자 확인' : '확인 필요';
+  byId('gateFuturesTrade').className = connection.permissions_confirmed ? 'pos' : 'warn';
+  byId('gateIpWhitelist').textContent = connection.ip_whitelisted ? '접속 통과' : '검증 대기';
   byId('gateIpWhitelist').className = connection.ip_whitelisted ? 'pos' : 'warn';
-  byId('gateWithdrawal').textContent = connection.withdrawal_disabled ? 'DISABLED' : '차단 필요';
-  byId('gateWithdrawal').className = connection.withdrawal_disabled ? 'pos' : 'neg';
+  byId('gateWithdrawal').textContent = connection.permissions_confirmed ? '사용자 확인' : '확인 필요';
+  byId('gateWithdrawal').className = connection.permissions_confirmed ? 'pos' : 'warn';
+  const errorMessages = {
+    INVALID_CREDENTIALS: 'API Key 또는 Secret Key를 확인해 주세요.',
+    UID_MISMATCH: '입력한 UID와 API Key 계정이 일치하지 않습니다.',
+    IP_NOT_ALLOWED: 'Trading Worker 고정 IP를 Gate.io Whitelist에 등록해 주세요.',
+    FUTURES_READ_REQUIRED: 'Perpetual Futures Read 권한을 확인해 주세요.',
+    GATE_UNREACHABLE: 'Gate.io 연결이 지연되고 있습니다. 잠시 후 다시 검증해 주세요.',
+    GATE_API_ERROR: 'Gate.io API 응답을 확인하지 못했습니다.',
+  };
+  const detail = byId('gateVerificationDetail');
+  detail.textContent = verified
+    ? `Gate.io Futures 계정 검증 완료${connection.last_checked_at ? ` · ${new Date(connection.last_checked_at).toLocaleString('ko-KR')}` : ''}`
+    : connection.status === 'ERROR'
+      ? (errorMessages[connection.last_error_code] || '연결 검증에 실패했습니다. 입력 정보와 권한을 확인해 주세요.')
+      : '암호화 저장 완료 · 고정 IP Trading Worker의 검증을 기다리고 있습니다.';
+  detail.className = `verification-detail ${connection.status === 'ERROR' ? 'neg' : verified ? 'pos' : ''}`;
 }
 
-async function loadGateConnection() {
+function stopGateStatusPolling() {
+  if (gateStatusTimer) window.clearInterval(gateStatusTimer);
+  gateStatusTimer = null;
+}
+
+function startGateStatusPolling() {
+  stopGateStatusPolling();
+  gateStatusTimer = window.setInterval(() => {
+    if (currentProfile?.role === 'MEMBER' && !document.hidden) loadGateConnection(false);
+  }, 5000);
+}
+
+async function loadGateConnection(showError = true) {
   if (!supabase || currentProfile?.role !== 'MEMBER') return;
   const { data, error } = await supabase.rpc('get_my_gate_api_connection');
-  if (error) return window.toast('API 연결 상태를 불러오지 못했습니다.');
+  if (error) {
+    if (showError) window.toast('API 연결 상태를 불러오지 못했습니다.');
+    return;
+  }
   renderGateConnection(data);
 }
 
@@ -279,7 +337,7 @@ async function saveGateApiCredentials() {
   gateApiBusy = true;
   const button = byId('gateApiConnect');
   button.disabled = true;
-  button.textContent = '암호화 저장 중...';
+  button.textContent = '암호화 저장 및 검증 요청 중...';
   const { data, error } = await supabase.rpc('save_gate_api_credentials', {
     p_gate_uid: gateUid,
     p_api_key: apiKey,
@@ -289,11 +347,12 @@ async function saveGateApiCredentials() {
   byId('gateApiKey').value = '';
   byId('gateSecretKey').value = '';
   button.disabled = false;
-  button.textContent = 'API 연결 요청';
+  button.textContent = '저장 및 연결 검증';
   gateApiBusy = false;
   if (error) return window.toast('API 정보를 저장하지 못했습니다. 입력값을 확인해 주세요.');
   renderGateConnection(data);
-  window.toast('API 정보를 암호화해 저장했습니다. Worker 검증을 진행합니다.');
+  window.toast('암호화 저장 완료 · Worker 검증을 요청했습니다.');
+  await loadGateConnection(false);
 }
 
 async function saveCopySettings() {
@@ -331,6 +390,27 @@ async function loadAdminMembers() {
   `).join('') : '<div class="notice">표시할 회원이 없습니다.</div>';
 }
 
+async function loadAdminGateConnections() {
+  if (!supabase || currentProfile?.role !== 'ADMIN') return;
+  const { data, error } = await supabase.rpc('get_admin_gate_api_connections');
+  if (error) return window.toast('API 연결 현황을 불러오지 못했습니다.');
+  const connections = Array.isArray(data) ? data : [];
+  const tableBody = byId('adminGateConnections');
+  if (!tableBody) return;
+  tableBody.innerHTML = connections.length ? connections.map((connection) => {
+    const statusClass = connection.status === 'VERIFIED' ? 'chip' : connection.status === 'ERROR' ? 'chip red' : 'chip yellow';
+    const statusLabel = { VERIFIED: 'CONNECTED', ERROR: 'ERROR', VERIFYING: 'VERIFYING', PENDING_VERIFICATION: 'PENDING', NOT_CONNECTED: 'NOT CONNECTED' }[connection.status] || connection.status;
+    return `<tr><td>${escapeHtml(connection.full_name || '-')}<small>${escapeHtml(connection.email || '')}</small></td><td>${escapeHtml(connection.gate_uid || '-')}</td><td><span class="${statusClass}">${escapeHtml(statusLabel)}</span></td><td>${connection.futures_read ? 'READ PASS' : connection.permissions_confirmed ? '사용자 확인' : '-'}</td><td>${connection.status === 'VERIFIED' ? 'Worker 접속 통과' : '-'}</td><td>${connection.last_checked_at ? new Date(connection.last_checked_at).toLocaleString('ko-KR') : '-'}</td></tr>`;
+  }).join('') : '<tr><td colspan="6" class="empty-cell">승인 회원의 API 연결 정보가 없습니다.</td></tr>';
+  const verifiedCount = connections.filter((item) => item.status === 'VERIFIED').length;
+  const errorCount = connections.filter((item) => item.status === 'ERROR').length;
+  const disconnectedCount = connections.filter((item) => item.status === 'NOT_CONNECTED').length;
+  byId('adminApiTotal').textContent = String(connections.length);
+  byId('adminApiVerified').textContent = String(verifiedCount);
+  byId('adminApiErrors').textContent = String(errorCount);
+  byId('adminApiDisconnected').textContent = String(disconnectedCount);
+}
+
 document.addEventListener('click', async (event) => {
   if (event.target.id === 'pauseModal') window.closePause();
   const navButton = event.target.closest('.nav-btn[data-page]');
@@ -364,6 +444,7 @@ async function boot() {
   extendCopySettingOptions();
   enhanceGateApiForm();
   enhancePauseModal();
+  enhanceAdminApiPage();
   if (!configured) {
     showAuth('login');
     setAuthMessage('Supabase 환경변수를 설정하면 실제 회원가입과 로그인이 활성화됩니다.', 'warn-box');
