@@ -55,9 +55,13 @@ export async function runTradingCycle() {
     if (readinessCheck && tradingMode === 'DRY_RUN' && observation.observed > 0) await runner.heartbeat(true);
     const reconciled = await runner.reconcileOrders();
     const submitted = await runner.submitOrders();
+    await runner.reportCycle(true);
     if (observation.observed || reconciled || submitted) log('cycle_complete', { ...observation, reconciled, submitted });
   } catch (error) {
-    log('trading_cycle_error', { code: error instanceof Error ? error.message : 'unknown' });
+    const code = error instanceof Error ? error.message : 'unknown';
+    try { await runner.reportCycle(false, code); }
+    catch (reportError) { log('worker_failure_report_error', { code: reportError instanceof Error ? reportError.message : 'unknown' }); }
+    log('trading_cycle_error', { code });
   } finally { state.trading = false; }
 }
 

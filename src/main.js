@@ -41,6 +41,7 @@ let memberDetailBusy = false;
 let adminGateApiBusy = false;
 let memberAnalysisBusy = false;
 let copySystemTimer = null;
+let selectedMemberId = null;
 
 function extendCopySettingOptions() {
   const selects = [...document.querySelectorAll('select')];
@@ -75,7 +76,7 @@ function enhanceGateApiForm() {
       <div class="field"><label for="gateApiKey">API Key</label><input id="gateApiKey" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="API Key 입력" required></div>
       <div class="field"><label for="gateSecretKey">Secret Key</label><input id="gateSecretKey" type="password" autocomplete="new-password" autocapitalize="off" spellcheck="false" placeholder="Secret Key 입력" required></div>
       <label class="permission-check"><input id="gatePermissionConfirmed" type="checkbox" required><span>Trading Account · Perpetual Futures Read/Write만 허용하고 출금 권한은 사용하지 않았습니다.</span></label>
-      <button id="gateApiConnect" class="btn primary" type="submit">저장 및 연결 검증</button>
+      <div class="credential-actions"><button id="gateApiConnect" class="btn primary" type="submit">저장 및 연결 검증</button><button id="gateApiDisconnect" class="btn red" type="button">API 연결 해제</button></div>
     </form>
     <details class="api-guide"><summary>Gate.io API 발급 설정 확인</summary><ol><li>Trading Account를 선택합니다.</li><li>Perpetual Futures의 Read and Write만 허용합니다.</li><li>출금 권한은 절대 활성화하지 않습니다.</li><li>${workerPublicIp ? `Trading Worker 고정 IP <code>${workerPublicIp}</code>를 Whitelist에 등록합니다.` : '고정 IP는 Trading Worker 구축 후 안내됩니다. 현재 임시 IP는 등록하지 마세요.'}</li></ol></details>
     <p class="secret-warning">Secret Key는 화면이나 브라우저 저장소에 보관하지 않고 서버에서 암호화해 저장합니다.</p>
@@ -113,7 +114,7 @@ function enhanceOperationsStatusUi() {
       <div class="card section"><div class="section-head"><h3>실거래 실행 상태</h3><span id="opsExecutionChip" class="chip yellow">확인 중</span></div>
         <div class="metric"><span>주문 실행</span><b id="opsExecution">-</b></div><div class="metric"><span>비상 중단</span><b id="opsHalt">-</b></div><div class="metric"><span>중단 사유</span><b id="opsReason">-</b></div><div class="metric"><span>최종 변경</span><b id="opsUpdated">-</b></div></div>
       <div class="card section"><div class="section-head"><h3>Trading Worker</h3><span id="opsWorkerChip" class="chip yellow">미연결</span></div>
-        <div class="metric"><span>모드</span><b id="opsWorkerMode">OBSERVE</b></div><div class="metric"><span>고정 IP</span><b id="opsWorkerIp">미설정</b></div><div class="metric"><span>Heartbeat</span><b id="opsHeartbeat">없음</b></div><div class="metric"><span>준비 테스트</span><b id="opsTest">미완료</b></div></div>
+        <div class="metric"><span>모드</span><b id="opsWorkerMode">OBSERVE</b></div><div class="metric"><span>고정 IP</span><b id="opsWorkerIp">미설정</b></div><div class="metric"><span>Heartbeat</span><b id="opsHeartbeat">없음</b></div><div class="metric"><span>마지막 정상 Cycle</span><b id="opsLastSuccess">없음</b></div><div class="metric"><span>연속 실패</span><b id="opsFailures">0</b></div><div class="metric"><span>준비 테스트</span><b id="opsTest">미완료</b></div></div>
     </div><div class="notice warn-box operations-note">브라우저에서는 실거래를 켤 수 없습니다. 고정 IP Worker, Master·회원 API 검증, 준비 테스트가 완료된 뒤 서버 배포 명령으로만 활성화됩니다.</div>`;
   const risk = byId('admin-risk');
   if (risk) risk.innerHTML = `<div class="card section"><div class="section-head"><div><h3>Risk / Emergency Control</h3><p>긴급 중단은 신규 주문을 즉시 차단합니다. 미확정 주문은 계속 조회합니다.</p></div></div><div class="actions"><button id="adminEmergencyHalt" class="btn red" type="button">전체 카피 긴급 중단</button><button class="btn" type="button" onclick="openPage('admin-settings')">Worker 상태 확인</button></div></div>`;
@@ -137,7 +138,11 @@ function enhanceLiveDataUi() {
   const monitor = byId('admin-monitor');
   if (monitor) monitor.innerHTML = `<div class="tabs2"><button class="btn primary" onclick="monitorTab('orders',this)">주문 상태</button><button class="btn" onclick="monitorTab('sync',this)">포지션 동기화</button></div>
     <div id="orders" class="subpage active card section"><div class="section-head"><h3>실제 주문 모니터</h3></div><div class="table"><table><thead><tr><th>회원</th><th>종목</th><th>Delta</th><th>체결</th><th>상태</th><th>Gate 주문</th><th>최근 변경</th></tr></thead><tbody id="adminLiveOrders"><tr><td colspan="7" class="empty-cell">주문 데이터를 불러오는 중입니다.</td></tr></tbody></table></div></div>
-    <div id="sync" class="subpage card section"><div class="section-head"><h3>실제 포지션 동기화</h3></div><div class="table"><table><thead><tr><th>회원</th><th>종목</th><th>Target</th><th>Actual</th><th>Delta</th><th>상태</th><th>최근 확인</th></tr></thead><tbody id="adminLiveStates"><tr><td colspan="7" class="empty-cell">동기화 데이터를 불러오는 중입니다.</td></tr></tbody></table></div></div>`;
+      <div id="sync" class="subpage card section"><div class="section-head"><h3>실제 포지션 동기화</h3></div><div class="table"><table><thead><tr><th>회원</th><th>종목</th><th>Target</th><th>Actual</th><th>Delta</th><th>상태</th><th>최근 확인</th></tr></thead><tbody id="adminLiveStates"><tr><td colspan="7" class="empty-cell">동기화 데이터를 불러오는 중입니다.</td></tr></tbody></table></div></div>`;
+  const eventsPage = byId('admin-events');
+  if (eventsPage) eventsPage.innerHTML = `<div class="card section"><div class="section-head"><div><h3>Copy Events</h3><p>Worker·주문·동기화·위험 상태의 실제 이벤트입니다.</p></div><button class="btn" type="button" id="adminEventsRefresh">새로고침</button></div><div class="table"><table><thead><tr><th>시간</th><th>회원</th><th>종목</th><th>이벤트</th><th>심각도</th><th>상세</th></tr></thead><tbody id="adminOperationalEvents"><tr><td colspan="6" class="empty-cell">운영 이벤트를 불러오는 중입니다.</td></tr></tbody></table></div></div>`;
+  const auditPage = byId('admin-audit');
+  if (auditPage) auditPage.innerHTML = `<div class="card section"><div class="section-head"><div><h3>Audit Log</h3><p>관리자 승인·API·카피 제어 변경 이력입니다.</p></div><button class="btn" type="button" id="adminAuditRefresh">새로고침</button></div><div class="table"><table><thead><tr><th>시간</th><th>작업자</th><th>작업</th><th>대상</th><th>변경 내용</th></tr></thead><tbody id="adminAuditRows"><tr><td colspan="5" class="empty-cell">감사 로그를 불러오는 중입니다.</td></tr></tbody></table></div></div>`;
 }
 
 function enhanceAdminApiPage() {
@@ -154,7 +159,7 @@ function enhanceAdminApiPage() {
             <div class="field admin-secret-field"><label for="adminGateSecretKey">Secret Key</label><input id="adminGateSecretKey" type="password" autocomplete="new-password" autocapitalize="off" spellcheck="false" placeholder="Secret Key 입력" required></div>
           </div>
           <label class="permission-check"><input id="adminGatePermissionConfirmed" type="checkbox" required><span>Trading Account · Perpetual Futures Read/Write만 허용했으며 출금 권한은 비활성화했습니다.</span></label>
-          <div class="admin-api-submit-row"><button id="adminGateApiConnect" class="btn primary" type="submit">암호화 저장 및 검증 요청</button><p>Secret Key는 브라우저에 저장하지 않습니다.</p></div>
+          <div class="admin-api-submit-row"><div class="credential-actions"><button id="adminGateApiConnect" class="btn primary" type="submit">암호화 저장 및 검증 요청</button><button id="adminGateApiDisconnect" class="btn red" type="button">Master API 연결 해제</button></div><p>Secret Key는 브라우저에 저장하지 않습니다.</p></div>
         </form>
         <details class="api-guide"><summary>Gate.io Master API 설정 안내</summary><ol><li>API 유형은 Trading Account를 선택합니다.</li><li>Perpetual Futures의 Read and Write만 활성화합니다.</li><li>출금 권한은 절대 활성화하지 않습니다.</li><li>${workerPublicIp ? `IP Whitelist에 Worker 고정 IP <code>${workerPublicIp}</code>를 등록합니다.` : 'Worker 고정 IP 준비 전에는 암호화 저장까지만 가능하며 실제 검증·거래는 시작되지 않습니다.'}</li></ol></details>
       </div>
@@ -454,6 +459,8 @@ window.openPage = (id) => {
   if (id === 'member-analysis' && currentProfile?.role === 'MEMBER') loadTradingAnalysis();
   if (['member-dashboard', 'member-positions', 'member-trades'].includes(id) && currentProfile?.role === 'MEMBER') loadMemberLiveData();
   if (id === 'admin-member-analysis' && currentProfile?.role === 'ADMIN') loadAdminAnalysisMembers();
+  if (id === 'admin-events' && currentProfile?.role === 'ADMIN') loadAdminOperationalEvents();
+  if (id === 'admin-audit' && currentProfile?.role === 'ADMIN') loadAdminAuditLog();
   if (id === 'admin-api' && currentProfile?.role === 'ADMIN') {
     loadAdminMasterGateConnection();
     loadAdminGateConnections();
@@ -503,6 +510,9 @@ function renderCopySystemStatus(status) {
   byId('opsWorkerMode').textContent = worker.mode || 'OBSERVE';
   byId('opsWorkerIp').textContent = worker.public_ip || '미설정';
   byId('opsHeartbeat').textContent = worker.heartbeat_at ? new Date(worker.heartbeat_at).toLocaleString('ko-KR') : '없음';
+  byId('opsLastSuccess').textContent = worker.last_success_at ? new Date(worker.last_success_at).toLocaleString('ko-KR') : '없음';
+  byId('opsFailures').textContent = String(worker.consecutive_failures || 0);
+  byId('opsFailures').className = Number(worker.consecutive_failures || 0) > 0 ? 'neg' : 'pos';
   byId('opsTest').textContent = worker.test_passed_at ? new Date(worker.test_passed_at).toLocaleString('ko-KR') : '미완료';
   byId('opsWorkerChip').textContent = worker.healthy ? 'HEALTHY' : 'OFFLINE';
   byId('opsWorkerChip').className = worker.healthy ? 'chip' : 'chip red';
@@ -585,6 +595,64 @@ async function loadAdminLiveData() {
   if (byId('adminMasterPositions')) byId('adminMasterPositions').innerHTML = master.length ? master.map((position) => `<tr><td>${escapeHtml(position.contract)}</td><td>${Number(position.size)}</td><td>${Number(position.entry_price || 0).toLocaleString()}</td><td>${Number(position.mark_price || 0).toLocaleString()}</td><td>${Number(position.leverage || 0)}x</td><td>${new Date(position.observed_at).toLocaleString('ko-KR')}</td></tr>`).join('') : '<tr><td colspan="6" class="empty-cell">검증된 Master API와 Worker snapshot이 아직 없습니다.</td></tr>';
   if (byId('adminLiveStates')) byId('adminLiveStates').innerHTML = states.length ? states.map((state) => `<tr><td>${escapeHtml(state.name || state.email || '-')}</td><td>${escapeHtml(state.contract)}</td><td>${Number(state.target_size)}</td><td>${Number(state.actual_size)}</td><td>${Number(state.delta_size)}</td><td>${stateChip(state.state)}${state.pause_reason ? `<small>${escapeHtml(state.pause_reason)}</small>` : ''}</td><td>${state.observed_at ? new Date(state.observed_at).toLocaleString('ko-KR') : '-'}</td></tr>`).join('') : '<tr><td colspan="7" class="empty-cell">회원 포지션 snapshot이 아직 없습니다.</td></tr>';
   if (byId('adminLiveOrders')) byId('adminLiveOrders').innerHTML = orders.length ? orders.map((order) => `<tr><td>${escapeHtml(order.name || order.email || '-')}</td><td>${escapeHtml(order.contract)}</td><td>${Number(order.delta_size)}</td><td>${Number(order.filled_size)}</td><td>${stateChip(order.status)}${order.error_code ? `<small>${escapeHtml(order.error_code)}</small>` : ''}</td><td>${escapeHtml(order.gate_order_id || '-')}</td><td>${new Date(order.updated_at).toLocaleString('ko-KR')}</td></tr>`).join('') : '<tr><td colspan="7" class="empty-cell">실제 주문 내역이 아직 없습니다.</td></tr>';
+}
+
+function compactPayload(payload) {
+  if (!payload || typeof payload !== 'object') return '-';
+  const text = Object.entries(payload).slice(0, 4).map(([key, value]) => `${key}: ${typeof value === 'object' ? JSON.stringify(value) : value}`).join(' · ');
+  return text || '-';
+}
+
+async function loadAdminOperationalEvents() {
+  if (!supabase || currentProfile?.role !== 'ADMIN') return;
+  const { data, error } = await supabase.rpc('get_admin_operational_events', { p_limit: 200 });
+  const tbody = byId('adminOperationalEvents');
+  if (!tbody) return;
+  if (error) return void (tbody.innerHTML = '<tr><td colspan="6" class="empty-cell neg">운영 이벤트를 불러오지 못했습니다.</td></tr>');
+  const events = Array.isArray(data) ? data : [];
+  tbody.innerHTML = events.length ? events.map((event) => `<tr><td>${new Date(event.occurred_at).toLocaleString('ko-KR')}</td><td>${escapeHtml(event.name || event.email || 'SYSTEM')}</td><td>${escapeHtml(event.contract || '-')}</td><td>${escapeHtml(event.type)}</td><td>${stateChip(event.severity)}</td><td class="payload-cell">${escapeHtml(compactPayload(event.payload))}</td></tr>`).join('') : '<tr><td colspan="6" class="empty-cell">아직 기록된 운영 이벤트가 없습니다.</td></tr>';
+}
+
+async function loadAdminAuditLog() {
+  if (!supabase || currentProfile?.role !== 'ADMIN') return;
+  const { data, error } = await supabase.rpc('get_admin_audit_log', { p_limit: 200 });
+  const tbody = byId('adminAuditRows');
+  if (!tbody) return;
+  if (error) return void (tbody.innerHTML = '<tr><td colspan="5" class="empty-cell neg">감사 로그를 불러오지 못했습니다.</td></tr>');
+  const logs = Array.isArray(data) ? data : [];
+  tbody.innerHTML = logs.length ? logs.map((log) => `<tr><td>${new Date(log.created_at).toLocaleString('ko-KR')}</td><td>${escapeHtml(log.actor_name || log.actor_email || 'SYSTEM')}</td><td>${escapeHtml(log.action)}</td><td>${escapeHtml(log.target_name || log.target_email || '-')}</td><td class="payload-cell">${escapeHtml(compactPayload(log.next_value))}</td></tr>`).join('') : '<tr><td colspan="5" class="empty-cell">아직 기록된 관리자 작업이 없습니다.</td></tr>';
+}
+
+async function setAdminMemberControl(mode) {
+  if (!selectedMemberId || currentProfile?.role !== 'ADMIN') return;
+  const labels = { PAUSE: '일시중지', REDUCE_ONLY: '축소 전용', HALT: '중단', RESUME: '재개' };
+  if (!window.confirm(`이 회원의 카피 상태를 ${labels[mode]}로 변경할까요?`)) return;
+  const { error } = await supabase.rpc('set_member_copy_control', { p_user_id: selectedMemberId, p_mode: mode, p_reason: `ADMIN_${mode}` });
+  if (error) return window.toast('회원 카피 상태를 변경하지 못했습니다.');
+  window.toast(`회원 카피 상태를 ${labels[mode]}로 변경했습니다.`);
+  closeMemberDetail();
+  await loadAdminMembers();
+}
+
+async function disconnectMemberGateApi() {
+  if (currentProfile?.role !== 'MEMBER' || !window.confirm('API 연결을 해제하면 카피가 즉시 중단되고 저장된 Key가 폐기됩니다. 계속할까요?')) return;
+  const { error } = await supabase.rpc('disable_my_gate_api_connection', { p_confirmation: 'DISCONNECT_GATE_API' });
+  if (error) return window.toast('API 연결을 해제하지 못했습니다.');
+  byId('gateUid').value = '';
+  byId('gateApiKey').placeholder = 'API Key 입력';
+  renderGateConnection(null);
+  window.toast('API 연결을 해제하고 저장된 Key를 폐기했습니다.');
+}
+
+async function disconnectAdminMasterGateApi() {
+  if (currentProfile?.role !== 'ADMIN' || !window.confirm('Master API를 해제하면 전체 실거래가 즉시 중단되고 저장된 Key가 폐기됩니다. 계속할까요?')) return;
+  const { error } = await supabase.rpc('disable_admin_master_gate_api_connection', { p_confirmation: 'DISCONNECT_MASTER_GATE_API' });
+  if (error) return window.toast('Master API 연결을 해제하지 못했습니다.');
+  byId('adminGateUid').value = '';
+  byId('adminGateApiKey').placeholder = 'API Key 입력';
+  renderAdminMasterGateConnection(null);
+  await loadCopySystemStatus();
+  window.toast('Master API 연결을 해제하고 전체 카피를 중단했습니다.');
 }
 
 function renderGateConnection(connection) {
@@ -888,11 +956,13 @@ function closeMemberDetail() {
   if (!modal) return;
   modal.classList.remove('open');
   modal.setAttribute('aria-hidden', 'true');
+  selectedMemberId = null;
 }
 
 async function openMemberDetail(userId) {
   if (!supabase || currentProfile?.role !== 'ADMIN' || memberDetailBusy) return;
   const modal = byId('memberDetailModal');
+  selectedMemberId = userId;
   modal.classList.add('open');
   modal.setAttribute('aria-hidden', 'false');
   byId('memberDetailTitle').textContent = '불러오는 중...';
@@ -920,7 +990,8 @@ async function openMemberDetail(userId) {
     <div><small>권한</small><b>${escapeHtml(member.role || '-')}</b></div>
     <div><small>Copy Ratio</small><b>${Number(member.copy_ratio ?? 100)}%</b></div>
     <div><small>최대 포지션 비중</small><b>${Number(member.max_position_ratio ?? 30)}%</b></div>
-    <div><small>가입일</small><b>${member.created_at ? new Date(member.created_at).toLocaleDateString('ko-KR') : '-'}</b></div>`;
+    <div><small>가입일</small><b>${member.created_at ? new Date(member.created_at).toLocaleDateString('ko-KR') : '-'}</b></div>
+    ${member.role === 'MEMBER' ? '<div class="member-control-actions"><small>관리자 카피 제어</small><div class="actions"><button class="btn" type="button" data-member-control="PAUSE">일시중지</button><button class="btn" type="button" data-member-control="REDUCE_ONLY">축소 전용</button><button class="btn red" type="button" data-member-control="HALT">중단</button><button class="btn green" type="button" data-member-control="RESUME">재개</button></div></div>' : ''}`;
   byId('memberMonthlyPerformance').innerHTML = months.length ? months.map((month) => {
     const netPnl = Number(month.net_pnl || 0);
     const returnPct = month.return_pct == null ? null : Number(month.return_pct);
@@ -1015,10 +1086,16 @@ document.addEventListener('click', async (event) => {
   const pauseButton = event.target.closest('[data-copy-pause]');
   if (pauseButton) await setCopyPause(pauseButton.dataset.copyPause);
   if (event.target.closest('#adminEmergencyHalt')) await emergencyHalt();
+  if (event.target.closest('#gateApiDisconnect')) await disconnectMemberGateApi();
+  if (event.target.closest('#adminGateApiDisconnect')) await disconnectAdminMasterGateApi();
+  if (event.target.closest('#adminEventsRefresh')) await loadAdminOperationalEvents();
+  if (event.target.closest('#adminAuditRefresh')) await loadAdminAuditLog();
   if (event.target.closest('#copySettingsSave')) await saveCopySettings();
   if (event.target.closest('#adminAnalysisLoad')) await loadAdminMemberTradingAnalysis();
   const memberDetailButton = event.target.closest('[data-member-detail]');
   if (memberDetailButton) await openMemberDetail(memberDetailButton.dataset.memberDetail);
+  const memberControlButton = event.target.closest('[data-member-control]');
+  if (memberControlButton) await setAdminMemberControl(memberControlButton.dataset.memberControl);
   const approvalButton = event.target.closest('[data-approval]');
   if (!approvalButton || currentProfile?.role !== 'ADMIN') return;
   approvalButton.disabled = true;

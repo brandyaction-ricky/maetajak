@@ -385,6 +385,27 @@ td,
   color: #aaa;
 }
 
+.credential-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.member-control-actions {
+  grid-column: 1 / -1;
+  padding-top: 4px;
+}
+
+.member-control-actions .actions {
+  margin-top: 8px;
+}
+
+.payload-cell {
+  max-width: 360px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 #member-account .half {
   grid-auto-rows: 1fr;
   align-items: stretch;
@@ -992,6 +1013,13 @@ td,
   .member > div:first-child,
   .member > .btn {
     grid-column: 1 / -1;
+  }
+
+  .credential-actions,
+  .credential-actions .btn,
+  .member-control-actions .actions,
+  .member-control-actions .btn {
+    width: 100%;
   }
 
   .member > .btn {

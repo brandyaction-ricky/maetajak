@@ -90,6 +90,9 @@ export class TradingRunner {
   async heartbeat(testPassed = false) {
     return this.rpc('copy_worker_heartbeat', { p_worker_id: this.workerId, p_worker_version: this.workerVersion, p_gate_base_url: this.baseUrl, p_public_ip: this.publicIp || null, p_mode: this.mode, p_test_passed: testPassed });
   }
+  async reportCycle(success, errorCode = null) {
+    return this.rpc('report_copy_worker_cycle', { p_success: Boolean(success), p_error_code: errorCode ? String(errorCode).slice(0, 80) : null });
+  }
   async loadContracts() {
     if (!this.contracts || Date.now() - this.contractsLoadedAt > 3_600_000) {
       this.contracts = await getFuturesContracts({ baseUrl: this.baseUrl, fetchImpl: this.fetchImpl });
