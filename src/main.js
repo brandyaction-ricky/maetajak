@@ -5,7 +5,8 @@ import './theme.css';
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
 const configured = Boolean(supabaseUrl && supabaseAnonKey);
-const workerPublicIp = import.meta.env.VITE_TRADING_WORKER_IP || '146.56.140.75';
+const workerPublicIp = import.meta.env.VITE_TRADING_WORKER_IP || '';
+const LEGAL_VERSION = '2026-08-21-v1';
 const supabase = configured
   ? createClient(supabaseUrl, supabaseAnonKey, {
       auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true },
@@ -16,11 +17,13 @@ const pages = {
   'member-dashboard': ['대시보드', '카피 상태와 계정 현황을 확인합니다.'],
   'member-positions': ['현재 포지션', '실제 포지션과 Master Target을 비교합니다.'],
   'member-trades': ['거래 내역', '카피 주문과 체결 기록을 확인합니다.'],
+  'member-analysis': ['수익 분석', '카피 시작일 이후 실제 Futures 성과를 분석합니다.'],
   'member-copy': ['카피트레이딩 설정', '카피 비율과 리스크 한도를 관리합니다.'],
   'member-account': ['계정 설정', 'API 연결·보안·알림·계정을 관리합니다.'],
   'admin-dashboard': ['대시보드', 'Master와 전체 회원의 운영 상태를 확인합니다.'],
   'admin-master': ['Master 계정', 'Master 포지션 상태를 확인합니다.'],
   'admin-members': ['회원 관리', '가입 승인과 회원 리스트를 관리합니다.'],
+  'admin-member-analysis': ['회원 수익 관리', '회원별 카피 시작일 이후 Futures 성과를 조회합니다.'],
   'admin-api': ['API 연결 현황', '회원별 Gate.io API 상태를 확인합니다.'],
   'admin-monitor': ['주문·포지션 모니터', '주문과 동기화 문제를 함께 확인합니다.'],
   'admin-events': ['Copy Events', 'Master 변경이 회원에게 미친 영향을 확인합니다.'],
@@ -34,6 +37,9 @@ let currentProfile = null;
 let authBusy = false;
 let gateApiBusy = false;
 let gateStatusTimer = null;
+let memberDetailBusy = false;
+let adminGateApiBusy = false;
+let memberAnalysisBusy = false;
 
 function extendCopySettingOptions() {
   const selects = [...document.querySelectorAll('select')];
@@ -70,7 +76,7 @@ function enhanceGateApiForm() {
       <label class="permission-check"><input id="gatePermissionConfirmed" type="checkbox" required><span>Trading Account · Perpetual Futures Read/Write만 허용하고 출금 권한은 사용하지 않았습니다.</span></label>
       <button id="gateApiConnect" class="btn primary" type="submit">저장 및 연결 검증</button>
     </form>
-    <details class="api-guide"><summary>Gate.io API 발급 설정 확인</summary><ol><li>Trading Account를 선택합니다.</li><li>Perpetual Futures의 Read and Write만 허용합니다.</li><li>출금 권한은 절대 활성화하지 않습니다.</li><li>Trading Worker 고정 IP <code>${workerPublicIp}</code>를 Whitelist에 등록합니다.</li></ol></details>
+    <details class="api-guide"><summary>Gate.io API 발급 설정 확인</summary><ol><li>Trading Account를 선택합니다.</li><li>Perpetual Futures의 Read and Write만 허용합니다.</li><li>출금 권한은 절대 활성화하지 않습니다.</li><li>${workerPublicIp ? `Trading Worker 고정 IP <code>${workerPublicIp}</code>를 Whitelist에 등록합니다.` : '고정 IP는 Trading Worker 구축 후 안내됩니다. 현재 임시 IP는 등록하지 마세요.'}</li></ol></details>
     <p class="secret-warning">Secret Key는 화면이나 브라우저 저장소에 보관하지 않고 서버에서 암호화해 저장합니다.</p>
   `;
 
@@ -94,6 +100,28 @@ function enhanceAdminApiPage() {
   const page = byId('admin-api');
   if (!page) return;
   page.innerHTML = `
+    <div class="admin-api-setup">
+      <div class="card section admin-master-api-card">
+        <div class="section-head"><div><h3>Master Gate.io API 연결</h3><p>Master 실제 포지션을 읽을 운영 계정을 연결합니다.</p></div><span id="adminMasterGateStatus" class="chip yellow">미연결</span></div>
+        <form id="adminGateApiForm" class="form" autocomplete="off">
+          <div class="admin-api-fields">
+            <div class="field"><label for="adminGateUid">Gate.io UID</label><input id="adminGateUid" inputmode="numeric" autocomplete="off" placeholder="Master 계정 UID" required></div>
+            <div class="field"><label for="adminGateApiKey">API Key</label><input id="adminGateApiKey" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="API Key 입력" required></div>
+            <div class="field admin-secret-field"><label for="adminGateSecretKey">Secret Key</label><input id="adminGateSecretKey" type="password" autocomplete="new-password" autocapitalize="off" spellcheck="false" placeholder="Secret Key 입력" required></div>
+          </div>
+          <label class="permission-check"><input id="adminGatePermissionConfirmed" type="checkbox" required><span>Trading Account · Perpetual Futures Read/Write만 허용했으며 출금 권한은 비활성화했습니다.</span></label>
+          <div class="admin-api-submit-row"><button id="adminGateApiConnect" class="btn primary" type="submit">암호화 저장 및 검증 요청</button><p>Secret Key는 브라우저에 저장하지 않습니다.</p></div>
+        </form>
+        <details class="api-guide"><summary>Gate.io Master API 설정 안내</summary><ol><li>API 유형은 Trading Account를 선택합니다.</li><li>Perpetual Futures의 Read and Write만 활성화합니다.</li><li>출금 권한은 절대 활성화하지 않습니다.</li><li>${workerPublicIp ? `IP Whitelist에 Worker 고정 IP <code>${workerPublicIp}</code>를 등록합니다.` : 'Worker 고정 IP 준비 전에는 암호화 저장까지만 가능하며 실제 검증·거래는 시작되지 않습니다.'}</li></ol></details>
+      </div>
+      <div class="card section admin-master-security">
+        <div class="section-head"><div><h3>Master 연결 보안 상태</h3><p id="adminGateVerificationDetail">실제 연결 검증 전입니다.</p></div></div>
+        <div class="metric"><span>Futures Read</span><b id="adminGateFuturesRead" class="warn">확인 대기</b></div>
+        <div class="metric"><span>Futures Trade</span><b id="adminGateTrade" class="warn">확인 대기</b></div>
+        <div class="metric"><span>Worker 고정 IP</span><b id="adminGateWorker" class="warn">미설정</b></div>
+        <div class="metric"><span>Withdrawal</span><b id="adminGateWithdrawal" class="pos">DISABLED 확인 필요</b></div>
+      </div>
+    </div>
     <div class="grid kpis">
       <div class="card kpi"><label>전체 회원</label><strong id="adminApiTotal">0</strong></div>
       <div class="card kpi"><label>연결 정상</label><strong id="adminApiVerified" class="pos">0</strong></div>
@@ -101,10 +129,140 @@ function enhanceAdminApiPage() {
       <div class="card kpi"><label>미연결</label><strong id="adminApiDisconnected">0</strong></div>
     </div>
     <div class="card section" style="margin-top:14px">
-      <div class="section-head"><h3>Gate.io API 연결 현황</h3></div>
+      <div class="section-head"><div><h3>회원 Gate.io API 연결 현황</h3><p>회원별 연결·권한·Worker 검증 상태입니다.</p></div></div>
       <div class="table"><table><thead><tr><th>회원</th><th>UID</th><th>상태</th><th>Futures 권한</th><th>Worker IP</th><th>최근 확인</th></tr></thead>
       <tbody id="adminGateConnections"><tr><td colspan="6" class="empty-cell">API 연결 현황을 불러오는 중입니다.</td></tr></tbody></table></div>
     </div>`;
+}
+
+function enhanceMemberDetailModal() {
+  if (byId('memberDetailModal')) return;
+  document.body.insertAdjacentHTML('beforeend', `
+    <div id="memberDetailModal" class="modal-bg" aria-hidden="true">
+      <div class="modal member-detail-modal" role="dialog" aria-modal="true" aria-labelledby="memberDetailTitle">
+        <button class="modal-close" type="button" aria-label="회원 상세 닫기" data-member-detail-close>×</button>
+        <div class="member-detail-head">
+          <div><small>회원 상세</small><h3 id="memberDetailTitle">-</h3><p id="memberDetailEmail">-</p></div>
+          <span id="memberDetailStatus" class="chip">-</span>
+        </div>
+        <div id="memberDetailSummary" class="member-detail-summary"></div>
+        <div class="section-head member-performance-title"><div><h3>월별 수익</h3><p>실현손익·수수료·펀딩비가 반영된 집계입니다.</p></div></div>
+        <div class="table"><table class="member-performance-table"><thead><tr><th>월</th><th>순손익</th><th>수익률</th><th>거래량</th><th>거래</th><th>승률</th></tr></thead><tbody id="memberMonthlyPerformance"><tr><td colspan="6" class="empty-cell">월별 수익을 불러오는 중입니다.</td></tr></tbody></table></div>
+      </div>
+    </div>`);
+}
+
+function enhanceLegalUi() {
+  const checkbox = byId('signupTerms');
+  const label = checkbox?.closest('label');
+  if (label && !label.classList.contains('terms-consent')) {
+    label.className = 'terms-consent';
+    label.innerHTML = `<input id="signupTerms" type="checkbox"> <span><button type="button" class="legal-link" data-legal-open="terms">서비스 이용약관</button> 및 <button type="button" class="legal-link" data-legal-open="privacy">개인정보 처리방침</button>에 동의합니다.</span>`;
+  }
+  if (byId('legalModal')) return;
+  document.body.insertAdjacentHTML('beforeend', `
+    <div id="legalModal" class="modal-bg legal-modal-bg" aria-hidden="true">
+      <div class="modal legal-modal" role="dialog" aria-modal="true" aria-labelledby="legalTitle">
+        <button class="modal-close" type="button" aria-label="약관 닫기" data-legal-close>×</button>
+        <div class="legal-head"><small>시행일 2026. 8. 21. · 버전 ${LEGAL_VERSION}</small><h2 id="legalTitle">서비스 이용약관</h2></div>
+        <div class="legal-tabs"><button class="btn primary" type="button" data-legal-tab="terms">이용약관</button><button class="btn" type="button" data-legal-tab="privacy">개인정보 처리방침</button></div>
+        <article id="legalTerms" class="legal-document">
+          <section><h3>1. 서비스와 투자 위험</h3><p>maetajak은 Master 실제 포지션을 기준으로 회원의 목표 포지션을 계산하고 차이만큼 주문하는 카피트레이딩 기능을 제공합니다. 가상자산 선물은 원금 전부를 잃을 수 있는 고위험 거래이며 수익을 보장하지 않습니다.</p></section>
+          <section><h3>2. 성공보수</h3><p>성공보수는 매월 확정된 순실현수익의 10%입니다. 순실현수익은 실현손익에 펀딩비를 더하고 거래 수수료를 차감해 계산하며, 입출금·미실현손익은 제외합니다. 해당 월 순실현수익이 0 이하이면 성공보수는 없습니다.</p></section>
+          <section><h3>3. 직접 거래와 MANUAL_OVERRIDE</h3><p>카피 중인 종목의 주문, 포지션, 레버리지, 증거금, 익절·손절을 회원이 직접 변경하면 MANUAL_OVERRIDE로 판단해 해당 종목 카피를 중지하고 자동 재진입하지 않을 수 있습니다. 회원의 직접 변경으로 확대된 손실은 회원이 부담합니다.</p></section>
+          <section><h3>4. 체결·시스템 위험</h3><p>급격한 가격 변동, 슬리피지, 유동성 부족, 부분 체결, 펀딩비, 거래소 장애, API 제한, 네트워크 지연, UNKNOWN 주문 조정 과정으로 Master와 다른 가격·수량이 체결되거나 손실이 발생할 수 있습니다.</p></section>
+          <section><h3>5. 안전 제어</h3><p>서비스는 DRIFT, PAUSED, REDUCE_ONLY, ERROR, HALTED 등의 상태에서 주문을 제한할 수 있습니다. API 권한 이상, 미확인 주문 또는 비상 상황에는 사전 통지 없이 신규 주문을 중지할 수 있습니다.</p></section>
+          <section><h3>6. 회원 의무</h3><p>회원은 본인 명의의 Gate.io 계정과 최소한의 Futures 권한만 사용하고, 출금 권한을 부여하지 않으며, API Key를 타인과 공유하지 않아야 합니다. 거래소 약관과 거주지 법령 준수 책임은 회원에게 있습니다.</p></section>
+          <section><h3>7. 책임 범위</h3><p>서비스 운영자는 일반적인 시장 변동과 카피트레이딩으로 발생한 투자 손실을 보전하지 않습니다. 다만 운영자의 고의·중대한 과실 또는 관련 법령상 배제할 수 없는 책임까지 면제하는 것은 아닙니다.</p></section>
+          <section><h3>8. 기록·변경·해지</h3><p>주문, 상태 변경, 관리자 작업은 감사 목적으로 기록될 수 있습니다. 중요한 약관 변경은 시행 전에 알리며, 회원은 카피를 중지하고 서비스 이용을 종료할 수 있습니다.</p></section>
+          <p class="legal-review-warning">유료 실거래 서비스 시작 전 성공보수 구조와 카피트레이딩 운영에 대해 대한민국 금융·전자상거래 전문 변호사의 검토가 필요합니다.</p>
+        </article>
+        <article id="legalPrivacy" class="legal-document hidden">
+          <section><h3>1. 수집 항목</h3><p>이름, 휴대폰 번호, 이메일, 인증·승인 기록, Gate.io UID와 API Key, 거래·포지션·수익 기록, 접속·감사 로그를 수집할 수 있습니다. Secret Key는 서버에서 암호화해 저장하며 브라우저 저장소에는 저장하지 않습니다.</p></section>
+          <section><h3>2. 이용 목적</h3><p>회원 인증과 승인, API 연결 검증, 목표 포지션 계산과 주문 실행, 위험 통제, 월별 수익·성공보수 산정, 보안 사고 대응 및 법적 의무 이행에 이용합니다.</p></section>
+          <section><h3>3. 보유와 파기</h3><p>회원 탈퇴 또는 목적 달성 시 지체 없이 파기하되, 거래·감사 기록 등 법령이나 분쟁 대응에 필요한 정보는 정해진 기간 동안 분리 보관할 수 있습니다.</p></section>
+          <section><h3>4. 처리 위탁·국외 처리</h3><p>인증·DB는 Supabase, 웹 호스팅은 Vercel, 거래 기능은 Gate.io 및 별도 Trading Worker를 사용할 수 있으며 서비스 제공 과정에서 정보가 국외에서 처리될 수 있습니다. 실제 운영 전 사업자 정보와 상세 이전 항목·국가·보유기간을 고지합니다.</p></section>
+          <section><h3>5. 이용자 권리와 보안</h3><p>회원은 개인정보 열람·정정·삭제·처리정지를 요청할 수 있습니다. 서비스는 암호화, 접근 통제, 최소 권한, 관리자 재인증, 감사 로그 등의 보호조치를 적용합니다.</p></section>
+          <p class="legal-review-warning">운영 전 사업자명, 주소, 대표자, 개인정보 보호책임자 및 문의처를 확정해 이 문서에 반영해야 합니다.</p>
+        </article>
+      </div>
+    </div>`);
+}
+
+function enhanceMemberAnalysisPage() {
+  const memberNav = byId('memberNav')?.querySelector('.nav-group');
+  const accountButton = memberNav?.querySelector('[data-page="member-account"]');
+  if (memberNav && accountButton && !memberNav.querySelector('[data-page="member-analysis"]')) {
+    accountButton.insertAdjacentHTML('beforebegin', '<button class="nav-btn" data-page="member-analysis">수익 분석</button>');
+  }
+  if (byId('member-analysis')) return;
+  const dashboard = byId('member-dashboard');
+  if (!dashboard) return;
+  dashboard.insertAdjacentHTML('afterend', `
+    <section id="member-analysis" class="page">
+      <div class="analysis-hero card section">
+        <div><small class="analysis-eyebrow">TRADING ANALYSIS</small><h2>Futures Assets Analysis</h2><p>카피트레이딩 시작일부터 Gate.io 선물 원장에서 집계한 실제 성과입니다.</p></div>
+        <span id="analysisPeriod" class="analysis-period">집계 대기</span>
+      </div>
+      <div id="analysisEmpty" class="card section analysis-empty">Trading Worker가 거래 원장을 집계하면 분석 결과가 표시됩니다.</div>
+      <div id="analysisContent" class="hidden">
+        <div class="analysis-profit-loss card section"><div><small>총이익</small><strong id="analysisGrossProfit" class="pos">$0.00</strong><span id="analysisWinCount">이익 정산 0건</span></div><div class="analysis-balance"><i id="analysisProfitBar"></i><i id="analysisLossBar"></i></div><div class="analysis-loss"><small>총손실</small><strong id="analysisGrossLoss" class="neg">$0.00</strong><span id="analysisLossCount">손실 정산 0건</span></div></div>
+        <div class="analysis-metrics">
+          <div class="card"><small>순실현손익</small><b id="analysisNetPnl">$0.00</b></div>
+          <div class="card"><small>승률</small><b id="analysisWinRate">-</b></div>
+          <div class="card"><small>평균 이익</small><b id="analysisAverageProfit">-</b></div>
+          <div class="card"><small>평균 손실</small><b id="analysisAverageLoss">-</b></div>
+          <div class="card"><small>손익비</small><b id="analysisProfitFactor">-</b></div>
+          <div class="card"><small>수수료 · 펀딩</small><b id="analysisFeesFunding">-</b></div>
+        </div>
+        <div class="analysis-lower">
+          <div class="card section"><div class="section-head"><div><small>DAILY PNL</small><h3>일별 손익 캘린더</h3></div><span id="analysisMonthLabel"></span></div><div id="analysisCalendar" class="analysis-calendar"></div></div>
+          <div class="card section"><div class="section-head"><div><small>PNL RANKING</small><h3>종목별 실현손익</h3></div></div><div id="analysisSymbols" class="analysis-symbols"></div></div>
+        </div>
+        <p class="analysis-footnote">순손익은 실현손익에서 거래 수수료를 차감하고 펀딩비를 반영합니다. 입출금과 미실현손익은 제외됩니다.</p>
+      </div>
+    </section>`);
+}
+
+function enhanceAdminMemberAnalysisPage() {
+  const adminNav = byId('adminNav')?.querySelector('.nav-group');
+  const apiButton = adminNav?.querySelector('[data-page="admin-api"]');
+  if (adminNav && apiButton && !adminNav.querySelector('[data-page="admin-member-analysis"]')) {
+    apiButton.insertAdjacentHTML('beforebegin', '<button class="nav-btn" data-page="admin-member-analysis">회원 수익 관리</button>');
+  }
+  if (byId('admin-member-analysis')) return;
+  const source = byId('member-analysis');
+  const anchor = byId('admin-api');
+  if (!source || !anchor) return;
+  const page = source.cloneNode(true);
+  page.id = 'admin-member-analysis';
+  page.classList.remove('active');
+  page.querySelectorAll('[id^="analysis"]').forEach((element) => {
+    element.id = `admin${element.id.charAt(0).toUpperCase()}${element.id.slice(1)}`;
+  });
+  page.querySelector('.analysis-hero h2').textContent = 'Member Futures Assets Analysis';
+  page.querySelector('.analysis-hero p').textContent = '선택한 회원의 카피 시작일부터 실제 Futures 원장으로 집계한 성과입니다.';
+  page.insertAdjacentHTML('afterbegin', '<div class="card section admin-analysis-selector"><div class="field"><label for="adminAnalysisMember">회원 선택</label><select id="adminAnalysisMember"><option value="">회원을 선택해 주세요</option></select></div><button id="adminAnalysisLoad" class="btn primary" type="button">조회</button></div>');
+  anchor.insertAdjacentElement('beforebegin', page);
+}
+
+function setLegalTab(tab = 'terms') {
+  const terms = tab === 'terms';
+  byId('legalTerms')?.classList.toggle('hidden', !terms);
+  byId('legalPrivacy')?.classList.toggle('hidden', terms);
+  if (byId('legalTitle')) byId('legalTitle').textContent = terms ? '서비스 이용약관' : '개인정보 처리방침';
+  document.querySelectorAll('[data-legal-tab]').forEach((button) => button.classList.toggle('primary', button.dataset.legalTab === tab));
+}
+
+function openLegal(tab) {
+  setLegalTab(tab);
+  byId('legalModal')?.classList.add('open');
+  byId('legalModal')?.setAttribute('aria-hidden', 'false');
+}
+
+function closeLegal() {
+  byId('legalModal')?.classList.remove('open');
+  byId('legalModal')?.setAttribute('aria-hidden', 'true');
 }
 
 function setAuthMessage(message = '', kind = 'error') {
@@ -208,7 +366,7 @@ window.signup = () => withAuthBusy(async () => {
   const { data, error } = await supabase.auth.signUp({
     email,
     password,
-    options: { data: { full_name: fullName, phone, terms_accepted_at: new Date().toISOString() } },
+    options: { data: { full_name: fullName, phone, terms_accepted_at: new Date().toISOString(), terms_version: LEGAL_VERSION, privacy_version: LEGAL_VERSION } },
   });
   if (error) return setAuthMessage(error.message);
   setPendingMessage('승인 대기', data.session
@@ -245,7 +403,12 @@ window.openPage = (id) => {
   byId('side').classList.remove('open');
   window.scrollTo(0, 0);
   if (id === 'admin-members' && currentProfile?.role === 'ADMIN') loadAdminMembers();
-  if (id === 'admin-api' && currentProfile?.role === 'ADMIN') loadAdminGateConnections();
+  if (id === 'member-analysis' && currentProfile?.role === 'MEMBER') loadTradingAnalysis();
+  if (id === 'admin-member-analysis' && currentProfile?.role === 'ADMIN') loadAdminAnalysisMembers();
+  if (id === 'admin-api' && currentProfile?.role === 'ADMIN') {
+    loadAdminMasterGateConnection();
+    loadAdminGateConnections();
+  }
 };
 
 window.openPause = () => byId('pauseModal').classList.add('open');
@@ -302,6 +465,91 @@ function renderGateConnection(connection) {
       ? (errorMessages[connection.last_error_code] || '연결 검증에 실패했습니다. 입력 정보와 권한을 확인해 주세요.')
       : '암호화 저장 완료 · 고정 IP Trading Worker의 검증을 기다리고 있습니다.';
   detail.className = `verification-detail ${connection.status === 'ERROR' ? 'neg' : verified ? 'pos' : ''}`;
+}
+
+function renderAdminMasterGateConnection(connection) {
+  const status = byId('adminMasterGateStatus');
+  if (!status) return;
+  const setState = (id, text, className = 'warn') => {
+    const element = byId(id);
+    if (!element) return;
+    element.textContent = text;
+    element.className = className;
+  };
+  if (!connection) {
+    status.textContent = '미연결';
+    status.className = 'chip yellow';
+    setState('adminGateFuturesRead', '확인 대기');
+    setState('adminGateTrade', '확인 대기');
+    setState('adminGateWorker', workerPublicIp ? '검증 대기' : '미설정');
+    setState('adminGateWithdrawal', 'DISABLED 확인 필요');
+    byId('adminGateVerificationDetail').textContent = 'UID와 API Key, Secret Key를 입력해 주세요.';
+    return;
+  }
+  byId('adminGateUid').value = connection.gate_uid || '';
+  byId('adminGateApiKey').placeholder = connection.api_key_last4 ? `저장됨 ····${connection.api_key_last4}` : 'API Key 입력';
+  const verified = connection.status === 'VERIFIED';
+  const errored = connection.status === 'ERROR';
+  const labels = { VERIFIED: '연결됨', VERIFYING: '검증 중', ERROR: '연결 오류', DISABLED: '비활성', PENDING_VERIFICATION: '검증 대기' };
+  status.textContent = labels[connection.status] || '검증 대기';
+  status.className = verified ? 'chip' : errored ? 'chip red' : 'chip yellow';
+  setState('adminGateFuturesRead', verified && connection.futures_read ? 'PASS' : '확인 대기', verified && connection.futures_read ? 'pos' : 'warn');
+  setState('adminGateTrade', connection.permissions_confirmed ? '설정 확인' : '확인 필요', connection.permissions_confirmed ? 'pos' : 'warn');
+  setState('adminGateWorker', connection.ip_whitelisted ? '접속 통과' : workerPublicIp ? '검증 대기' : '미설정', connection.ip_whitelisted ? 'pos' : 'warn');
+  setState('adminGateWithdrawal', connection.withdrawal_disabled ? 'DISABLED' : '확인 필요', connection.withdrawal_disabled ? 'pos' : 'neg');
+  const errorMessages = {
+    INVALID_CREDENTIALS: 'API Key 또는 Secret Key를 확인해 주세요.',
+    UID_MISMATCH: '입력한 UID와 API Key 계정이 일치하지 않습니다.',
+    IP_NOT_ALLOWED: 'Gate.io Whitelist에 Worker 고정 IP를 등록해 주세요.',
+    FUTURES_READ_REQUIRED: 'Perpetual Futures Read 권한을 확인해 주세요.',
+    GATE_UNREACHABLE: 'Gate.io 연결이 지연되고 있습니다.',
+  };
+  byId('adminGateVerificationDetail').textContent = verified
+    ? `Master Futures 계정 검증 완료${connection.last_checked_at ? ` · ${new Date(connection.last_checked_at).toLocaleString('ko-KR')}` : ''}`
+    : errored
+      ? (errorMessages[connection.last_error_code] || '연결 검증에 실패했습니다. 입력 정보와 권한을 확인해 주세요.')
+      : workerPublicIp
+        ? '암호화 저장 완료 · Trading Worker 검증을 기다리고 있습니다.'
+        : '암호화 저장 완료 · Worker 고정 IP 연결 전까지 주문 실행은 중지됩니다.';
+}
+
+async function loadAdminMasterGateConnection(showError = true) {
+  if (!supabase || currentProfile?.role !== 'ADMIN') return;
+  const { data, error } = await supabase.rpc('get_admin_master_gate_api_connection');
+  if (error) {
+    if (showError) window.toast('Master API 연결 상태를 불러오지 못했습니다.');
+    return;
+  }
+  renderAdminMasterGateConnection(data);
+}
+
+async function saveAdminGateApiCredentials() {
+  if (!supabase || currentProfile?.role !== 'ADMIN' || adminGateApiBusy) return;
+  const gateUid = byId('adminGateUid').value.trim();
+  const apiKey = byId('adminGateApiKey').value.trim();
+  const secretKey = byId('adminGateSecretKey').value.trim();
+  const permissionConfirmed = byId('adminGatePermissionConfirmed').checked;
+  if (!gateUid || apiKey.length < 16 || secretKey.length < 16) return window.toast('Master UID와 API Key, Secret Key를 정확히 입력해 주세요.');
+  if (!permissionConfirmed) return window.toast('선물 권한과 출금 권한 설정을 확인해 주세요.');
+  adminGateApiBusy = true;
+  const button = byId('adminGateApiConnect');
+  button.disabled = true;
+  button.textContent = '암호화 저장 중...';
+  const { data, error } = await supabase.rpc('save_admin_gate_api_credentials', {
+    p_gate_uid: gateUid,
+    p_api_key: apiKey,
+    p_secret_key: secretKey,
+    p_permission_confirmed: permissionConfirmed,
+  });
+  byId('adminGateApiKey').value = '';
+  byId('adminGateSecretKey').value = '';
+  button.disabled = false;
+  button.textContent = '암호화 저장 및 검증 요청';
+  adminGateApiBusy = false;
+  if (error) return window.toast('Master API 정보를 저장하지 못했습니다. 입력값과 관리자 권한을 확인해 주세요.');
+  renderAdminMasterGateConnection(data);
+  window.toast(workerPublicIp ? '암호화 저장 완료 · Worker 검증을 요청했습니다.' : '암호화 저장 완료 · Worker 연결 전까지 안전 중지 상태입니다.');
+  await loadAdminMasterGateConnection(false);
 }
 
 function stopGateStatusPolling() {
@@ -375,6 +623,144 @@ function escapeHtml(value = '') {
   return String(value).replace(/[&<>'"]/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' })[char]);
 }
 
+function formatUsd(value) {
+  const number = Number(value || 0);
+  const sign = number > 0 ? '+' : number < 0 ? '-' : '';
+  return `${sign}$${Math.abs(number).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
+function formatCompactUsd(value) {
+  return `$${Number(value || 0).toLocaleString('en-US', { notation: 'compact', maximumFractionDigits: 2 })}`;
+}
+
+function analysisNode(prefix, suffix) {
+  return byId(`${prefix}${suffix}`);
+}
+
+function renderTradingAnalysis(data, prefix = 'analysis') {
+  const totals = data?.totals || {};
+  const days = Array.isArray(data?.days) ? data.days : [];
+  const symbols = Array.isArray(data?.symbols) ? data.symbols : [];
+  const hasData = days.length > 0 || Number(totals.trade_count || 0) > 0;
+  analysisNode(prefix, 'Empty').classList.toggle('hidden', hasData);
+  analysisNode(prefix, 'Content').classList.toggle('hidden', !hasData);
+  analysisNode(prefix, 'Period').textContent = data?.started_on ? `${data.started_on} — ${data.ended_on}` : '카피 시작 전';
+  if (!hasData) return;
+  const grossProfit = Number(totals.gross_profit || 0);
+  const grossLoss = Number(totals.gross_loss || 0);
+  const netPnl = Number(totals.net_pnl || 0);
+  analysisNode(prefix, 'GrossProfit').textContent = formatUsd(grossProfit);
+  analysisNode(prefix, 'GrossLoss').textContent = formatUsd(grossLoss);
+  analysisNode(prefix, 'WinCount').textContent = `이익 정산 ${Number(totals.wins || 0).toLocaleString('ko-KR')}건`;
+  analysisNode(prefix, 'LossCount').textContent = `손실 정산 ${Number(totals.losses || 0).toLocaleString('ko-KR')}건`;
+  analysisNode(prefix, 'NetPnl').textContent = formatUsd(netPnl);
+  analysisNode(prefix, 'NetPnl').className = netPnl > 0 ? 'pos' : netPnl < 0 ? 'neg' : '';
+  analysisNode(prefix, 'WinRate').textContent = totals.win_rate == null ? '-' : `${Number(totals.win_rate).toFixed(1)}%`;
+  analysisNode(prefix, 'AverageProfit').textContent = totals.average_profit == null ? '-' : formatUsd(totals.average_profit);
+  analysisNode(prefix, 'AverageLoss').textContent = totals.average_loss == null ? '-' : formatUsd(totals.average_loss);
+  analysisNode(prefix, 'ProfitFactor').textContent = totals.profit_factor == null ? '-' : `${Number(totals.profit_factor).toFixed(2)} : 1`;
+  analysisNode(prefix, 'FeesFunding').textContent = formatUsd(Number(totals.funding_pnl || 0) - Number(totals.fees || 0));
+  const totalAbs = grossProfit + Math.abs(grossLoss) || 1;
+  analysisNode(prefix, 'ProfitBar').style.width = `${Math.max(4, grossProfit / totalAbs * 100)}%`;
+  analysisNode(prefix, 'LossBar').style.width = `${Math.max(4, Math.abs(grossLoss) / totalAbs * 100)}%`;
+
+  const latestDate = new Date(`${days.at(-1)?.date || data.ended_on}T00:00:00`);
+  const year = latestDate.getFullYear();
+  const month = latestDate.getMonth();
+  analysisNode(prefix, 'MonthLabel').textContent = `${year}.${String(month + 1).padStart(2, '0')}`;
+  const pnlByDate = new Map(days.map((day) => [day.date, Number(day.net_pnl || 0)]));
+  const firstWeekday = new Date(year, month, 1).getDay();
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  const cells = Array.from({ length: firstWeekday }, () => '<div class="blank"></div>');
+  for (let day = 1; day <= daysInMonth; day += 1) {
+    const key = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+    const pnl = pnlByDate.get(key);
+    cells.push(`<div class="${pnl > 0 ? 'gain' : pnl < 0 ? 'loss' : ''}"><span>${day}</span><b>${pnl == null ? '-' : formatUsd(pnl)}</b></div>`);
+  }
+  analysisNode(prefix, 'Calendar').innerHTML = '<small>일</small><small>월</small><small>화</small><small>수</small><small>목</small><small>금</small><small>토</small>' + cells.join('');
+
+  const maxSymbolPnl = Math.max(...symbols.map((item) => Math.abs(Number(item.net_pnl || 0))), 1);
+  analysisNode(prefix, 'Symbols').innerHTML = symbols.length ? symbols.slice(0, 10).map((item, index) => {
+    const pnl = Number(item.net_pnl || 0);
+    return `<div class="analysis-symbol"><div><span>${index + 1}</span><b>${escapeHtml(item.contract)}</b><strong class="${pnl > 0 ? 'pos' : pnl < 0 ? 'neg' : ''}">${formatUsd(pnl)}</strong></div><i><em class="${pnl < 0 ? 'negative' : ''}" style="width:${Math.max(4, Math.abs(pnl) / maxSymbolPnl * 100)}%"></em></i><small>정산 ${Number(item.trade_count || 0).toLocaleString('ko-KR')}건</small></div>`;
+  }).join('') : '<div class="empty-cell">종목별 집계 데이터가 없습니다.</div>';
+}
+
+async function loadTradingAnalysis() {
+  if (!supabase || currentProfile?.role !== 'MEMBER' || memberAnalysisBusy) return;
+  memberAnalysisBusy = true;
+  const { data, error } = await supabase.rpc('get_my_trading_analysis');
+  memberAnalysisBusy = false;
+  if (error) return window.toast('수익 분석을 불러오지 못했습니다.');
+  renderTradingAnalysis(data);
+}
+
+async function loadAdminAnalysisMembers() {
+  if (!supabase || currentProfile?.role !== 'ADMIN') return;
+  const select = byId('adminAnalysisMember');
+  if (!select || select.options.length > 1) return;
+  const { data, error } = await supabase.from('profiles').select('id,full_name,email').eq('role', 'MEMBER').eq('approval_status', 'APPROVED').order('full_name');
+  if (error) return window.toast('수익 조회 회원을 불러오지 못했습니다.');
+  select.insertAdjacentHTML('beforeend', (data || []).map((member) => `<option value="${member.id}">${escapeHtml(member.full_name || '-')} · ${escapeHtml(member.email || '-')}</option>`).join(''));
+}
+
+async function loadAdminMemberTradingAnalysis() {
+  if (!supabase || currentProfile?.role !== 'ADMIN' || memberAnalysisBusy) return;
+  const userId = byId('adminAnalysisMember')?.value;
+  if (!userId) return window.toast('조회할 회원을 선택해 주세요.');
+  memberAnalysisBusy = true;
+  const { data, error } = await supabase.rpc('get_admin_member_trading_analysis', { p_user_id: userId });
+  memberAnalysisBusy = false;
+  if (error) return window.toast('회원 수익 분석을 불러오지 못했습니다.');
+  renderTradingAnalysis(data, 'adminAnalysis');
+}
+
+function closeMemberDetail() {
+  const modal = byId('memberDetailModal');
+  if (!modal) return;
+  modal.classList.remove('open');
+  modal.setAttribute('aria-hidden', 'true');
+}
+
+async function openMemberDetail(userId) {
+  if (!supabase || currentProfile?.role !== 'ADMIN' || memberDetailBusy) return;
+  const modal = byId('memberDetailModal');
+  modal.classList.add('open');
+  modal.setAttribute('aria-hidden', 'false');
+  byId('memberDetailTitle').textContent = '불러오는 중...';
+  byId('memberDetailEmail').textContent = '';
+  byId('memberDetailSummary').innerHTML = '';
+  byId('memberMonthlyPerformance').innerHTML = '<tr><td colspan="6" class="empty-cell">월별 수익을 불러오는 중입니다.</td></tr>';
+  memberDetailBusy = true;
+  const { data, error } = await supabase.rpc('get_admin_member_monthly_performance', {
+    p_user_id: userId,
+    p_months: 12,
+  });
+  memberDetailBusy = false;
+  if (error) {
+    byId('memberDetailTitle').textContent = '조회 실패';
+    byId('memberMonthlyPerformance').innerHTML = '<tr><td colspan="6" class="empty-cell neg">회원 수익 정보를 불러오지 못했습니다.</td></tr>';
+    return;
+  }
+  const member = data?.member || {};
+  const months = Array.isArray(data?.months) ? data.months : [];
+  byId('memberDetailTitle').textContent = member.full_name || '-';
+  byId('memberDetailEmail').textContent = member.email || '-';
+  byId('memberDetailStatus').textContent = member.approval_status || '-';
+  byId('memberDetailStatus').className = member.approval_status === 'APPROVED' ? 'chip' : 'chip yellow';
+  byId('memberDetailSummary').innerHTML = `
+    <div><small>권한</small><b>${escapeHtml(member.role || '-')}</b></div>
+    <div><small>Copy Ratio</small><b>${Number(member.copy_ratio ?? 100)}%</b></div>
+    <div><small>최대 포지션 비중</small><b>${Number(member.max_position_ratio ?? 30)}%</b></div>
+    <div><small>가입일</small><b>${member.created_at ? new Date(member.created_at).toLocaleDateString('ko-KR') : '-'}</b></div>`;
+  byId('memberMonthlyPerformance').innerHTML = months.length ? months.map((month) => {
+    const netPnl = Number(month.net_pnl || 0);
+    const returnPct = month.return_pct == null ? null : Number(month.return_pct);
+    const winRate = month.win_rate == null ? null : Number(month.win_rate);
+    return `<tr><td>${new Date(`${month.month}T00:00:00`).toLocaleDateString('ko-KR', { year: 'numeric', month: 'long' })}</td><td class="${netPnl > 0 ? 'pos' : netPnl < 0 ? 'neg' : ''}">${formatUsd(netPnl)}</td><td class="${returnPct > 0 ? 'pos' : returnPct < 0 ? 'neg' : ''}">${returnPct == null ? '-' : `${returnPct > 0 ? '+' : ''}${returnPct.toFixed(2)}%`}</td><td>${formatCompactUsd(month.trading_volume)}</td><td>${Number(month.trade_count || 0).toLocaleString('ko-KR')}건</td><td>${winRate == null ? '-' : `${winRate.toFixed(1)}%`}</td></tr>`;
+  }).join('') : '<tr><td colspan="6" class="empty-cell">아직 집계된 월별 수익 데이터가 없습니다.<small>Trading Worker 연결 후 실제 거래 데이터를 기준으로 자동 집계됩니다.</small></td></tr>';
+}
+
 async function loadAdminMembers() {
   if (!supabase || currentProfile?.role !== 'ADMIN') return;
   const { data, error } = await supabase.from('profiles').select('id,email,full_name,phone,approval_status,role,copy_ratio,max_position_ratio,created_at').order('created_at', { ascending: false });
@@ -386,7 +772,7 @@ async function loadAdminMembers() {
   `).join('') : '<tr><td colspan="5" class="empty-cell">승인 대기 회원이 없습니다.</td></tr>';
   const members = data.filter((profile) => profile.approval_status !== 'PENDING');
   byId('memberList').innerHTML = members.length ? members.map((profile) => `
-    <div class="member"><div><b>${escapeHtml(profile.full_name || '-')}</b><small>${escapeHtml(profile.email || '-')}</small></div><div><small>권한</small><b>${escapeHtml(profile.role)}</b></div><div><small>승인</small><b class="${profile.approval_status === 'APPROVED' ? 'pos' : 'warn'}">${escapeHtml(profile.approval_status)}</b></div><div><small>Copy Ratio</small><b>${Number(profile.copy_ratio ?? 100)}%</b></div><div><small>최대 포지션 비중</small><b>${Number(profile.max_position_ratio ?? 30)}%</b></div><div><small>가입일</small><b>${new Date(profile.created_at).toLocaleDateString('ko-KR')}</b></div><button class="btn" disabled>상세</button></div>
+    <div class="member"><div><b>${escapeHtml(profile.full_name || '-')}</b><small>${escapeHtml(profile.email || '-')}</small></div><div><small>권한</small><b>${escapeHtml(profile.role)}</b></div><div><small>승인</small><b class="${profile.approval_status === 'APPROVED' ? 'pos' : 'warn'}">${escapeHtml(profile.approval_status)}</b></div><div><small>Copy Ratio</small><b>${Number(profile.copy_ratio ?? 100)}%</b></div><div><small>최대 포지션 비중</small><b>${Number(profile.max_position_ratio ?? 30)}%</b></div><div><small>가입일</small><b>${new Date(profile.created_at).toLocaleDateString('ko-KR')}</b></div><button class="btn" type="button" data-member-detail="${profile.id}">상세</button></div>
   `).join('') : '<div class="notice">표시할 회원이 없습니다.</div>';
 }
 
@@ -413,9 +799,18 @@ async function loadAdminGateConnections() {
 
 document.addEventListener('click', async (event) => {
   if (event.target.id === 'pauseModal') window.closePause();
+  if (event.target.id === 'legalModal' || event.target.closest('[data-legal-close]')) closeLegal();
+  const legalOpen = event.target.closest('[data-legal-open]');
+  if (legalOpen) openLegal(legalOpen.dataset.legalOpen);
+  const legalTab = event.target.closest('[data-legal-tab]');
+  if (legalTab) setLegalTab(legalTab.dataset.legalTab);
+  if (event.target.id === 'memberDetailModal' || event.target.closest('[data-member-detail-close]')) closeMemberDetail();
   const navButton = event.target.closest('.nav-btn[data-page]');
   if (navButton) window.openPage(navButton.dataset.page);
   if (event.target.closest('#copySettingsSave')) await saveCopySettings();
+  if (event.target.closest('#adminAnalysisLoad')) await loadAdminMemberTradingAnalysis();
+  const memberDetailButton = event.target.closest('[data-member-detail]');
+  if (memberDetailButton) await openMemberDetail(memberDetailButton.dataset.memberDetail);
   const approvalButton = event.target.closest('[data-approval]');
   if (!approvalButton || currentProfile?.role !== 'ADMIN') return;
   approvalButton.disabled = true;
@@ -432,12 +827,19 @@ document.addEventListener('click', async (event) => {
 
 document.addEventListener('keydown', (event) => {
   if (event.key === 'Escape' && byId('pauseModal')?.classList.contains('open')) window.closePause();
+  if (event.key === 'Escape' && byId('memberDetailModal')?.classList.contains('open')) closeMemberDetail();
+  if (event.key === 'Escape' && byId('legalModal')?.classList.contains('open')) closeLegal();
 });
 
 document.addEventListener('submit', async (event) => {
-  if (event.target.id !== 'gateApiForm') return;
-  event.preventDefault();
-  await saveGateApiCredentials();
+  if (event.target.id === 'gateApiForm') {
+    event.preventDefault();
+    await saveGateApiCredentials();
+  }
+  if (event.target.id === 'adminGateApiForm') {
+    event.preventDefault();
+    await saveAdminGateApiCredentials();
+  }
 });
 
 async function boot() {
@@ -445,6 +847,10 @@ async function boot() {
   enhanceGateApiForm();
   enhancePauseModal();
   enhanceAdminApiPage();
+  enhanceMemberDetailModal();
+  enhanceLegalUi();
+  enhanceMemberAnalysisPage();
+  enhanceAdminMemberAnalysisPage();
   if (!configured) {
     showAuth('login');
     setAuthMessage('Supabase 환경변수를 설정하면 실제 회원가입과 로그인이 활성화됩니다.', 'warn-box');

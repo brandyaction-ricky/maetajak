@@ -64,7 +64,8 @@ test('Gate.io verification is queued for a fixed-IP worker and uses signed Futur
   assert.match(gateWorker, /UID_MISMATCH/);
   assert.match(script, /loadAdminGateConnections/);
   assert.match(script, /gateStatusTimer/);
-  assert.match(script, /146\.56\.140\.75/);
+  assert.match(script, /VITE_TRADING_WORKER_IP/);
+  assert.doesNotMatch(script, /146\.56\.140\.75/);
 });
 
 test('pause modal can be dismissed safely', () => {

@@ -295,6 +295,72 @@ td,
   padding-right: 48px;
 }
 
+.member-detail-modal {
+  width: min(920px, calc(100vw - 32px));
+  max-height: min(780px, calc(100dvh - 32px));
+  overflow-y: auto;
+}
+
+.member-detail-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+  padding-right: 52px;
+}
+
+.member-detail-head small,
+.member-detail-head p {
+  margin: 0;
+  color: #888;
+  font-size: 11px;
+}
+
+.member-detail-head h3 {
+  margin: 5px 0 3px;
+  font-size: 24px;
+}
+
+.member-detail-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  margin: 22px 0 26px;
+}
+
+.member-detail-summary > div {
+  min-height: 86px;
+  padding: 16px;
+  border: 1px solid #303030;
+  border-radius: 10px;
+  background: #121212;
+}
+
+.member-detail-summary small,
+.member-detail-summary b {
+  display: block;
+}
+
+.member-detail-summary small {
+  margin-bottom: 9px;
+  color: #888;
+  font-size: 10px;
+}
+
+.member-performance-title {
+  margin-bottom: 10px;
+}
+
+.member-performance-table {
+  min-width: 720px;
+}
+
+.member-performance-table .empty-cell small {
+  display: block;
+  margin-top: 6px;
+  color: #777;
+}
+
 .member {
   grid-template-columns: minmax(180px, 1.5fr) repeat(5, minmax(78px, 0.7fr)) auto;
 }
@@ -363,6 +429,285 @@ td,
   line-height: 1.55;
 }
 
+.admin-api-setup {
+  display: grid;
+  grid-template-columns: minmax(0, 1.45fr) minmax(300px, 0.75fr);
+  gap: 18px;
+  margin-bottom: 18px;
+}
+
+.admin-api-setup > .card {
+  min-height: 360px;
+  height: 100%;
+}
+
+.admin-api-fields {
+  display: grid;
+  grid-template-columns: minmax(130px, 0.55fr) minmax(220px, 1fr) minmax(220px, 1fr);
+  gap: 12px;
+}
+
+.admin-api-submit-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.admin-api-submit-row .btn {
+  min-height: 48px;
+}
+
+.admin-api-submit-row p {
+  margin: 0;
+  color: #888;
+  font-size: 11px;
+}
+
+.admin-master-security .section-head {
+  margin-bottom: 18px;
+}
+
+.admin-master-security .section-head p {
+  max-width: 420px;
+  margin: 6px 0 0;
+  line-height: 1.55;
+}
+
+#admin-api > .kpis {
+  margin-top: 0;
+}
+
+.terms-consent {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  color: #9badbd;
+  font-size: 11px;
+  line-height: 1.6;
+}
+
+.terms-consent input {
+  flex: 0 0 auto;
+  margin-top: 3px;
+}
+
+.legal-link {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #f2f2f2;
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.legal-modal-bg {
+  z-index: 1000;
+}
+
+.legal-modal {
+  width: min(880px, calc(100vw - 32px));
+  max-height: min(850px, calc(100dvh - 32px));
+  overflow-y: auto;
+}
+
+.legal-head {
+  padding-right: 54px;
+}
+
+.legal-head small {
+  color: #888;
+  font-size: 10px;
+}
+
+.legal-head h2 {
+  margin: 6px 0 18px;
+}
+
+.legal-tabs {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 20px;
+}
+
+.legal-document section {
+  padding: 16px 0;
+  border-bottom: 1px solid #2d2d2d;
+}
+
+.legal-document h3 {
+  margin: 0 0 8px;
+  font-size: 15px;
+}
+
+.legal-document p {
+  margin: 0;
+  color: #aaa;
+  font-size: 12px;
+  line-height: 1.8;
+}
+
+.legal-review-warning {
+  margin-top: 18px !important;
+  padding: 14px;
+  border: 1px solid #6b3a3a;
+  border-radius: 9px;
+  background: #291516;
+  color: #f4b9b9 !important;
+}
+
+.analysis-hero {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+  margin-bottom: 16px;
+  background: #10181c;
+}
+
+.analysis-eyebrow {
+  color: var(--green);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: .22em;
+}
+
+.analysis-hero h2 {
+  margin: 8px 0 5px;
+  font-size: 25px;
+}
+
+.analysis-hero p,
+.analysis-profit-loss span,
+.analysis-footnote {
+  margin: 0;
+  color: #858f94;
+  font-size: 11px;
+}
+
+.analysis-period {
+  padding: 10px 12px;
+  border: 1px solid #314047;
+  border-radius: 8px;
+  color: #9cabb2;
+  font: 600 11px ui-monospace, SFMono-Regular, Menlo, monospace;
+  white-space: nowrap;
+}
+
+.analysis-empty {
+  color: #8d8d8d;
+  text-align: center;
+}
+
+.analysis-profit-loss {
+  display: grid;
+  grid-template-columns: minmax(180px, .7fr) minmax(240px, 1fr) minmax(180px, .7fr);
+  align-items: center;
+  gap: 28px;
+}
+
+.analysis-profit-loss small,
+.analysis-metrics small {
+  display: block;
+  margin-bottom: 9px;
+  color: #899399;
+  font-size: 10px;
+}
+
+.analysis-profit-loss strong {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 28px;
+}
+
+.analysis-loss {
+  text-align: right;
+}
+
+.analysis-balance {
+  display: flex;
+  height: 9px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #232a2d;
+}
+
+.analysis-balance i:first-child { background: #2ed3a4; }
+.analysis-balance i:last-child { background: #f25978; }
+
+.analysis-metrics {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 10px;
+  margin: 12px 0;
+}
+
+.analysis-metrics .card {
+  min-height: 92px;
+  padding: 16px;
+}
+
+.analysis-metrics b { font-size: 17px; }
+
+.analysis-lower {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(280px, .95fr);
+  gap: 12px;
+}
+
+.analysis-calendar {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 6px;
+  margin-top: 18px;
+}
+
+.analysis-calendar > small {
+  padding: 4px;
+  color: #778086;
+  text-align: center;
+}
+
+.analysis-calendar > div {
+  display: flex;
+  min-height: 64px;
+  padding: 9px;
+  flex-direction: column;
+  justify-content: space-between;
+  border: 1px solid #293238;
+  border-radius: 8px;
+  background: #111619;
+}
+
+.analysis-calendar > div.blank { visibility: hidden; }
+.analysis-calendar > div.gain { border-color: #176148; background: #0d2a21; }
+.analysis-calendar > div.loss { border-color: #713342; background: #32151c; }
+.analysis-calendar span { color: #899399; font-size: 10px; }
+.analysis-calendar b { font-size: 10px; text-align: right; }
+.analysis-calendar .gain b { color: #32d7a8; }
+.analysis-calendar .loss b { color: #ff6683; }
+
+.analysis-symbol { margin: 15px 0; }
+.analysis-symbol > div { display: grid; grid-template-columns: 24px 1fr auto; align-items: center; gap: 6px; }
+.analysis-symbol > div span { display: grid; width: 22px; height: 22px; place-items: center; border-radius: 6px; background: #222a2e; color: #879096; font-size: 9px; }
+.analysis-symbol > div b, .analysis-symbol > div strong { font-size: 11px; }
+.analysis-symbol > i { display: block; height: 5px; margin: 7px 0 5px; border-radius: 99px; background: #242b2f; }
+.analysis-symbol > i em { display: block; height: 100%; border-radius: inherit; background: #2ed3a4; }
+.analysis-symbol > i em.negative { background: #f25978; }
+.analysis-symbol > small { color: #747e83; font-size: 9px; }
+.analysis-footnote { margin-top: 12px; }
+
+.admin-analysis-selector {
+  display: grid;
+  grid-template-columns: minmax(260px, 520px) auto;
+  align-items: end;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.admin-analysis-selector .btn { min-height: 48px; }
+
 #adminGateConnections td:first-child small {
   display: block;
   margin-top: 3px;
@@ -413,6 +758,22 @@ td,
 
   .table table {
     min-width: 660px;
+  }
+
+  .admin-api-setup,
+  .admin-api-fields {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .analysis-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .analysis-lower { grid-template-columns: minmax(0, 1fr); }
+  .analysis-profit-loss { grid-template-columns: minmax(0, 1fr); gap: 18px; }
+  .analysis-loss { text-align: left; }
+  .analysis-balance { grid-row: 2; }
+  .admin-analysis-selector { grid-template-columns: minmax(0, 1fr); }
+
+  .admin-api-setup > .card {
+    min-height: 0;
   }
 }
 
@@ -632,6 +993,24 @@ td,
     padding: 22px 18px calc(22px + env(safe-area-inset-bottom));
   }
 
+  .member-detail-modal {
+    max-height: calc(100dvh - 18px);
+  }
+
+  .legal-modal {
+    max-height: calc(100dvh - 18px);
+  }
+
+  .member-detail-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    margin: 18px 0 22px;
+  }
+
+  .member-detail-summary > div {
+    min-height: 78px;
+    padding: 14px;
+  }
+
   .modal-close {
     top: 12px;
     right: 12px;
@@ -694,6 +1073,16 @@ td,
 
   #gateApiForm .permission-check {
     font-size: 12px;
+  }
+
+  .admin-api-submit-row {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .admin-api-submit-row .btn {
+    width: 100%;
+    min-height: 52px;
   }
 }
 
