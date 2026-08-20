@@ -35,6 +35,7 @@ test('mobile breakpoints and two-column mobile KPI layout remain present', () =>
   assert.match(html, /@media\s*\(max-width:\s*950px\)/);
   assert.match(html, /@media\s*\(max-width:\s*560px\)/);
   assert.match(html, /\.kpis\s*\{\s*grid-template-columns:repeat\(2,1fr\)/s);
+  assert.match(readFileSync(new URL('../src/theme.css', import.meta.url), 'utf8'), /env\(safe-area-inset-bottom\)/);
 });
 
 test('browser code contains no privileged credentials or local storage secret handling', () => {
