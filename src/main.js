@@ -90,6 +90,8 @@ function enhanceGateApiForm() {
     <div class="metric"><span>Withdrawal</span><b id="gateWithdrawal" class="warn">사용자 확인 필요</b></div>
     <p id="gateVerificationDetail" class="verification-detail">실제 연결 검증 전입니다.</p>
   `;
+  const notificationCard = cards[2];
+  if (notificationCard) notificationCard.innerHTML = `<div class="section-head"><h3>알림 상태</h3></div><div class="metric"><span>사이트 운영 이벤트</span><b class="pos">ON</b></div><div class="metric"><span>Worker 외부 장애 알림</span><b class="warn">VPS 설정 필요</b></div><p class="verification-detail">고정 IP Worker의 ALERT_WEBHOOK_URL을 설정하면 API 검증 실패·Worker 장애·자동중단을 외부 채널로 전송합니다.</p>`;
 }
 
 function enhancePauseModal() {

@@ -25,6 +25,8 @@ chmod 600 .env.worker
 
 `.env.worker`에서 `SUPABASE_SERVICE_ROLE_KEY`, 실제 고정 `WORKER_PUBLIC_IP`를 입력합니다. 이 파일은 Git에 올리지 않습니다. 회원과 Master API 연결 검증은 Gate.io의 `account/detail`과 `account/main_keys`를 조회해 Worker IP Whitelist, 활성 Key 상태, Futures Read/Write, 불필요한 쓰기 권한 비활성화를 실제 응답으로 확인합니다.
 
+장애를 사이트 밖에서도 즉시 확인하려면 `ALERT_WEBHOOK_URL`을 운영 알림 Webhook으로 설정합니다. 수신 서버가 Bearer 인증을 지원하면 `ALERT_WEBHOOK_BEARER`도 함께 설정합니다. 전송 내용에는 API Key·Secret Key·Service Role Key가 포함되지 않습니다.
+
 ```bash
 docker compose -f docker-compose.worker.yml up -d --build
 docker compose -f docker-compose.worker.yml logs -f --tail=100

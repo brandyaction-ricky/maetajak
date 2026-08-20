@@ -2,6 +2,7 @@ import { createClient } from '@supabase/supabase-js';
 import { randomUUID } from 'node:crypto';
 import { verifyGateAccount } from './gate.js';
 import { TradingRunner } from './trading-runner.js';
+import { sendWorkerAlert } from './alerts.js';
 
 const supabaseUrl = process.env.SUPABASE_URL;
 const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -13,6 +14,8 @@ const workerVersion = process.env.WORKER_VERSION || process.env.npm_package_vers
 const workerPublicIp = process.env.WORKER_PUBLIC_IP || '';
 const tradingMode = process.env.TRADING_MODE || 'OBSERVE';
 const readinessCheck = process.env.RUN_READINESS_CHECK === 'true';
+const alertWebhookUrl = process.env.ALERT_WEBHOOK_URL || '';
+const alertWebhookBearer = process.env.ALERT_WEBHOOK_BEARER || '';
 if (!supabaseUrl || !serviceRoleKey) throw new Error('SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required');
 if (tradingMode === 'LIVE' && (!workerPublicIp || baseUrl !== 'https://api.gateio.ws')) {
   throw new Error('LIVE mode requires WORKER_PUBLIC_IP and the production Gate API base URL');
@@ -40,6 +43,7 @@ export async function runVerificationBatch() {
         p_worker_public_ip: workerPublicIp || null,
       });
       if (completionError) throw completionError;
+      if (!result.success) await sendWorkerAlert({ webhookUrl: alertWebhookUrl, bearerToken: alertWebhookBearer, event: 'GATE_API_VERIFICATION_FAILED', details: { gate_uid: job.gate_uid, error_code: result.errorCode || 'UNKNOWN' } });
     }
   } catch (error) {
     log('verification_error', { code: error instanceof Error ? error.message : 'unknown' });
@@ -59,7 +63,12 @@ export async function runTradingCycle() {
     if (observation.observed || reconciled || submitted) log('cycle_complete', { ...observation, reconciled, submitted });
   } catch (error) {
     const code = error instanceof Error ? error.message : 'unknown';
-    try { await runner.reportCycle(false, code); }
+    try {
+      const failure = await runner.reportCycle(false, code);
+      if ([1, 3].includes(Number(failure?.consecutive_failures)) || Number(failure?.consecutive_failures) % 10 === 0) {
+        await sendWorkerAlert({ webhookUrl: alertWebhookUrl, bearerToken: alertWebhookBearer, event: Number(failure?.consecutive_failures) >= 3 ? 'COPY_SYSTEM_AUTO_HALTED' : 'WORKER_CYCLE_FAILED', severity: 'CRITICAL', details: { failures: failure?.consecutive_failures, error_code: failure?.last_error_code || code } });
+      }
+    }
     catch (reportError) { log('worker_failure_report_error', { code: reportError instanceof Error ? reportError.message : 'unknown' }); }
     log('trading_cycle_error', { code });
   } finally { state.trading = false; }
