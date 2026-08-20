@@ -99,6 +99,7 @@ test('mobile breakpoints and two-column mobile KPI layout remain present', () =>
   assert.match(theme, /scrollbar-width:\s*none/);
   assert.match(theme, /env\(safe-area-inset-bottom\)/);
   assert.match(theme, /#member-account \.half\s*\{[^}]*grid-auto-rows:\s*1fr/s);
+  assert.match(theme, /#member-account \.card > \.field \+ \.field\s*\{[^}]*margin-top:\s*16px/s);
 });
 
 test('browser code contains no privileged credentials or local storage secret handling', () => {

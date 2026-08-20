@@ -375,6 +375,10 @@ td,
   height: 100%;
 }
 
+#member-account .card > .field + .field {
+  margin-top: 16px;
+}
+
 .permission-check {
   display: flex;
   align-items: flex-start;
@@ -443,8 +447,14 @@ td,
 
 .admin-api-fields {
   display: grid;
-  grid-template-columns: minmax(130px, 0.55fr) minmax(220px, 1fr) minmax(220px, 1fr);
+  grid-template-columns: minmax(0, 1fr);
   gap: 12px;
+}
+
+.admin-api-fields .field,
+.admin-api-fields .field input {
+  width: 100%;
+  min-width: 0;
 }
 
 .admin-api-submit-row {

@@ -30,3 +30,8 @@ test('admin API layout stacks safely on mobile', () => {
   assert.match(theme, /\.admin-api-setup\s*\{[^}]*grid-template-columns/s);
   assert.match(theme, /@media \(max-width: 950px\)[\s\S]*\.admin-api-setup,[\s\S]*\.admin-api-fields\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\)/s);
 });
+
+test('Master UID, API key and Secret key each use a full-width row', () => {
+  assert.match(theme, /\.admin-api-fields\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\)/s);
+  assert.match(theme, /\.admin-api-fields \.field,[\s\S]*\.admin-api-fields \.field input\s*\{[^}]*width:\s*100%/s);
+});
