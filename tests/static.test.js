@@ -46,7 +46,12 @@ test('mobile breakpoints and two-column mobile KPI layout remain present', () =>
   assert.match(html, /@media\s*\(max-width:\s*950px\)/);
   assert.match(html, /@media\s*\(max-width:\s*560px\)/);
   assert.match(html, /\.kpis\s*\{\s*grid-template-columns:repeat\(2,1fr\)/s);
-  assert.match(readFileSync(new URL('../src/theme.css', import.meta.url), 'utf8'), /env\(safe-area-inset-bottom\)/);
+  const theme = readFileSync(new URL('../src/theme.css', import.meta.url), 'utf8');
+  assert.match(theme, /@media\s*\(max-width:\s*950px\)/);
+  assert.match(theme, /\.page\.active\s*>\s*\*/);
+  assert.match(theme, /scrollbar-width:\s*none/);
+  assert.match(theme, /env\(safe-area-inset-bottom\)/);
+  assert.match(theme, /#member-account \.half\s*\{[^}]*grid-auto-rows:\s*1fr/s);
 });
 
 test('browser code contains no privileged credentials or local storage secret handling', () => {
