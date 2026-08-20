@@ -12,6 +12,12 @@
   --yellow: #f59e0b;
 }
 
+html,
+body {
+  width: 100%;
+  background: #090909;
+}
+
 body {
   background: #090909;
   color: var(--text);
@@ -157,6 +163,8 @@ body {
 }
 
 .main {
+  width: 100%;
+  min-width: 0;
   background: #090909;
 }
 
@@ -289,7 +297,37 @@ td,
   }
 }
 
-@media (max-width: 560px) {
+@media (max-width: 760px) {
+  .app,
+  .content,
+  .grid,
+  .card,
+  .section,
+  .member {
+    min-width: 0;
+  }
+
+  .top > div:first-child {
+    display: flex;
+    min-width: 0;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .top h2 {
+    overflow: hidden;
+    margin: 0;
+    font-size: 21px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .top .mobile {
+    flex: 0 0 58px;
+    min-height: 50px;
+    padding-inline: 0;
+  }
+
   .auth-side {
     align-items: start;
     min-height: 100dvh;
@@ -329,7 +367,9 @@ td,
   }
 
   .content {
-    padding: 18px 12px calc(30px + env(safe-area-inset-bottom));
+    width: 100%;
+    max-width: none;
+    padding: 18px 16px calc(30px + env(safe-area-inset-bottom));
   }
 
   .card,
@@ -339,6 +379,16 @@ td,
 
   .section {
     padding: 18px;
+  }
+
+  .grid,
+  .half,
+  .two {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .kpis {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .section-head {
@@ -387,8 +437,24 @@ td,
   }
 
   .member {
-    gap: 14px 10px;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 16px 12px;
     padding: 16px;
+  }
+
+  .member > div:first-child,
+  .member > .btn {
+    grid-column: 1 / -1;
+  }
+
+  .member > .btn {
+    min-height: 46px;
+    width: 100%;
+  }
+
+  .member b,
+  .member small {
+    overflow-wrap: anywhere;
   }
 
   .events {
@@ -409,5 +475,38 @@ td,
     width: 100%;
     border-radius: 18px 18px 0 0;
     padding: 22px 18px calc(22px + env(safe-area-inset-bottom));
+  }
+
+  .tabs2 {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+  }
+
+  .tabs2 .btn {
+    min-height: 48px;
+    padding-inline: 8px;
+    white-space: nowrap;
+  }
+
+  .table {
+    width: 100%;
+    margin: 0;
+    padding: 0;
+    overflow-x: visible;
+  }
+
+  .table table {
+    min-width: 0;
+    table-layout: fixed;
+    font-size: 10px;
+  }
+
+  .table th,
+  .table td {
+    min-width: 0;
+    padding: 10px 5px;
+    overflow-wrap: anywhere;
+    white-space: normal;
   }
 }
