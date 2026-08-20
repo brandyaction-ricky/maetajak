@@ -7,6 +7,8 @@ const script = readFileSync(new URL('../src/main.js', import.meta.url), 'utf8');
 const migration = readFileSync(new URL('../supabase/migrations/202608200001_auth_profiles.sql', import.meta.url), 'utf8');
 const copySettingsMigration = readFileSync(new URL('../supabase/migrations/202608200002_copy_settings.sql', import.meta.url), 'utf8');
 const gateApiMigration = readFileSync(new URL('../supabase/migrations/202608200003_gate_api_credentials.sql', import.meta.url), 'utf8');
+const gateVerificationMigration = readFileSync(new URL('../supabase/migrations/202608200004_gate_api_verification_queue.sql', import.meta.url), 'utf8');
+const gateWorker = readFileSync(new URL('../worker/gate.js', import.meta.url), 'utf8');
 
 test('authentication controls are wired without demo credentials', () => {
   for (const id of ['loginEmail', 'loginPassword', 'signupName', 'signupPhone', 'signupEmail', 'signupPassword', 'signupPasswordConfirm', 'signupTerms', 'pendingStatusLabel']) {
@@ -52,6 +54,19 @@ test('Gate.io credentials are collected securely and encrypted server-side', () 
   assert.doesNotMatch(gateApiMigration, /secret_key\s+text\s+not null/i);
 });
 
+test('Gate.io verification is queued for a fixed-IP worker and uses signed Futures API requests', () => {
+  assert.match(gateVerificationMigration, /gate_api_verification_jobs/i);
+  assert.match(gateVerificationMigration, /claim_gate_api_verification_jobs/i);
+  assert.match(gateVerificationMigration, /complete_gate_api_verification/i);
+  assert.match(gateVerificationMigration, /service_role/i);
+  assert.match(gateWorker, /\/api\/v4\/futures\/usdt\/accounts/);
+  assert.match(gateWorker, /createHmac\('sha512'/);
+  assert.match(gateWorker, /UID_MISMATCH/);
+  assert.match(script, /loadAdminGateConnections/);
+  assert.match(script, /gateStatusTimer/);
+  assert.match(script, /146\.56\.140\.75/);
+});
+
 test('pause modal can be dismissed safely', () => {
   assert.match(script, /id="pauseModalClose"/);
   assert.match(script, /aria-label="일시중지 창 닫기"/);
@@ -77,6 +92,8 @@ test('mobile breakpoints and two-column mobile KPI layout remain present', () =>
   assert.match(html, /\.kpis\s*\{\s*grid-template-columns:repeat\(2,1fr\)/s);
   const theme = readFileSync(new URL('../src/theme.css', import.meta.url), 'utf8');
   assert.match(theme, /@media\s*\(max-width:\s*950px\)/);
+  assert.match(theme, /\.app\s*\{[^}]*display:\s*block[^}]*max-width:\s*100vw/s);
+  assert.match(theme, /\.main\s*\{[^}]*max-width:\s*100vw/s);
   assert.match(theme, /\.page\.active\s*>\s*\*/);
   assert.match(theme, /scrollbar-width:\s*none/);
   assert.match(theme, /env\(safe-area-inset-bottom\)/);
