@@ -6,6 +6,7 @@ const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
 const script = readFileSync(new URL('../src/main.js', import.meta.url), 'utf8');
 const migration = readFileSync(new URL('../supabase/migrations/202608200001_auth_profiles.sql', import.meta.url), 'utf8');
 const copySettingsMigration = readFileSync(new URL('../supabase/migrations/202608200002_copy_settings.sql', import.meta.url), 'utf8');
+const gateApiMigration = readFileSync(new URL('../supabase/migrations/202608200003_gate_api_credentials.sql', import.meta.url), 'utf8');
 
 test('authentication controls are wired without demo credentials', () => {
   for (const id of ['loginEmail', 'loginPassword', 'signupName', 'signupPhone', 'signupEmail', 'signupPassword', 'signupPasswordConfirm', 'signupTerms', 'pendingStatusLabel']) {
@@ -36,6 +37,21 @@ test('approved members can save copy settings and admins can query them', () => 
   assert.match(script, /최대 포지션 비중/);
 });
 
+test('Gate.io credentials are collected securely and encrypted server-side', () => {
+  for (const id of ['gateUid', 'gateApiKey', 'gateSecretKey', 'gatePermissionConfirmed', 'gateApiConnect']) assert.match(script, new RegExp(id));
+  assert.match(script, /type="password"/);
+  assert.match(script, /save_gate_api_credentials/);
+  assert.match(script, /gateApiKey'\)\.value = ''/);
+  assert.match(script, /gateSecretKey'\)\.value = ''/);
+  assert.match(gateApiMigration, /create schema if not exists private/i);
+  assert.match(gateApiMigration, /pgp_sym_encrypt/gi);
+  assert.match(gateApiMigration, /vault\.decrypted_secrets/i);
+  assert.match(gateApiMigration, /alter table private\.gate_api_credentials enable row level security/i);
+  assert.match(gateApiMigration, /revoke all on private\.gate_api_credentials/i);
+  assert.doesNotMatch(gateApiMigration, /api_key\s+text\s+not null/i);
+  assert.doesNotMatch(gateApiMigration, /secret_key\s+text\s+not null/i);
+});
+
 test('all navigation targets exist and IDs are unique', () => {
   const ids = [...html.matchAll(/\bid="([^"]+)"/g)].map((match) => match[1]);
   assert.equal(new Set(ids).size, ids.length);
@@ -56,7 +72,8 @@ test('mobile breakpoints and two-column mobile KPI layout remain present', () =>
 
 test('browser code contains no privileged credentials or local storage secret handling', () => {
   assert.doesNotMatch(script, /service[_-]?role/i);
-  assert.doesNotMatch(script, /gate.*secret|secret.*gate/i);
+  assert.doesNotMatch(script, /VITE_[A-Z0-9_]*SECRET|GATE_[A-Z0-9_]*SECRET/i);
+  assert.doesNotMatch(script, /gate_api_credentials_key|pgp_sym_decrypt/i);
   assert.doesNotMatch(script, /localStorage\.(setItem|getItem)/);
 });
 
