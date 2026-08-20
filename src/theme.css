@@ -115,7 +115,7 @@ body {
   width: 38px;
   height: 38px;
   border-radius: 10px;
-  filter: grayscale(1);
+  filter: none;
 }
 
 .side-brand strong {
