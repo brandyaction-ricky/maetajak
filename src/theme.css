@@ -263,6 +263,14 @@ td,
   border-color: #303030;
 }
 
+.member {
+  grid-template-columns: minmax(180px, 1.5fr) repeat(5, minmax(78px, 0.7fr)) auto;
+}
+
+#member-account .half {
+  align-items: start;
+}
+
 .notice {
   border-color: #3a3a3a;
   background: #181818;
