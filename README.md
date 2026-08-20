@@ -46,3 +46,9 @@ npm run worker:gate
 ```
 
 Keep `SUPABASE_SERVICE_ROLE_KEY` only in the worker's secret manager. The worker signs a read-only `GET /api/v4/futures/usdt/accounts` request, verifies that the returned Gate user ID matches the submitted UID, and writes only the verification result back to Supabase. Futures write permission and withdrawal disablement remain explicit member confirmations because they cannot be safely proven by placing a test order.
+
+## Copy-trading core
+
+The position-based copy engine and database control plane are documented in [`docs/COPY_ENGINE.md`](docs/COPY_ENGINE.md). The implementation calculates `Master actual position → member target position → member actual position → delta`, detects unexplained position changes as `MANUAL_OVERRIDE`, creates deterministic order idempotency keys, and provides an `UNKNOWN` reconciliation queue.
+
+Live execution is fail-closed: migration `202608210001_copy_trading_core.sql` creates the system with execution disabled and emergency halt enabled. The browser cannot enable live orders. A fixed-IP Worker and Gate TESTNET QA are required before a deployment-only activation procedure is added.
