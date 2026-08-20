@@ -43,6 +43,13 @@ function extendCopySettingOptions() {
   const maxPositionRatio = selects.find((select) => [...select.options].some((option) => option.textContent.trim() === '40%'));
   addOption(copyRatio, '200%');
   addOption(maxPositionRatio, '20%');
+  if (copyRatio) copyRatio.id = 'copyRatioSelect';
+  if (maxPositionRatio) maxPositionRatio.id = 'maxPositionRatioSelect';
+  const saveButton = document.querySelector('#member-copy .form > .btn.primary');
+  if (saveButton) {
+    saveButton.id = 'copySettingsSave';
+    saveButton.type = 'button';
+  }
 }
 
 function setAuthMessage(message = '', kind = 'error') {
@@ -75,6 +82,8 @@ function showApp(profile) {
   byId('adminNav').classList.toggle('hidden', role !== 'admin');
   byId('accountName').value = profile.full_name || '';
   byId('accountEmail').value = profile.email || '';
+  if (byId('copyRatioSelect')) byId('copyRatioSelect').value = `${Number(profile.copy_ratio ?? 100)}%`;
+  if (byId('maxPositionRatioSelect')) byId('maxPositionRatioSelect').value = `${Number(profile.max_position_ratio ?? 30)}%`;
   openPage(role === 'admin' ? 'admin-dashboard' : 'member-dashboard');
   if (role === 'admin') loadAdminMembers();
 }
@@ -193,13 +202,29 @@ window.toast = (message) => {
   window.setTimeout(() => { element.style.opacity = 0; }, 1800);
 };
 
+async function saveCopySettings() {
+  if (!supabase || !currentProfile) return;
+  const copyRatio = Number(byId('copyRatioSelect').value.replace('%', ''));
+  const maxPositionRatio = Number(byId('maxPositionRatioSelect').value.replace('%', ''));
+  const saveButton = byId('copySettingsSave');
+  saveButton.disabled = true;
+  const { data, error } = await supabase.rpc('update_my_copy_settings', {
+    new_copy_ratio: copyRatio,
+    new_max_position_ratio: maxPositionRatio,
+  });
+  saveButton.disabled = false;
+  if (error) return window.toast('카피 설정 저장에 실패했습니다.');
+  currentProfile = data;
+  window.toast('카피 설정을 저장했습니다.');
+}
+
 function escapeHtml(value = '') {
   return String(value).replace(/[&<>'"]/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' })[char]);
 }
 
 async function loadAdminMembers() {
   if (!supabase || currentProfile?.role !== 'ADMIN') return;
-  const { data, error } = await supabase.from('profiles').select('id,email,full_name,phone,approval_status,role,created_at').order('created_at', { ascending: false });
+  const { data, error } = await supabase.from('profiles').select('id,email,full_name,phone,approval_status,role,copy_ratio,max_position_ratio,created_at').order('created_at', { ascending: false });
   if (error) return window.toast('회원 목록을 불러오지 못했습니다.');
   const pending = data.filter((profile) => profile.approval_status === 'PENDING');
   byId('pendingCount').textContent = `${pending.length} PENDING`;
@@ -208,13 +233,14 @@ async function loadAdminMembers() {
   `).join('') : '<tr><td colspan="5" class="empty-cell">승인 대기 회원이 없습니다.</td></tr>';
   const members = data.filter((profile) => profile.approval_status !== 'PENDING');
   byId('memberList').innerHTML = members.length ? members.map((profile) => `
-    <div class="member"><div><b>${escapeHtml(profile.full_name || '-')}</b><small>${escapeHtml(profile.email || '-')}</small></div><div><small>권한</small><b>${escapeHtml(profile.role)}</b></div><div><small>승인</small><b class="${profile.approval_status === 'APPROVED' ? 'pos' : 'warn'}">${escapeHtml(profile.approval_status)}</b></div><div><small>가입일</small><b>${new Date(profile.created_at).toLocaleDateString('ko-KR')}</b></div><button class="btn" disabled>상세</button></div>
+    <div class="member"><div><b>${escapeHtml(profile.full_name || '-')}</b><small>${escapeHtml(profile.email || '-')}</small></div><div><small>권한</small><b>${escapeHtml(profile.role)}</b></div><div><small>승인</small><b class="${profile.approval_status === 'APPROVED' ? 'pos' : 'warn'}">${escapeHtml(profile.approval_status)}</b></div><div><small>Copy Ratio</small><b>${Number(profile.copy_ratio ?? 100)}%</b></div><div><small>최대 포지션 비중</small><b>${Number(profile.max_position_ratio ?? 30)}%</b></div><div><small>가입일</small><b>${new Date(profile.created_at).toLocaleDateString('ko-KR')}</b></div><button class="btn" disabled>상세</button></div>
   `).join('') : '<div class="notice">표시할 회원이 없습니다.</div>';
 }
 
 document.addEventListener('click', async (event) => {
   const navButton = event.target.closest('.nav-btn[data-page]');
   if (navButton) window.openPage(navButton.dataset.page);
+  if (event.target.closest('#copySettingsSave')) await saveCopySettings();
   const approvalButton = event.target.closest('[data-approval]');
   if (!approvalButton || currentProfile?.role !== 'ADMIN') return;
   approvalButton.disabled = true;
