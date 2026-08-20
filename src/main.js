@@ -604,17 +604,21 @@ function renderGateConnection(connection) {
   status.className = verified ? 'chip' : connection.status === 'ERROR' ? 'chip red' : 'chip yellow';
   byId('gateFuturesRead').textContent = verified && connection.futures_read ? 'PASS' : '확인 대기';
   byId('gateFuturesRead').className = verified && connection.futures_read ? 'pos' : 'warn';
-  byId('gateFuturesTrade').textContent = connection.permissions_confirmed ? '사용자 확인' : '확인 필요';
-  byId('gateFuturesTrade').className = connection.permissions_confirmed ? 'pos' : 'warn';
+  byId('gateFuturesTrade').textContent = verified && connection.futures_trade ? 'PASS' : '확인 대기';
+  byId('gateFuturesTrade').className = verified && connection.futures_trade ? 'pos' : 'warn';
   byId('gateIpWhitelist').textContent = connection.ip_whitelisted ? '접속 통과' : '검증 대기';
   byId('gateIpWhitelist').className = connection.ip_whitelisted ? 'pos' : 'warn';
-  byId('gateWithdrawal').textContent = connection.permissions_confirmed ? '사용자 확인' : '확인 필요';
-  byId('gateWithdrawal').className = connection.permissions_confirmed ? 'pos' : 'warn';
+  byId('gateWithdrawal').textContent = verified && connection.withdrawal_disabled ? 'DISABLED' : '확인 대기';
+  byId('gateWithdrawal').className = verified && connection.withdrawal_disabled ? 'pos' : 'warn';
   const errorMessages = {
     INVALID_CREDENTIALS: 'API Key 또는 Secret Key를 확인해 주세요.',
     UID_MISMATCH: '입력한 UID와 API Key 계정이 일치하지 않습니다.',
+    WORKER_IP_NOT_CONFIGURED: '고정 IP Trading Worker 연결이 먼저 필요합니다.',
     IP_NOT_ALLOWED: 'Trading Worker 고정 IP를 Gate.io Whitelist에 등록해 주세요.',
     FUTURES_READ_REQUIRED: 'Perpetual Futures Read 권한을 확인해 주세요.',
+    FUTURES_TRADE_REQUIRED: 'Perpetual Futures 권한을 Read-Write로 설정해 주세요.',
+    API_KEY_DETAILS_UNAVAILABLE: 'API Key 상태와 권한 정보를 확인할 수 없습니다.',
+    EXCESS_API_PERMISSIONS: 'Futures 외의 쓰기 권한을 모두 비활성화해 주세요.',
     GATE_UNREACHABLE: 'Gate.io 연결이 지연되고 있습니다. 잠시 후 다시 검증해 주세요.',
     GATE_API_ERROR: 'Gate.io API 응답을 확인하지 못했습니다.',
   };
@@ -654,14 +658,18 @@ function renderAdminMasterGateConnection(connection) {
   status.textContent = labels[connection.status] || '검증 대기';
   status.className = verified ? 'chip' : errored ? 'chip red' : 'chip yellow';
   setState('adminGateFuturesRead', verified && connection.futures_read ? 'PASS' : '확인 대기', verified && connection.futures_read ? 'pos' : 'warn');
-  setState('adminGateTrade', connection.permissions_confirmed ? '설정 확인' : '확인 필요', connection.permissions_confirmed ? 'pos' : 'warn');
+  setState('adminGateTrade', verified && connection.futures_trade ? 'PASS' : '확인 대기', verified && connection.futures_trade ? 'pos' : 'warn');
   setState('adminGateWorker', connection.ip_whitelisted ? '접속 통과' : workerPublicIp ? '검증 대기' : '미설정', connection.ip_whitelisted ? 'pos' : 'warn');
   setState('adminGateWithdrawal', connection.withdrawal_disabled ? 'DISABLED' : '확인 필요', connection.withdrawal_disabled ? 'pos' : 'neg');
   const errorMessages = {
     INVALID_CREDENTIALS: 'API Key 또는 Secret Key를 확인해 주세요.',
     UID_MISMATCH: '입력한 UID와 API Key 계정이 일치하지 않습니다.',
+    WORKER_IP_NOT_CONFIGURED: '고정 IP Trading Worker 연결이 먼저 필요합니다.',
     IP_NOT_ALLOWED: 'Gate.io Whitelist에 Worker 고정 IP를 등록해 주세요.',
     FUTURES_READ_REQUIRED: 'Perpetual Futures Read 권한을 확인해 주세요.',
+    FUTURES_TRADE_REQUIRED: 'Perpetual Futures 권한을 Read-Write로 설정해 주세요.',
+    API_KEY_DETAILS_UNAVAILABLE: 'API Key 상태와 권한 정보를 확인할 수 없습니다.',
+    EXCESS_API_PERMISSIONS: 'Futures 외의 쓰기 권한을 모두 비활성화해 주세요.',
     GATE_UNREACHABLE: 'Gate.io 연결이 지연되고 있습니다.',
   };
   byId('adminGateVerificationDetail').textContent = verified

@@ -51,6 +51,12 @@ export function planMemberPositions({ cycleId, system, master, member, contracts
       targetSize: target.targetSize, actualSize: memberPosition.size, driftToleranceSize: contractInfo.sizeStep,
     });
     const delta = calculateDeltaOrder({ state, targetSize: target.targetSize, actualSize: memberPosition.size, sizeStep: contractInfo.sizeStep });
+    const sizeCaps = [contractInfo.orderSizeMax, contractInfo.marketOrderSizeMax].filter((value) => Number(value) > 0);
+    const maxOrderSize = sizeCaps.length ? Math.min(...sizeCaps) : 0;
+    if (delta.shouldSubmit && maxOrderSize > 0 && Math.abs(delta.deltaSize) > maxOrderSize) {
+      delta.deltaSize = Math.sign(delta.deltaSize) * maxOrderSize;
+      delta.reason = 'CHUNKED_TO_GATE_ORDER_LIMIT';
+    }
     if (Math.abs(delta.deltaSize) < contractInfo.orderSizeMin) {
       delta.shouldSubmit = false;
       delta.deltaSize = 0;

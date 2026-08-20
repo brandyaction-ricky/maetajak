@@ -33,10 +33,11 @@ export async function runVerificationBatch() {
     const { data: jobs, error } = await supabase.rpc('claim_gate_api_verification_jobs', { p_limit: 5 });
     if (error) throw error;
     for (const job of jobs || []) {
-      const result = await verifyGateAccount({ gateUid: job.gate_uid, apiKey: job.api_key, secretKey: job.secret_key, baseUrl });
+      const result = await verifyGateAccount({ gateUid: job.gate_uid, apiKey: job.api_key, secretKey: job.secret_key, expectedPublicIp: workerPublicIp, baseUrl });
       const { error: completionError } = await supabase.rpc('complete_gate_api_verification', {
         p_job_id: job.job_id, p_success: result.success, p_gate_user_id: result.gateUserId || null,
         p_error_code: result.errorCode || null, p_error_message: result.errorMessage || null,
+        p_worker_public_ip: workerPublicIp || null,
       });
       if (completionError) throw completionError;
     }
@@ -51,7 +52,7 @@ export async function runTradingCycle() {
   try {
     await runner.heartbeat(false);
     const observation = await runner.syncOnce();
-    if (readinessCheck && observation.observed > 0) await runner.heartbeat(true);
+    if (readinessCheck && tradingMode === 'DRY_RUN' && observation.observed > 0) await runner.heartbeat(true);
     const reconciled = await runner.reconcileOrders();
     const submitted = await runner.submitOrders();
     if (observation.observed || reconciled || submitted) log('cycle_complete', { ...observation, reconciled, submitted });
