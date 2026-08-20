@@ -5,7 +5,7 @@ Private Gate.io copy-trading platform UI. The current application uses Supabase 
 ## Local setup
 
 1. Create a Supabase project.
-2. Run `supabase/migrations/202608200001_auth_profiles.sql` in the Supabase SQL Editor.
+2. Run the SQL files in `supabase/migrations` in filename order in the Supabase SQL Editor.
 3. Copy `.env.example` to `.env.local` and set `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY`.
 4. Run `npm install` and `npm run dev`.
 
@@ -29,5 +29,20 @@ Add these variables to Preview and Production environments in the `tajakman/maet
 
 - `VITE_SUPABASE_URL`
 - `VITE_SUPABASE_ANON_KEY`
+- `VITE_TRADING_WORKER_IP` (defaults to the provided `146.56.140.75`)
 
 The production deployment builds with Vite and publishes `dist`.
+
+## Gate.io verification worker
+
+Gate.io credentials are encrypted in the private Supabase schema. Saving credentials creates a verification job; the browser never receives the stored Key or Secret again.
+
+Run the verification worker on the server whose fixed outbound IP is registered in every member's Gate.io API Whitelist:
+
+```bash
+SUPABASE_URL=https://YOUR_PROJECT.supabase.co \
+SUPABASE_SERVICE_ROLE_KEY=YOUR_SERVER_ONLY_KEY \
+npm run worker:gate
+```
+
+Keep `SUPABASE_SERVICE_ROLE_KEY` only in the worker's secret manager. The worker signs a read-only `GET /api/v4/futures/usdt/accounts` request, verifies that the returned Gate user ID matches the submitted UID, and writes only the verification result back to Supabase. Futures write permission and withdrawal disablement remain explicit member confirmations because they cannot be safely proven by placing a test order.
