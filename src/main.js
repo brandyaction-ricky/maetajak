@@ -40,6 +40,7 @@ let gateStatusTimer = null;
 let memberDetailBusy = false;
 let adminGateApiBusy = false;
 let memberAnalysisBusy = false;
+let copySystemTimer = null;
 
 function extendCopySettingOptions() {
   const selects = [...document.querySelectorAll('select')];
@@ -94,6 +95,49 @@ function enhancePauseModal() {
   const modal = document.querySelector('#pauseModal .modal');
   if (!modal || byId('pauseModalClose')) return;
   modal.insertAdjacentHTML('afterbegin', '<button id="pauseModalClose" class="modal-close" type="button" aria-label="일시중지 창 닫기" onclick="closePause()">×</button>');
+  const actions = modal.querySelector('.form');
+  if (actions) actions.innerHTML = `
+    <button class="btn" type="button" data-copy-pause="HOLD">신규 카피만 중지 · 현재 포지션 유지</button>
+    <button class="btn red" type="button" data-copy-pause="CLOSE">카피 중지 + 현재 포지션 정리</button>
+    <button class="btn green" type="button" data-copy-pause="RESUME">카피 재개</button>`;
+}
+
+function enhanceOperationsStatusUi() {
+  const memberStatus = document.querySelector('#member-dashboard > .status');
+  if (memberStatus) memberStatus.innerHTML = '<div><span id="memberSystemDot" class="dot"></span><b id="memberSystemTitle">운영 상태 확인 중</b><div><span id="memberSystemDetail">Worker와 주문 안전 상태를 불러오고 있습니다.</span></div></div><button class="btn red" onclick="openPause()">카피 관리</button>';
+  const adminStatus = document.querySelector('#admin-dashboard > .status');
+  if (adminStatus) adminStatus.innerHTML = '<div><span id="adminSystemDot" class="dot"></span><b id="adminSystemTitle">운영 상태 확인 중</b><div><span id="adminSystemDetail">Worker heartbeat를 확인하고 있습니다.</span></div></div>';
+  const settings = byId('admin-settings');
+  if (settings) settings.innerHTML = `
+    <div class="grid half operations-grid">
+      <div class="card section"><div class="section-head"><h3>실거래 실행 상태</h3><span id="opsExecutionChip" class="chip yellow">확인 중</span></div>
+        <div class="metric"><span>주문 실행</span><b id="opsExecution">-</b></div><div class="metric"><span>비상 중단</span><b id="opsHalt">-</b></div><div class="metric"><span>중단 사유</span><b id="opsReason">-</b></div><div class="metric"><span>최종 변경</span><b id="opsUpdated">-</b></div></div>
+      <div class="card section"><div class="section-head"><h3>Trading Worker</h3><span id="opsWorkerChip" class="chip yellow">미연결</span></div>
+        <div class="metric"><span>모드</span><b id="opsWorkerMode">OBSERVE</b></div><div class="metric"><span>고정 IP</span><b id="opsWorkerIp">미설정</b></div><div class="metric"><span>Heartbeat</span><b id="opsHeartbeat">없음</b></div><div class="metric"><span>준비 테스트</span><b id="opsTest">미완료</b></div></div>
+    </div><div class="notice warn-box operations-note">브라우저에서는 실거래를 켤 수 없습니다. 고정 IP Worker, Master·회원 API 검증, 준비 테스트가 완료된 뒤 서버 배포 명령으로만 활성화됩니다.</div>`;
+  const risk = byId('admin-risk');
+  if (risk) risk.innerHTML = `<div class="card section"><div class="section-head"><div><h3>Risk / Emergency Control</h3><p>긴급 중단은 신규 주문을 즉시 차단합니다. 미확정 주문은 계속 조회합니다.</p></div></div><div class="actions"><button id="adminEmergencyHalt" class="btn red" type="button">전체 카피 긴급 중단</button><button class="btn" type="button" onclick="openPage('admin-settings')">Worker 상태 확인</button></div></div>`;
+}
+
+function enhanceLiveDataUi() {
+  const memberDashboard = byId('member-dashboard');
+  if (memberDashboard) memberDashboard.innerHTML = `<div class="status"><div><span id="memberSystemDot" class="dot"></span><b id="memberSystemTitle">운영 상태 확인 중</b><div><span id="memberSystemDetail">Worker와 주문 안전 상태를 불러오고 있습니다.</span></div></div><button class="btn red" onclick="openPause()">카피 관리</button></div>
+    <div class="grid kpis"><div class="card kpi"><label>총 자산</label><strong id="memberLiveEquity">-</strong></div><div class="card kpi"><label>사용 가능 증거금</label><strong id="memberLiveAvailable">-</strong></div><div class="card kpi"><label>미실현 손익</label><strong id="memberLiveUnrealised">-</strong></div><div class="card kpi"><label>마지막 확인</label><strong id="memberLiveObserved">-</strong></div></div>
+    <div class="card section" style="margin-top:14px"><div class="section-head"><div><h3>현재 포지션</h3><p>실제 Target / Actual / Delta</p></div></div><div class="table"><table><thead><tr><th>종목</th><th>Target</th><th>Actual</th><th>Delta</th><th>상태</th></tr></thead><tbody id="memberDashPositions"><tr><td colspan="5" class="empty-cell">실제 포지션을 불러오는 중입니다.</td></tr></tbody></table></div></div>`;
+  const adminDashboard = byId('admin-dashboard');
+  if (adminDashboard) adminDashboard.innerHTML = `<div class="status"><div><span id="adminSystemDot" class="dot"></span><b id="adminSystemTitle">운영 상태 확인 중</b><div><span id="adminSystemDetail">Worker heartbeat를 확인하고 있습니다.</span></div></div></div>
+    <div class="grid kpis"><div class="card kpi"><label>Master 포지션</label><strong id="adminLiveMasterCount">0</strong></div><div class="card kpi"><label>회원 동기화 종목</label><strong id="adminLiveStateCount">0</strong></div><div class="card kpi"><label>미확정 주문</label><strong id="adminLiveUnknownCount" class="warn">0</strong></div><div class="card kpi"><label>Manual Override</label><strong id="adminLiveOverrideCount" class="warn">0</strong></div></div>
+    <div class="card section" style="margin-top:14px"><div class="section-head"><div><h3>Action Required</h3><p>실제 ERROR·HALTED·UNKNOWN·MANUAL_OVERRIDE 상태입니다.</p></div><span id="adminLiveActionCount" class="chip yellow">0</span></div><div id="adminLiveActions" class="grid half"><div class="notice">조치가 필요한 실제 상태를 불러오는 중입니다.</div></div></div>`;
+  const positions = byId('member-positions');
+  if (positions) positions.innerHTML = `<div class="card section"><div class="section-head"><div><h3>현재 포지션</h3><p>Master Target과 Gate.io 실제 포지션을 비교합니다.</p></div></div><div class="table"><table><thead><tr><th>종목</th><th>Target</th><th>Actual</th><th>Delta</th><th>상태</th><th>최근 확인</th></tr></thead><tbody id="memberLivePositions"><tr><td colspan="6" class="empty-cell">실제 포지션을 불러오는 중입니다.</td></tr></tbody></table></div></div>`;
+  const trades = byId('member-trades');
+  if (trades) trades.innerHTML = `<div class="card section"><div class="section-head"><div><h3>Copy Events</h3><p>실제 주문·체결·동기화 이벤트입니다.</p></div></div><div class="table"><table><thead><tr><th>시간</th><th>종목</th><th>이벤트</th><th>심각도</th><th>상태</th></tr></thead><tbody id="memberLiveEvents"><tr><td colspan="5" class="empty-cell">실제 이벤트를 불러오는 중입니다.</td></tr></tbody></table></div></div>`;
+  const master = byId('admin-master');
+  if (master) master.innerHTML = `<div class="card section"><div class="section-head"><div><h3>Master Position Snapshot</h3><p>Gate.io에서 Worker가 마지막으로 확인한 실제 포지션입니다.</p></div></div><div class="table"><table><thead><tr><th>종목</th><th>수량</th><th>진입가</th><th>Mark</th><th>레버리지</th><th>확인 시각</th></tr></thead><tbody id="adminMasterPositions"><tr><td colspan="6" class="empty-cell">Master 포지션을 불러오는 중입니다.</td></tr></tbody></table></div></div>`;
+  const monitor = byId('admin-monitor');
+  if (monitor) monitor.innerHTML = `<div class="tabs2"><button class="btn primary" onclick="monitorTab('orders',this)">주문 상태</button><button class="btn" onclick="monitorTab('sync',this)">포지션 동기화</button></div>
+    <div id="orders" class="subpage active card section"><div class="section-head"><h3>실제 주문 모니터</h3></div><div class="table"><table><thead><tr><th>회원</th><th>종목</th><th>Delta</th><th>체결</th><th>상태</th><th>Gate 주문</th><th>최근 변경</th></tr></thead><tbody id="adminLiveOrders"><tr><td colspan="7" class="empty-cell">주문 데이터를 불러오는 중입니다.</td></tr></tbody></table></div></div>
+    <div id="sync" class="subpage card section"><div class="section-head"><h3>실제 포지션 동기화</h3></div><div class="table"><table><thead><tr><th>회원</th><th>종목</th><th>Target</th><th>Actual</th><th>Delta</th><th>상태</th><th>최근 확인</th></tr></thead><tbody id="adminLiveStates"><tr><td colspan="7" class="empty-cell">동기화 데이터를 불러오는 중입니다.</td></tr></tbody></table></div></div>`;
 }
 
 function enhanceAdminApiPage() {
@@ -280,6 +324,7 @@ function setPendingMessage(status, detail) {
 
 function showAuth(view = 'login') {
   stopGateStatusPolling();
+  stopCopySystemPolling();
   byId('app').classList.add('hidden');
   byId('auth').classList.remove('hidden');
   ['login', 'signup', 'pending'].forEach((id) => byId(id).classList.toggle('hidden', id !== view));
@@ -299,9 +344,12 @@ function showApp(profile) {
   if (byId('copyRatioSelect')) byId('copyRatioSelect').value = `${Number(profile.copy_ratio ?? 100)}%`;
   if (byId('maxPositionRatioSelect')) byId('maxPositionRatioSelect').value = `${Number(profile.max_position_ratio ?? 30)}%`;
   openPage(role === 'admin' ? 'admin-dashboard' : 'member-dashboard');
+  loadCopySystemStatus();
+  startCopySystemPolling();
   if (role === 'admin') loadAdminMembers();
   if (role === 'member') {
     loadGateConnection();
+    loadMemberLiveData();
     startGateStatusPolling();
   }
 }
@@ -404,11 +452,14 @@ window.openPage = (id) => {
   window.scrollTo(0, 0);
   if (id === 'admin-members' && currentProfile?.role === 'ADMIN') loadAdminMembers();
   if (id === 'member-analysis' && currentProfile?.role === 'MEMBER') loadTradingAnalysis();
+  if (['member-dashboard', 'member-positions', 'member-trades'].includes(id) && currentProfile?.role === 'MEMBER') loadMemberLiveData();
   if (id === 'admin-member-analysis' && currentProfile?.role === 'ADMIN') loadAdminAnalysisMembers();
   if (id === 'admin-api' && currentProfile?.role === 'ADMIN') {
     loadAdminMasterGateConnection();
     loadAdminGateConnections();
   }
+  if ((id === 'admin-settings' || id === 'admin-risk') && currentProfile?.role === 'ADMIN') loadCopySystemStatus();
+  if (['admin-dashboard', 'admin-master', 'admin-monitor'].includes(id) && currentProfile?.role === 'ADMIN') loadAdminLiveData();
 };
 
 window.openPause = () => byId('pauseModal').classList.add('open');
@@ -426,6 +477,115 @@ window.toast = (message) => {
   element.style.opacity = 1;
   window.setTimeout(() => { element.style.opacity = 0; }, 1800);
 };
+
+function renderCopySystemStatus(status) {
+  const worker = status?.worker || {};
+  const live = Boolean(status?.execution_enabled && !status?.emergency_halted && worker.healthy && worker.mode === 'LIVE');
+  const title = live ? '카피트레이딩 실거래 실행 중' : status?.emergency_halted ? '카피트레이딩 안전 중단' : '카피트레이딩 준비 중';
+  const detail = live ? `고정 IP Worker 정상 · ${new Date(worker.heartbeat_at).toLocaleString('ko-KR')}` : `주문 차단 · ${status?.halt_reason || 'WORKER_NOT_READY'}`;
+  for (const prefix of ['member', 'admin']) {
+    const titleNode = byId(`${prefix}SystemTitle`);
+    const detailNode = byId(`${prefix}SystemDetail`);
+    const dot = byId(`${prefix}SystemDot`);
+    if (titleNode) titleNode.textContent = title;
+    if (detailNode) detailNode.textContent = detail;
+    if (dot) dot.classList.toggle('offline', !live);
+  }
+  if (!byId('opsExecution')) return;
+  byId('opsExecution').textContent = status?.execution_enabled ? 'ENABLED' : 'DISABLED';
+  byId('opsExecution').className = live ? 'pos' : 'warn';
+  byId('opsHalt').textContent = status?.emergency_halted ? 'HALTED' : 'CLEAR';
+  byId('opsHalt').className = status?.emergency_halted ? 'neg' : 'pos';
+  byId('opsReason').textContent = status?.halt_reason || '-';
+  byId('opsUpdated').textContent = status?.updated_at ? new Date(status.updated_at).toLocaleString('ko-KR') : '-';
+  byId('opsExecutionChip').textContent = live ? 'LIVE' : 'LOCKED';
+  byId('opsExecutionChip').className = live ? 'chip' : 'chip yellow';
+  byId('opsWorkerMode').textContent = worker.mode || 'OBSERVE';
+  byId('opsWorkerIp').textContent = worker.public_ip || '미설정';
+  byId('opsHeartbeat').textContent = worker.heartbeat_at ? new Date(worker.heartbeat_at).toLocaleString('ko-KR') : '없음';
+  byId('opsTest').textContent = worker.test_passed_at ? new Date(worker.test_passed_at).toLocaleString('ko-KR') : '미완료';
+  byId('opsWorkerChip').textContent = worker.healthy ? 'HEALTHY' : 'OFFLINE';
+  byId('opsWorkerChip').className = worker.healthy ? 'chip' : 'chip red';
+}
+
+async function loadCopySystemStatus() {
+  if (!supabase || !currentProfile) return;
+  const { data, error } = await supabase.rpc('get_copy_system_status');
+  if (error) return;
+  renderCopySystemStatus(data);
+}
+
+function startCopySystemPolling() {
+  stopCopySystemPolling();
+  copySystemTimer = window.setInterval(loadCopySystemStatus, 10_000);
+}
+
+function stopCopySystemPolling() {
+  if (copySystemTimer) window.clearInterval(copySystemTimer);
+  copySystemTimer = null;
+}
+
+async function setCopyPause(mode) {
+  if (!supabase || currentProfile?.role !== 'MEMBER') return;
+  const { error } = await supabase.rpc('set_my_copy_pause', { p_mode: mode });
+  if (error) return window.toast('카피 상태 변경에 실패했습니다.');
+  window.closePause();
+  window.toast(mode === 'RESUME' ? '카피 재개를 요청했습니다.' : mode === 'CLOSE' ? '신규 카피 중지와 포지션 정리를 요청했습니다.' : '신규 카피를 중지했습니다.');
+}
+
+async function emergencyHalt() {
+  if (!supabase || currentProfile?.role !== 'ADMIN') return;
+  if (!window.confirm('전체 신규 카피 주문을 즉시 중단할까요?')) return;
+  const { error } = await supabase.rpc('set_copy_system_control', { p_execution_enabled: false, p_emergency_halted: true, p_reason: 'ADMIN_EMERGENCY_HALT' });
+  if (error) return window.toast('긴급 중단에 실패했습니다.');
+  await loadCopySystemStatus();
+  window.toast('전체 카피 주문을 중단했습니다.');
+}
+
+function stateChip(state) {
+  const value = escapeHtml(state || '-');
+  const className = state === 'SYNCED' || state === 'FILLED' ? 'chip' : state === 'ERROR' || state === 'HALTED' || state === 'REJECTED' ? 'chip red' : 'chip yellow';
+  return `<span class="${className}">${value}</span>`;
+}
+
+async function loadMemberLiveData() {
+  if (!supabase || currentProfile?.role !== 'MEMBER') return;
+  const { data, error } = await supabase.rpc('get_my_live_trading_data');
+  if (error) return window.toast('실제 거래 데이터를 불러오지 못했습니다.');
+  const positions = Array.isArray(data?.positions) ? data.positions : [];
+  const events = Array.isArray(data?.events) ? data.events : [];
+  const account = data?.account;
+  if (byId('memberLiveEquity')) byId('memberLiveEquity').textContent = account ? formatUsd(account.total_equity) : '-';
+  if (byId('memberLiveAvailable')) byId('memberLiveAvailable').textContent = account ? formatUsd(account.available_equity) : '-';
+  if (byId('memberLiveUnrealised')) byId('memberLiveUnrealised').textContent = account ? formatUsd(account.unrealised_pnl) : '-';
+  if (byId('memberLiveObserved')) byId('memberLiveObserved').textContent = account?.observed_at ? new Date(account.observed_at).toLocaleTimeString('ko-KR') : '-';
+  const detailedRows = positions.length ? positions.map((position) => `<tr><td>${escapeHtml(position.contract)}</td><td>${Number(position.target_size)}</td><td>${Number(position.actual_size)}</td><td>${Number(position.delta_size)}</td><td>${stateChip(position.state)}${position.pause_reason ? `<small>${escapeHtml(position.pause_reason)}</small>` : ''}</td><td>${position.observed_at ? new Date(position.observed_at).toLocaleString('ko-KR') : '-'}</td></tr>`).join('') : '<tr><td colspan="6" class="empty-cell">Worker가 확인한 실제 포지션이 아직 없습니다.</td></tr>';
+  if (byId('memberLivePositions')) byId('memberLivePositions').innerHTML = detailedRows;
+  if (byId('memberDashPositions')) byId('memberDashPositions').innerHTML = positions.length ? positions.map((position) => `<tr><td>${escapeHtml(position.contract)}</td><td>${Number(position.target_size)}</td><td>${Number(position.actual_size)}</td><td>${Number(position.delta_size)}</td><td>${stateChip(position.state)}</td></tr>`).join('') : '<tr><td colspan="5" class="empty-cell">Worker가 확인한 실제 포지션이 아직 없습니다.</td></tr>';
+  if (byId('memberLiveEvents')) byId('memberLiveEvents').innerHTML = events.length ? events.map((event) => `<tr><td>${new Date(event.occurred_at).toLocaleString('ko-KR')}</td><td>${escapeHtml(event.contract || '-')}</td><td>${escapeHtml(event.type)}</td><td>${escapeHtml(event.severity)}</td><td>${stateChip(event.payload?.status || event.payload?.state || '-')}</td></tr>`).join('') : '<tr><td colspan="5" class="empty-cell">실제 Copy Event가 아직 없습니다.</td></tr>';
+}
+
+async function loadAdminLiveData() {
+  if (!supabase || currentProfile?.role !== 'ADMIN') return;
+  const { data, error } = await supabase.rpc('get_admin_live_trading_data');
+  if (error) return window.toast('실제 운영 데이터를 불러오지 못했습니다.');
+  const master = Array.isArray(data?.master_positions) ? data.master_positions : [];
+  const states = Array.isArray(data?.member_states) ? data.member_states : [];
+  const orders = Array.isArray(data?.orders) ? data.orders : [];
+  const unknownOrders = orders.filter((order) => ['UNKNOWN', 'SUBMITTING', 'ACKNOWLEDGED', 'PARTIALLY_FILLED'].includes(order.status));
+  const overrides = states.filter((state) => state.state === 'MANUAL_OVERRIDE');
+  const actionStates = states.filter((state) => ['MANUAL_OVERRIDE', 'ERROR', 'HALTED'].includes(state.state));
+  const actions = [...actionStates.map((state) => ({ title: `${state.name || state.email || '-'} · ${state.contract} ${state.state}`, detail: state.pause_reason || `Target ${state.target_size} / Actual ${state.actual_size}` })), ...unknownOrders.map((order) => ({ title: `${order.name || order.email || '-'} · ${order.contract} ${order.status}`, detail: order.error_code || `Delta ${order.delta_size} / Filled ${order.filled_size}` }))];
+  if (byId('adminLiveMasterCount')) byId('adminLiveMasterCount').textContent = String(master.length);
+  if (byId('adminLiveStateCount')) byId('adminLiveStateCount').textContent = String(states.length);
+  if (byId('adminLiveUnknownCount')) byId('adminLiveUnknownCount').textContent = String(unknownOrders.length);
+  if (byId('adminLiveOverrideCount')) byId('adminLiveOverrideCount').textContent = String(overrides.length);
+  if (byId('adminLiveActionCount')) byId('adminLiveActionCount').textContent = String(actions.length);
+  if (byId('adminLiveActions')) byId('adminLiveActions').innerHTML = actions.length ? actions.map((action) => `<div class="alert"><h4>${escapeHtml(action.title)}</h4><p>${escapeHtml(action.detail)}</p></div>`).join('') : '<div class="notice">현재 조치가 필요한 실제 상태가 없습니다.</div>';
+  if (byId('adminMasterPositions')) byId('adminMasterPositions').innerHTML = master.length ? master.map((position) => `<tr><td>${escapeHtml(position.contract)}</td><td>${Number(position.size)}</td><td>${Number(position.entry_price || 0).toLocaleString()}</td><td>${Number(position.mark_price || 0).toLocaleString()}</td><td>${Number(position.leverage || 0)}x</td><td>${new Date(position.observed_at).toLocaleString('ko-KR')}</td></tr>`).join('') : '<tr><td colspan="6" class="empty-cell">검증된 Master API와 Worker snapshot이 아직 없습니다.</td></tr>';
+  if (byId('adminLiveStates')) byId('adminLiveStates').innerHTML = states.length ? states.map((state) => `<tr><td>${escapeHtml(state.name || state.email || '-')}</td><td>${escapeHtml(state.contract)}</td><td>${Number(state.target_size)}</td><td>${Number(state.actual_size)}</td><td>${Number(state.delta_size)}</td><td>${stateChip(state.state)}${state.pause_reason ? `<small>${escapeHtml(state.pause_reason)}</small>` : ''}</td><td>${state.observed_at ? new Date(state.observed_at).toLocaleString('ko-KR') : '-'}</td></tr>`).join('') : '<tr><td colspan="7" class="empty-cell">회원 포지션 snapshot이 아직 없습니다.</td></tr>';
+  if (byId('adminLiveOrders')) byId('adminLiveOrders').innerHTML = orders.length ? orders.map((order) => `<tr><td>${escapeHtml(order.name || order.email || '-')}</td><td>${escapeHtml(order.contract)}</td><td>${Number(order.delta_size)}</td><td>${Number(order.filled_size)}</td><td>${stateChip(order.status)}${order.error_code ? `<small>${escapeHtml(order.error_code)}</small>` : ''}</td><td>${escapeHtml(order.gate_order_id || '-')}</td><td>${new Date(order.updated_at).toLocaleString('ko-KR')}</td></tr>`).join('') : '<tr><td colspan="7" class="empty-cell">실제 주문 내역이 아직 없습니다.</td></tr>';
+}
 
 function renderGateConnection(connection) {
   const status = byId('gateConnectionStatus');
@@ -807,6 +967,9 @@ document.addEventListener('click', async (event) => {
   if (event.target.id === 'memberDetailModal' || event.target.closest('[data-member-detail-close]')) closeMemberDetail();
   const navButton = event.target.closest('.nav-btn[data-page]');
   if (navButton) window.openPage(navButton.dataset.page);
+  const pauseButton = event.target.closest('[data-copy-pause]');
+  if (pauseButton) await setCopyPause(pauseButton.dataset.copyPause);
+  if (event.target.closest('#adminEmergencyHalt')) await emergencyHalt();
   if (event.target.closest('#copySettingsSave')) await saveCopySettings();
   if (event.target.closest('#adminAnalysisLoad')) await loadAdminMemberTradingAnalysis();
   const memberDetailButton = event.target.closest('[data-member-detail]');
@@ -846,6 +1009,8 @@ async function boot() {
   extendCopySettingOptions();
   enhanceGateApiForm();
   enhancePauseModal();
+  enhanceOperationsStatusUi();
+  enhanceLiveDataUi();
   enhanceAdminApiPage();
   enhanceMemberDetailModal();
   enhanceLegalUi();

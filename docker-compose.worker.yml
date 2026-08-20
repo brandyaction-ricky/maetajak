@@ -1,0 +1,20 @@
+services:
+  copy-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    env_file: .env.worker
+    restart: unless-stopped
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,noexec,nosuid
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "5"

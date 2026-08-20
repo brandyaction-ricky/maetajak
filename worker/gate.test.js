@@ -1,6 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildGateHeaders, FUTURES_ACCOUNT_PATH, verifyGateAccount } from './gate.js';
+import {
+  buildGateHeaders, FUTURES_ACCOUNT_PATH, GateApiError, gateRequest,
+  parseGateJson, placeFuturesOrder, summarizeGateOrder, verifyGateAccount,
+} from './gate.js';
 
 test('Gate API v4 signature is deterministic and keeps secrets out of the URL', () => {
   const headers = buildGateHeaders({ apiKey: 'api-key', secretKey: 'secret-key', path: FUTURES_ACCOUNT_PATH, timestamp: 1_700_000_000 });
@@ -38,4 +41,38 @@ test('Gate account verification accepts a signed Futures account response', asyn
   });
   assert.equal(result.success, true);
   assert.equal(result.gateUserId, '45997867');
+});
+
+test('live delta order is a signed market IOC order with idempotent text', async () => {
+  const result = await placeFuturesOrder({
+    apiKey: 'api-key', secretKey: 'secret-key', contract: 'BTC_USDT', size: -3,
+    reduceOnly: true, text: 't-mtj-12345678901234567890', slippageRatio: 0.005,
+    fetchImpl: async (url, options) => {
+      assert.equal(url, 'https://api.gateio.ws/api/v4/futures/usdt/orders');
+      assert.match(options.headers.SIGN, /^[a-f0-9]{128}$/);
+      assert.deepEqual(JSON.parse(options.body), {
+        contract: 'BTC_USDT', size: -3, price: '0', tif: 'ioc', reduce_only: true,
+        text: 't-mtj-12345678901234567890', market_order_slip_ratio: '0.005',
+      });
+      return new Response(JSON.stringify({ id: '9223372036854775807', size: -3, left: 0, status: 'finished', finish_as: 'filled' }), { status: 201 });
+    },
+  });
+  assert.equal(result.status, 201);
+});
+
+test('write timeout is UNKNOWN and must not be blindly retried', async () => {
+  await assert.rejects(
+    gateRequest({ apiKey: 'key', secretKey: 'secret', method: 'POST', path: '/api/v4/futures/usdt/orders', body: {}, fetchImpl: async () => { throw new DOMException('timeout', 'TimeoutError'); } }),
+    (error) => error instanceof GateApiError && error.code === 'GATE_TIMEOUT' && error.outcomeUnknown,
+  );
+});
+
+test('partial fills preserve signed fill size for reconciliation', () => {
+  assert.deepEqual(summarizeGateOrder({ id: '10', size: -10, left: -4, status: 'finished', finish_as: 'ioc' }), {
+    gateOrderId: '10', filledSize: -6, averageFillPrice: null, finalStatus: 'PARTIALLY_FILLED', finishAs: 'ioc', left: -4,
+  });
+});
+
+test('Gate int64 order IDs are preserved as strings', () => {
+  assert.equal(parseGateJson('{"id":9223372036854775807,"status":"open"}').id, '9223372036854775807');
 });

@@ -1122,3 +1122,26 @@ td,
     padding: 16px 14px;
   }
 }
+
+.dot.offline {
+  background: #ef4444;
+  box-shadow: 0 0 0 4px rgba(239, 68, 68, .12);
+}
+
+.operations-grid + .operations-note {
+  margin-top: 14px;
+  margin-bottom: 0;
+}
+
+.operations-grid .metric b {
+  max-width: 62%;
+  overflow-wrap: anywhere;
+  text-align: right;
+}
+
+@media (max-width: 560px) {
+  .operations-grid .metric {
+    align-items: flex-start;
+    gap: 12px;
+  }
+}

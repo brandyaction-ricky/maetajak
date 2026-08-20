@@ -29,7 +29,7 @@ Add these variables to Preview and Production environments in the `tajakman/maet
 
 - `VITE_SUPABASE_URL`
 - `VITE_SUPABASE_ANON_KEY`
-- `VITE_TRADING_WORKER_IP` (defaults to the provided `146.56.140.75`)
+- `VITE_TRADING_WORKER_IP` (실제 고정 Worker IP가 발급된 뒤에만 설정)
 
 The production deployment builds with Vite and publishes `dist`.
 
@@ -51,4 +51,4 @@ Keep `SUPABASE_SERVICE_ROLE_KEY` only in the worker's secret manager. The worker
 
 The position-based copy engine and database control plane are documented in [`docs/COPY_ENGINE.md`](docs/COPY_ENGINE.md). The implementation calculates `Master actual position → member target position → member actual position → delta`, detects unexplained position changes as `MANUAL_OVERRIDE`, creates deterministic order idempotency keys, and provides an `UNKNOWN` reconciliation queue.
 
-Live execution is fail-closed: migration `202608210001_copy_trading_core.sql` creates the system with execution disabled and emergency halt enabled. The browser cannot enable live orders. A fixed-IP Worker and Gate TESTNET QA are required before a deployment-only activation procedure is added.
+Live execution is fail-closed: the database starts with execution disabled and emergency halt enabled. The browser cannot enable live orders. Migration `202608210006_live_worker_runtime.sql` adds the service-role-only observation, order, reconciliation, heartbeat, and deployment activation functions. See [`docs/WORKER_DEPLOYMENT.md`](docs/WORKER_DEPLOYMENT.md) for the fixed-IP deployment and activation checklist.

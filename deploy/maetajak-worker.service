@@ -1,0 +1,15 @@
+[Unit]
+Description=maetajak Gate.io copy trading worker
+After=docker.service network-online.target
+Requires=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/opt/maetajak
+ExecStart=/usr/bin/docker compose -f docker-compose.worker.yml up -d --build
+ExecStop=/usr/bin/docker compose -f docker-compose.worker.yml down
+TimeoutStartSec=180
+
+[Install]
+WantedBy=multi-user.target
