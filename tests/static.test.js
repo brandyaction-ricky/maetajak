@@ -20,6 +20,11 @@ test('signup validates password confirmation before Supabase signup', () => {
   assert.match(script, /비밀번호와 비밀번호 확인이 일치하지 않습니다/);
 });
 
+test('copy settings include 200% copy ratio and 20% maximum position ratio', () => {
+  assert.match(script, /addOption\(copyRatio, '200%'\)/);
+  assert.match(script, /addOption\(maxPositionRatio, '20%'\)/);
+});
+
 test('all navigation targets exist and IDs are unique', () => {
   const ids = [...html.matchAll(/\bid="([^"]+)"/g)].map((match) => match[1]);
   assert.equal(new Set(ids).size, ids.length);
