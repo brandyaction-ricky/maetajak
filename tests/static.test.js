@@ -52,6 +52,13 @@ test('Gate.io credentials are collected securely and encrypted server-side', () 
   assert.doesNotMatch(gateApiMigration, /secret_key\s+text\s+not null/i);
 });
 
+test('pause modal can be dismissed safely', () => {
+  assert.match(script, /id="pauseModalClose"/);
+  assert.match(script, /aria-label="일시중지 창 닫기"/);
+  assert.match(script, /event\.target\.id === 'pauseModal'/);
+  assert.match(script, /event\.key === 'Escape'/);
+});
+
 test('all navigation targets exist and IDs are unique', () => {
   const ids = [...html.matchAll(/\bid="([^"]+)"/g)].map((match) => match[1]);
   assert.equal(new Set(ids).size, ids.length);
