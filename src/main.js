@@ -81,6 +81,12 @@ function enhanceGateApiForm() {
   `;
 }
 
+function enhancePauseModal() {
+  const modal = document.querySelector('#pauseModal .modal');
+  if (!modal || byId('pauseModalClose')) return;
+  modal.insertAdjacentHTML('afterbegin', '<button id="pauseModalClose" class="modal-close" type="button" aria-label="일시중지 창 닫기" onclick="closePause()">×</button>');
+}
+
 function setAuthMessage(message = '', kind = 'error') {
   const box = byId('authMessage');
   box.textContent = message;
@@ -326,6 +332,7 @@ async function loadAdminMembers() {
 }
 
 document.addEventListener('click', async (event) => {
+  if (event.target.id === 'pauseModal') window.closePause();
   const navButton = event.target.closest('.nav-btn[data-page]');
   if (navButton) window.openPage(navButton.dataset.page);
   if (event.target.closest('#copySettingsSave')) await saveCopySettings();
@@ -343,6 +350,10 @@ document.addEventListener('click', async (event) => {
   }
 });
 
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape' && byId('pauseModal')?.classList.contains('open')) window.closePause();
+});
+
 document.addEventListener('submit', async (event) => {
   if (event.target.id !== 'gateApiForm') return;
   event.preventDefault();
@@ -352,6 +363,7 @@ document.addEventListener('submit', async (event) => {
 async function boot() {
   extendCopySettingOptions();
   enhanceGateApiForm();
+  enhancePauseModal();
   if (!configured) {
     showAuth('login');
     setAuthMessage('Supabase 환경변수를 설정하면 실제 회원가입과 로그인이 활성화됩니다.', 'warn-box');
