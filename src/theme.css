@@ -563,14 +563,15 @@ td,
   justify-content: space-between;
   gap: 24px;
   margin-bottom: 16px;
-  background: #10181c;
+  border-color: #303030;
+  background: #161616;
 }
 
 .analysis-eyebrow {
-  color: var(--green);
+  color: #888;
   font-size: 10px;
   font-weight: 800;
-  letter-spacing: .22em;
+  letter-spacing: .16em;
 }
 
 .analysis-hero h2 {
@@ -588,9 +589,10 @@ td,
 
 .analysis-period {
   padding: 10px 12px;
-  border: 1px solid #314047;
+  border: 1px solid #383838;
   border-radius: 8px;
-  color: #9cabb2;
+  background: #191919;
+  color: #aaa;
   font: 600 11px ui-monospace, SFMono-Regular, Menlo, monospace;
   white-space: nowrap;
 }
