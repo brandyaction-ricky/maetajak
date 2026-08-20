@@ -268,7 +268,13 @@ td,
 }
 
 #member-account .half {
-  align-items: start;
+  grid-auto-rows: 1fr;
+  align-items: stretch;
+}
+
+#member-account .card {
+  min-height: 300px;
+  height: 100%;
 }
 
 .notice {
@@ -305,7 +311,7 @@ td,
   }
 }
 
-@media (max-width: 760px) {
+@media (max-width: 950px) {
   .app,
   .content,
   .grid,
@@ -313,6 +319,13 @@ td,
   .section,
   .member {
     min-width: 0;
+  }
+
+  .page.active,
+  .page.active > *,
+  #member-dashboard > * {
+    width: 100%;
+    max-width: 100%;
   }
 
   .top > div:first-child {
@@ -378,6 +391,7 @@ td,
     width: 100%;
     max-width: none;
     padding: 18px 16px calc(30px + env(safe-area-inset-bottom));
+    overflow: hidden;
   }
 
   .card,
@@ -392,6 +406,7 @@ td,
   .grid,
   .half,
   .two {
+    width: 100%;
     grid-template-columns: minmax(0, 1fr);
   }
 
@@ -466,6 +481,7 @@ td,
   }
 
   .events {
+    width: 100%;
     gap: 2px;
   }
 
@@ -501,12 +517,18 @@ td,
     width: 100%;
     margin: 0;
     padding: 0;
-    overflow-x: visible;
+    overflow-x: auto;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .table::-webkit-scrollbar {
+    display: none;
   }
 
   .table table {
-    min-width: 0;
-    table-layout: fixed;
+    min-width: 620px;
+    table-layout: auto;
     font-size: 10px;
   }
 
@@ -516,5 +538,14 @@ td,
     padding: 10px 5px;
     overflow-wrap: anywhere;
     white-space: normal;
+  }
+
+  #member-account .half {
+    grid-auto-rows: auto;
+  }
+
+  #member-account .card {
+    min-height: 0;
+    height: auto;
   }
 }
