@@ -277,6 +277,47 @@ td,
   height: 100%;
 }
 
+.permission-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  color: #a4a4a4;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.permission-check input {
+  flex: 0 0 auto;
+  margin-top: 3px;
+}
+
+.api-guide {
+  margin-top: 14px;
+  border-top: 1px solid #2d2d2d;
+  padding-top: 12px;
+  color: #a4a4a4;
+  font-size: 11px;
+}
+
+.api-guide summary {
+  color: #f2f2f2;
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.api-guide ol {
+  margin: 10px 0 0;
+  padding-left: 18px;
+  line-height: 1.7;
+}
+
+.secret-warning {
+  margin: 12px 0 0;
+  color: #f08f8f;
+  font-size: 10px;
+  line-height: 1.5;
+}
+
 .notice {
   border-color: #3a3a3a;
   background: #181818;
@@ -547,5 +588,9 @@ td,
   #member-account .card {
     min-height: 0;
     height: auto;
+  }
+
+  #gateApiForm .permission-check {
+    font-size: 12px;
   }
 }
