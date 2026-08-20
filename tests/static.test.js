@@ -5,6 +5,7 @@ import { readFileSync } from 'node:fs';
 const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
 const script = readFileSync(new URL('../src/main.js', import.meta.url), 'utf8');
 const migration = readFileSync(new URL('../supabase/migrations/202608200001_auth_profiles.sql', import.meta.url), 'utf8');
+const copySettingsMigration = readFileSync(new URL('../supabase/migrations/202608200002_copy_settings.sql', import.meta.url), 'utf8');
 
 test('authentication controls are wired without demo credentials', () => {
   for (const id of ['loginEmail', 'loginPassword', 'signupName', 'signupPhone', 'signupEmail', 'signupPassword', 'signupPasswordConfirm', 'signupTerms', 'pendingStatusLabel']) {
@@ -23,6 +24,16 @@ test('signup validates password confirmation before Supabase signup', () => {
 test('copy settings include 200% copy ratio and 20% maximum position ratio', () => {
   assert.match(script, /addOption\(copyRatio, '200%'\)/);
   assert.match(script, /addOption\(maxPositionRatio, '20%'\)/);
+});
+
+test('approved members can save copy settings and admins can query them', () => {
+  assert.match(copySettingsMigration, /copy_ratio numeric not null default 100/i);
+  assert.match(copySettingsMigration, /max_position_ratio numeric not null default 30/i);
+  assert.match(copySettingsMigration, /update_my_copy_settings/i);
+  assert.match(copySettingsMigration, /approval_status = 'APPROVED'/i);
+  assert.match(script, /copy_ratio,max_position_ratio/);
+  assert.match(script, /update_my_copy_settings/);
+  assert.match(script, /최대 포지션 비중/);
 });
 
 test('all navigation targets exist and IDs are unique', () => {
