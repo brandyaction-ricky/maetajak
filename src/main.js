@@ -31,6 +31,7 @@ const pages = {
 const byId = (id) => document.getElementById(id);
 let currentProfile = null;
 let authBusy = false;
+let gateApiBusy = false;
 
 function extendCopySettingOptions() {
   const selects = [...document.querySelectorAll('select')];
@@ -50,6 +51,34 @@ function extendCopySettingOptions() {
     saveButton.id = 'copySettingsSave';
     saveButton.type = 'button';
   }
+}
+
+function enhanceGateApiForm() {
+  const cards = document.querySelectorAll('#member-account .card');
+  const connectionCard = cards[0];
+  const securityCard = cards[1];
+  if (!connectionCard || !securityCard) return;
+
+  connectionCard.innerHTML = `
+    <div class="section-head"><h3>Gate.io API 연결</h3><span id="gateConnectionStatus" class="chip yellow">미연결</span></div>
+    <form id="gateApiForm" class="form" autocomplete="off">
+      <div class="field"><label for="gateUid">Gate.io UID</label><input id="gateUid" inputmode="numeric" autocomplete="off" placeholder="Gate.io UID 입력" required></div>
+      <div class="field"><label for="gateApiKey">API Key</label><input id="gateApiKey" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="API Key 입력" required></div>
+      <div class="field"><label for="gateSecretKey">Secret Key</label><input id="gateSecretKey" type="password" autocomplete="new-password" autocapitalize="off" spellcheck="false" placeholder="Secret Key 입력" required></div>
+      <label class="permission-check"><input id="gatePermissionConfirmed" type="checkbox" required><span>Trading Account · Perpetual Futures Read/Write만 허용하고 출금 권한은 사용하지 않았습니다.</span></label>
+      <button id="gateApiConnect" class="btn primary" type="submit">API 연결 요청</button>
+    </form>
+    <details class="api-guide"><summary>Gate.io API 발급 설정 확인</summary><ol><li>Trading Account를 선택합니다.</li><li>Perpetual Futures의 Read and Write만 허용합니다.</li><li>출금 권한은 절대 활성화하지 않습니다.</li><li>Trading Worker 고정 IP를 Whitelist에 등록합니다.</li></ol></details>
+    <p class="secret-warning">Secret Key는 화면이나 브라우저 저장소에 보관하지 않고 서버에서 암호화해 저장합니다.</p>
+  `;
+
+  securityCard.innerHTML = `
+    <div class="section-head"><h3>API 보안 체크</h3></div>
+    <div class="metric"><span>Futures Read</span><b id="gateFuturesRead" class="warn">확인 대기</b></div>
+    <div class="metric"><span>Futures Trade</span><b id="gateFuturesTrade" class="warn">확인 대기</b></div>
+    <div class="metric"><span>IP Whitelist</span><b id="gateIpWhitelist" class="warn">Worker 연결 필요</b></div>
+    <div class="metric"><span>Withdrawal</span><b id="gateWithdrawal" class="pos">사용 금지</b></div>
+  `;
 }
 
 function setAuthMessage(message = '', kind = 'error') {
@@ -86,6 +115,7 @@ function showApp(profile) {
   if (byId('maxPositionRatioSelect')) byId('maxPositionRatioSelect').value = `${Number(profile.max_position_ratio ?? 30)}%`;
   openPage(role === 'admin' ? 'admin-dashboard' : 'member-dashboard');
   if (role === 'admin') loadAdminMembers();
+  if (role === 'member') loadGateConnection();
 }
 
 async function loadProfile(userId) {
@@ -202,6 +232,64 @@ window.toast = (message) => {
   window.setTimeout(() => { element.style.opacity = 0; }, 1800);
 };
 
+function renderGateConnection(connection) {
+  const status = byId('gateConnectionStatus');
+  if (!status) return;
+  if (!connection) {
+    status.textContent = '미연결';
+    status.className = 'chip yellow';
+    return;
+  }
+  byId('gateUid').value = connection.gate_uid || '';
+  byId('gateApiKey').placeholder = connection.api_key_last4 ? `저장됨 ····${connection.api_key_last4}` : 'API Key 입력';
+  const verified = connection.status === 'VERIFIED';
+  status.textContent = verified ? '연결됨' : '검증 대기';
+  status.className = verified ? 'chip' : 'chip yellow';
+  byId('gateFuturesRead').textContent = verified && connection.futures_read ? 'PASS' : '확인 대기';
+  byId('gateFuturesRead').className = verified && connection.futures_read ? 'pos' : 'warn';
+  byId('gateFuturesTrade').textContent = verified && connection.futures_trade ? 'PASS' : '확인 대기';
+  byId('gateFuturesTrade').className = verified && connection.futures_trade ? 'pos' : 'warn';
+  byId('gateIpWhitelist').textContent = connection.ip_whitelisted ? 'ENABLED' : 'Worker 연결 필요';
+  byId('gateIpWhitelist').className = connection.ip_whitelisted ? 'pos' : 'warn';
+  byId('gateWithdrawal').textContent = connection.withdrawal_disabled ? 'DISABLED' : '차단 필요';
+  byId('gateWithdrawal').className = connection.withdrawal_disabled ? 'pos' : 'neg';
+}
+
+async function loadGateConnection() {
+  if (!supabase || currentProfile?.role !== 'MEMBER') return;
+  const { data, error } = await supabase.rpc('get_my_gate_api_connection');
+  if (error) return window.toast('API 연결 상태를 불러오지 못했습니다.');
+  renderGateConnection(data);
+}
+
+async function saveGateApiCredentials() {
+  if (!supabase || !currentProfile || gateApiBusy) return;
+  const gateUid = byId('gateUid').value.trim();
+  const apiKey = byId('gateApiKey').value.trim();
+  const secretKey = byId('gateSecretKey').value.trim();
+  const permissionConfirmed = byId('gatePermissionConfirmed').checked;
+  if (!gateUid || apiKey.length < 16 || secretKey.length < 16) return window.toast('UID와 API Key, Secret Key를 정확히 입력해 주세요.');
+  if (!permissionConfirmed) return window.toast('선물 권한과 출금 권한 설정을 확인해 주세요.');
+  gateApiBusy = true;
+  const button = byId('gateApiConnect');
+  button.disabled = true;
+  button.textContent = '암호화 저장 중...';
+  const { data, error } = await supabase.rpc('save_gate_api_credentials', {
+    p_gate_uid: gateUid,
+    p_api_key: apiKey,
+    p_secret_key: secretKey,
+    p_permission_confirmed: permissionConfirmed,
+  });
+  byId('gateApiKey').value = '';
+  byId('gateSecretKey').value = '';
+  button.disabled = false;
+  button.textContent = 'API 연결 요청';
+  gateApiBusy = false;
+  if (error) return window.toast('API 정보를 저장하지 못했습니다. 입력값을 확인해 주세요.');
+  renderGateConnection(data);
+  window.toast('API 정보를 암호화해 저장했습니다. Worker 검증을 진행합니다.');
+}
+
 async function saveCopySettings() {
   if (!supabase || !currentProfile) return;
   const copyRatio = Number(byId('copyRatioSelect').value.replace('%', ''));
@@ -255,8 +343,15 @@ document.addEventListener('click', async (event) => {
   }
 });
 
+document.addEventListener('submit', async (event) => {
+  if (event.target.id !== 'gateApiForm') return;
+  event.preventDefault();
+  await saveGateApiCredentials();
+});
+
 async function boot() {
   extendCopySettingOptions();
+  enhanceGateApiForm();
   if (!configured) {
     showAuth('login');
     setAuthMessage('Supabase 환경변수를 설정하면 실제 회원가입과 로그인이 활성화됩니다.', 'warn-box');
