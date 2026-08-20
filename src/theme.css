@@ -362,7 +362,27 @@ td,
 }
 
 .member {
-  grid-template-columns: minmax(180px, 1.5fr) repeat(5, minmax(78px, 0.7fr)) auto;
+  grid-template-columns: minmax(180px, 1.45fr) repeat(6, minmax(76px, 0.7fr)) auto;
+}
+
+.member-copy-progress .chip {
+  display: inline-flex;
+  width: fit-content;
+  margin-top: 3px;
+}
+
+.member-copy-progress em {
+  display: block;
+  margin-top: 5px;
+  color: #777;
+  font-size: 9px;
+  font-style: normal;
+}
+
+.chip.muted {
+  border-color: #3a3a3a;
+  background: #202020;
+  color: #aaa;
 }
 
 #member-account .half {

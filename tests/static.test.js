@@ -39,6 +39,17 @@ test('approved members can save copy settings and admins can query them', () => 
   assert.match(script, /최대 포지션 비중/);
 });
 
+test('admin member list shows live copy trading progress', () => {
+  const theme = readFileSync(new URL('../src/theme.css', import.meta.url), 'utf8');
+  assert.match(script, /function getMemberCopyProgress/);
+  assert.match(script, /get_admin_gate_api_connections/);
+  assert.match(script, /get_admin_live_trading_data/);
+  for (const status of ['진행 중', '동기화 대기', '미시작', '일시중지', '수동 변경', '오류', '중단']) assert.match(script, new RegExp(status));
+  assert.match(script, /<small>카피 상태<\/small>/);
+  assert.match(theme, /\.member-copy-progress/);
+  assert.match(theme, /repeat\(6, minmax\(76px, 0\.7fr\)\)/);
+});
+
 test('Gate.io credentials are collected securely and encrypted server-side', () => {
   for (const id of ['gateUid', 'gateApiKey', 'gateSecretKey', 'gatePermissionConfirmed', 'gateApiConnect']) assert.match(script, new RegExp(id));
   assert.match(script, /type="password"/);

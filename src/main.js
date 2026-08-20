@@ -929,19 +929,56 @@ async function openMemberDetail(userId) {
   }).join('') : '<tr><td colspan="6" class="empty-cell">아직 집계된 월별 수익 데이터가 없습니다.<small>Trading Worker 연결 후 실제 거래 데이터를 기준으로 자동 집계됩니다.</small></td></tr>';
 }
 
+function getMemberCopyProgress(profile, connection, positionStates = []) {
+  if (profile.role !== 'MEMBER') return { label: '해당 없음', detail: 'ADMIN', className: 'chip muted' };
+  if (profile.approval_status !== 'APPROVED') return { label: '미시작', detail: '승인 필요', className: 'chip muted' };
+  if (profile.member_halted) return { label: '중단', detail: 'HALTED', className: 'chip red' };
+  if (profile.copy_paused) return { label: '일시중지', detail: 'PAUSED', className: 'chip yellow' };
+  if (profile.reduce_only) return { label: '축소 전용', detail: 'REDUCE ONLY', className: 'chip yellow' };
+
+  const priority = ['HALTED', 'ERROR', 'MANUAL_OVERRIDE', 'PAUSED', 'REDUCE_ONLY', 'DRIFT'];
+  const currentState = priority.find((state) => positionStates.some((position) => position.state === state));
+  const stateLabels = {
+    HALTED: ['중단', 'chip red'],
+    ERROR: ['오류', 'chip red'],
+    MANUAL_OVERRIDE: ['수동 변경', 'chip yellow'],
+    PAUSED: ['일시중지', 'chip yellow'],
+    REDUCE_ONLY: ['축소 전용', 'chip yellow'],
+    DRIFT: ['동기화 중', 'chip yellow'],
+  };
+  if (currentState) return { label: stateLabels[currentState][0], detail: currentState.replace('_', ' '), className: stateLabels[currentState][1] };
+  if (connection?.status !== 'VERIFIED') return { label: '미시작', detail: connection?.status === 'ERROR' ? 'API 연결 오류' : 'API 연결 필요', className: connection?.status === 'ERROR' ? 'chip red' : 'chip muted' };
+  if (!positionStates.length) return { label: '동기화 대기', detail: 'Worker 확인 대기', className: 'chip yellow' };
+  return { label: '진행 중', detail: 'SYNCED', className: 'chip' };
+}
+
 async function loadAdminMembers() {
   if (!supabase || currentProfile?.role !== 'ADMIN') return;
-  const { data, error } = await supabase.from('profiles').select('id,email,full_name,phone,approval_status,role,copy_ratio,max_position_ratio,created_at').order('created_at', { ascending: false });
+  const [{ data, error }, connectionsResult, liveResult] = await Promise.all([
+    supabase.from('profiles').select('id,email,full_name,phone,approval_status,role,copy_ratio,max_position_ratio,copy_paused,member_halted,reduce_only,created_at').order('created_at', { ascending: false }),
+    supabase.rpc('get_admin_gate_api_connections'),
+    supabase.rpc('get_admin_live_trading_data'),
+  ]);
   if (error) return window.toast('회원 목록을 불러오지 못했습니다.');
+  const connections = Array.isArray(connectionsResult.data) ? connectionsResult.data : [];
+  const positionStates = Array.isArray(liveResult.data?.member_states) ? liveResult.data.member_states : [];
+  const connectionByUserId = new Map(connections.map((connection) => [connection.user_id, connection]));
+  const statesByEmail = positionStates.reduce((map, state) => {
+    const key = String(state.email || '').toLowerCase();
+    if (!map.has(key)) map.set(key, []);
+    map.get(key).push(state);
+    return map;
+  }, new Map());
   const pending = data.filter((profile) => profile.approval_status === 'PENDING');
   byId('pendingCount').textContent = `${pending.length} PENDING`;
   byId('pendingMembers').innerHTML = pending.length ? pending.map((profile) => `
     <tr><td>${escapeHtml(profile.full_name || '-')}</td><td>${escapeHtml(profile.email || '-')}</td><td>${escapeHtml(profile.phone || '-')}</td><td>${new Date(profile.created_at).toLocaleString('ko-KR')}</td><td><button class="btn green" data-approval="APPROVED" data-user-id="${profile.id}">승인</button> <button class="btn red" data-approval="REJECTED" data-user-id="${profile.id}">거절</button></td></tr>
   `).join('') : '<tr><td colspan="5" class="empty-cell">승인 대기 회원이 없습니다.</td></tr>';
   const members = data.filter((profile) => profile.approval_status !== 'PENDING');
-  byId('memberList').innerHTML = members.length ? members.map((profile) => `
-    <div class="member"><div><b>${escapeHtml(profile.full_name || '-')}</b><small>${escapeHtml(profile.email || '-')}</small></div><div><small>권한</small><b>${escapeHtml(profile.role)}</b></div><div><small>승인</small><b class="${profile.approval_status === 'APPROVED' ? 'pos' : 'warn'}">${escapeHtml(profile.approval_status)}</b></div><div><small>Copy Ratio</small><b>${Number(profile.copy_ratio ?? 100)}%</b></div><div><small>최대 포지션 비중</small><b>${Number(profile.max_position_ratio ?? 30)}%</b></div><div><small>가입일</small><b>${new Date(profile.created_at).toLocaleDateString('ko-KR')}</b></div><button class="btn" type="button" data-member-detail="${profile.id}">상세</button></div>
-  `).join('') : '<div class="notice">표시할 회원이 없습니다.</div>';
+  byId('memberList').innerHTML = members.length ? members.map((profile) => {
+    const progress = getMemberCopyProgress(profile, connectionByUserId.get(profile.id), statesByEmail.get(String(profile.email || '').toLowerCase()) || []);
+    return `<div class="member"><div><b>${escapeHtml(profile.full_name || '-')}</b><small>${escapeHtml(profile.email || '-')}</small></div><div><small>권한</small><b>${escapeHtml(profile.role)}</b></div><div><small>승인</small><b class="${profile.approval_status === 'APPROVED' ? 'pos' : 'warn'}">${escapeHtml(profile.approval_status)}</b></div><div class="member-copy-progress"><small>카피 상태</small><span class="${progress.className}">${escapeHtml(progress.label)}</span><em>${escapeHtml(progress.detail)}</em></div><div><small>Copy Ratio</small><b>${Number(profile.copy_ratio ?? 100)}%</b></div><div><small>최대 포지션 비중</small><b>${Number(profile.max_position_ratio ?? 30)}%</b></div><div><small>가입일</small><b>${new Date(profile.created_at).toLocaleDateString('ko-KR')}</b></div><button class="btn" type="button" data-member-detail="${profile.id}">상세</button></div>`;
+  }).join('') : '<div class="notice">표시할 회원이 없습니다.</div>';
 }
 
 async function loadAdminGateConnections() {
