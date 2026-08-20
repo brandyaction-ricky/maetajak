@@ -16,6 +16,7 @@ body {
   background: #090909;
   color: var(--text);
   letter-spacing: -0.015em;
+  overflow-x: hidden;
 }
 
 .hero {
@@ -67,6 +68,11 @@ body {
 .field select:focus {
   outline: 1px solid #777;
   border-color: #777;
+}
+
+.field select {
+  min-height: 48px;
+  font-size: 16px;
 }
 
 .btn {
@@ -264,21 +270,49 @@ td,
 @media (max-width: 950px) {
   .sidebar {
     width: 264px;
+    max-width: calc(100vw - 56px);
+    padding-bottom: max(18px, env(safe-area-inset-bottom));
   }
 
   .content {
     padding: 24px 18px 40px;
   }
+
+  .table {
+    margin-inline: -4px;
+    padding-inline: 4px;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .table table {
+    min-width: 660px;
+  }
 }
 
 @media (max-width: 560px) {
+  .auth-side {
+    align-items: start;
+    min-height: 100dvh;
+    padding: max(18px, env(safe-area-inset-top)) 14px 24px;
+  }
+
   .auth-card {
     padding: 22px;
+    margin-top: 12px;
+  }
+
+  .auth-card h2 {
+    font-size: 25px;
+  }
+
+  .auth-card p {
+    font-size: 14px;
   }
 
   .top {
     height: 64px;
     padding: 0 14px;
+    padding-top: env(safe-area-inset-top);
   }
 
   .top small {
@@ -292,5 +326,88 @@ td,
 
   .kpi strong {
     margin-top: 18px;
+  }
+
+  .content {
+    padding: 18px 12px calc(30px + env(safe-area-inset-bottom));
+  }
+
+  .card,
+  .status {
+    border-radius: 11px;
+  }
+
+  .section {
+    padding: 18px;
+  }
+
+  .section-head {
+    align-items: start;
+  }
+
+  .section-head h3 {
+    font-size: 16px;
+  }
+
+  .status {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 14px;
+    padding: 16px;
+  }
+
+  .status .btn {
+    min-height: 46px;
+    width: 100%;
+  }
+
+  .form {
+    gap: 16px;
+  }
+
+  .field {
+    gap: 8px;
+  }
+
+  .field label {
+    font-size: 12px;
+  }
+
+  .field input,
+  .field select,
+  .form > .btn {
+    min-height: 52px;
+    font-size: 16px;
+  }
+
+  .field select {
+    width: 100%;
+    padding: 12px 14px;
+    color: #f5f5f5;
+  }
+
+  .member {
+    gap: 14px 10px;
+    padding: 16px;
+  }
+
+  .events {
+    gap: 2px;
+  }
+
+  .event {
+    gap: 8px;
+    padding: 13px 0;
+  }
+
+  .modal-bg {
+    align-items: end;
+    padding: 0;
+  }
+
+  .modal {
+    width: 100%;
+    border-radius: 18px 18px 0 0;
+    padding: 22px 18px calc(22px + env(safe-area-inset-bottom));
   }
 }
