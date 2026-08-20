@@ -32,6 +32,19 @@ const byId = (id) => document.getElementById(id);
 let currentProfile = null;
 let authBusy = false;
 
+function extendCopySettingOptions() {
+  const selects = [...document.querySelectorAll('select')];
+  const addOption = (select, label) => {
+    if (select && ![...select.options].some((option) => option.textContent.trim() === label)) {
+      select.add(new Option(label, label));
+    }
+  };
+  const copyRatio = selects.find((select) => [...select.options].some((option) => option.textContent.trim() === '150%'));
+  const maxPositionRatio = selects.find((select) => [...select.options].some((option) => option.textContent.trim() === '40%'));
+  addOption(copyRatio, '200%');
+  addOption(maxPositionRatio, '20%');
+}
+
 function setAuthMessage(message = '', kind = 'error') {
   const box = byId('authMessage');
   box.textContent = message;
@@ -217,6 +230,7 @@ document.addEventListener('click', async (event) => {
 });
 
 async function boot() {
+  extendCopySettingOptions();
   if (!configured) {
     showAuth('login');
     setAuthMessage('Supabase 환경변수를 설정하면 실제 회원가입과 로그인이 활성화됩니다.', 'warn-box');
