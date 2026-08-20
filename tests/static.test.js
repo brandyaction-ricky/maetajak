@@ -59,6 +59,12 @@ test('pause modal can be dismissed safely', () => {
   assert.match(script, /event\.key === 'Escape'/);
 });
 
+test('sidebar brand image keeps its original colors', () => {
+  const theme = readFileSync(new URL('../src/theme.css', import.meta.url), 'utf8');
+  assert.match(theme, /\.side-brand img\s*\{[^}]*filter:\s*none/s);
+  assert.doesNotMatch(theme, /\.side-brand img\s*\{[^}]*grayscale/s);
+});
+
 test('all navigation targets exist and IDs are unique', () => {
   const ids = [...html.matchAll(/\bid="([^"]+)"/g)].map((match) => match[1]);
   assert.equal(new Set(ids).size, ids.length);
