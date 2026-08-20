@@ -7,11 +7,17 @@ const script = readFileSync(new URL('../src/main.js', import.meta.url), 'utf8');
 const migration = readFileSync(new URL('../supabase/migrations/202608200001_auth_profiles.sql', import.meta.url), 'utf8');
 
 test('authentication controls are wired without demo credentials', () => {
-  for (const id of ['loginEmail', 'loginPassword', 'signupName', 'signupPhone', 'signupEmail', 'signupPassword', 'signupTerms', 'pendingStatusLabel']) {
+  for (const id of ['loginEmail', 'loginPassword', 'signupName', 'signupPhone', 'signupEmail', 'signupPassword', 'signupPasswordConfirm', 'signupTerms', 'pendingStatusLabel']) {
     assert.match(html, new RegExp(`id="${id}"`));
   }
   assert.doesNotMatch(html, /ricky@example\.com|value="12345678"/);
+  assert.doesNotMatch(html, /초대코드|GS-PRIVATE|관리자 데모로 보기/);
   assert.match(html, /<script type="module" src="\/src\/main\.js"><\/script>/);
+});
+
+test('signup validates password confirmation before Supabase signup', () => {
+  assert.match(script, /password !== passwordConfirm/);
+  assert.match(script, /비밀번호와 비밀번호 확인이 일치하지 않습니다/);
 });
 
 test('all navigation targets exist and IDs are unique', () => {

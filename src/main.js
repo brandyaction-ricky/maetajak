@@ -117,8 +117,10 @@ window.signup = () => withAuthBusy(async () => {
   const phone = byId('signupPhone').value.trim();
   const email = byId('signupEmail').value.trim();
   const password = byId('signupPassword').value;
+  const passwordConfirm = byId('signupPasswordConfirm').value;
   const terms = byId('signupTerms').checked;
   if (!fullName || !phone || !email || password.length < 8) return setAuthMessage('이름, 휴대폰, 이메일과 8자 이상 비밀번호를 입력해 주세요.');
+  if (password !== passwordConfirm) return setAuthMessage('비밀번호와 비밀번호 확인이 일치하지 않습니다.');
   if (!terms) return setAuthMessage('서비스 이용약관과 개인정보 처리방침에 동의해 주세요.');
   const { data, error } = await supabase.auth.signUp({
     email,
