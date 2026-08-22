@@ -518,9 +518,7 @@ async function requestMemberPasswordReset() {
   try {
     const { data, error } = await supabase.rpc('request_member_password_reset', { p_user_id: selectedMemberId });
     if (error || !data?.email) return window.toast('관리자 권한 또는 회원 정보를 확인하지 못했습니다.');
-    const { error: mailError } = await supabase.auth.resetPasswordForEmail(data.email, {
-      redirectTo: `${window.location.origin}/?password_recovery=1`,
-    });
+    const { error: mailError } = await supabase.auth.resetPasswordForEmail(data.email);
     if (mailError) return window.toast(mailError.message || '재설정 메일 발송에 실패했습니다.');
     window.toast(`${data.email}로 비밀번호 재설정 메일을 발송했습니다.`);
   } finally {
