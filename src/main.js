@@ -42,6 +42,9 @@ let adminGateApiBusy = false;
 let memberAnalysisBusy = false;
 let copySystemTimer = null;
 let selectedMemberId = null;
+let passwordBusy = false;
+let passwordRecoveryMode = false;
+let adminPasswordResetBusy = false;
 
 function extendCopySettingOptions() {
   const selects = [...document.querySelectorAll('select')];
@@ -67,6 +70,7 @@ function enhanceGateApiForm() {
   const cards = document.querySelectorAll('#member-account .card');
   const connectionCard = cards[0];
   const securityCard = cards[1];
+  const accountCard = cards[3];
   if (!connectionCard || !securityCard) return;
 
   connectionCard.innerHTML = `
@@ -92,6 +96,18 @@ function enhanceGateApiForm() {
   `;
   const notificationCard = cards[2];
   if (notificationCard) notificationCard.innerHTML = `<div class="section-head"><h3>알림 상태</h3></div><div class="metric"><span>사이트 운영 이벤트</span><b class="pos">ON</b></div><div class="metric"><span>Worker 외부 장애 알림</span><b class="warn">VPS 설정 필요</b></div><p class="verification-detail">고정 IP Worker의 ALERT_WEBHOOK_URL을 설정하면 API 검증 실패·Worker 장애·자동중단을 외부 채널로 전송합니다.</p>`;
+  if (accountCard) accountCard.innerHTML = `
+    <div class="section-head"><div><h3>계정 정보</h3><p>회원정보와 로그인 비밀번호를 관리합니다.</p></div></div>
+    <div class="field"><label for="accountName">이름</label><input id="accountName" readonly></div>
+    <div class="field"><label for="accountEmail">이메일</label><input id="accountEmail" type="email" readonly></div>
+    <div class="account-password-divider"></div>
+    <div id="passwordRecoveryNotice" class="notice password-recovery-notice hidden">재설정 링크가 확인되었습니다. 새 비밀번호를 입력해 주세요.</div>
+    <form id="passwordChangeForm" class="form password-change-form" autocomplete="off">
+      <div id="currentPasswordField" class="field"><label for="currentPassword">현재 비밀번호</label><input id="currentPassword" type="password" autocomplete="current-password" minlength="8" placeholder="현재 비밀번호"></div>
+      <div class="field"><label for="newPassword">새 비밀번호</label><input id="newPassword" type="password" autocomplete="new-password" minlength="8" placeholder="8자 이상 새 비밀번호" required></div>
+      <div class="field"><label for="newPasswordConfirm">새 비밀번호 확인</label><input id="newPasswordConfirm" type="password" autocomplete="new-password" minlength="8" placeholder="새 비밀번호 다시 입력" required></div>
+      <button id="passwordChangeButton" class="btn primary" type="submit">비밀번호 변경</button>
+    </form>`;
 }
 
 function enhancePauseModal() {
@@ -197,6 +213,10 @@ function enhanceMemberDetailModal() {
           <span id="memberDetailStatus" class="chip">-</span>
         </div>
         <div id="memberDetailSummary" class="member-detail-summary"></div>
+        <div id="memberPasswordResetActions" class="member-password-reset-actions hidden">
+          <div><h3>로그인 비밀번호</h3><p>회원에게 일회성 비밀번호 재설정 링크를 이메일로 전송합니다.</p></div>
+          <button id="memberPasswordResetButton" class="btn" type="button">비밀번호 재설정 메일 발송</button>
+        </div>
         <div class="section-head member-performance-title"><div><h3>월별 수익</h3><p>실현손익·수수료·펀딩비가 반영된 집계입니다.</p></div></div>
         <div class="table"><table class="member-performance-table"><thead><tr><th>월</th><th>순손익</th><th>수익률</th><th>거래량</th><th>거래</th><th>승률</th></tr></thead><tbody id="memberMonthlyPerformance"><tr><td colspan="6" class="empty-cell">월별 수익을 불러오는 중입니다.</td></tr></tbody></table></div>
       </div>
@@ -447,6 +467,70 @@ window.logout = () => withAuthBusy(async () => {
   currentProfile = null;
   showAuth('login');
 });
+
+async function changeMyPassword() {
+  if (!supabase || passwordBusy) return;
+  const currentPassword = byId('currentPassword')?.value || '';
+  const newPassword = byId('newPassword')?.value || '';
+  const newPasswordConfirm = byId('newPasswordConfirm')?.value || '';
+  if (!passwordRecoveryMode && currentPassword.length < 8) return window.toast('현재 비밀번호를 입력해 주세요.');
+  if (newPassword.length < 8) return window.toast('새 비밀번호는 8자 이상 입력해 주세요.');
+  if (newPassword !== newPasswordConfirm) return window.toast('새 비밀번호 확인이 일치하지 않습니다.');
+  if (!passwordRecoveryMode && currentPassword === newPassword) return window.toast('현재 비밀번호와 다른 비밀번호를 입력해 주세요.');
+
+  passwordBusy = true;
+  const button = byId('passwordChangeButton');
+  if (button) {
+    button.disabled = true;
+    button.textContent = '변경 중...';
+  }
+  try {
+    if (!passwordRecoveryMode) {
+      const email = currentProfile?.email || byId('accountEmail')?.value;
+      const { error: verificationError } = await supabase.auth.signInWithPassword({ email, password: currentPassword });
+      if (verificationError) return window.toast('현재 비밀번호가 올바르지 않습니다.');
+    }
+    const { error } = await supabase.auth.updateUser({ password: newPassword });
+    if (error) return window.toast(error.message || '비밀번호 변경에 실패했습니다.');
+    passwordRecoveryMode = false;
+    await supabase.auth.signOut({ scope: 'global' });
+    currentProfile = null;
+    showAuth('login');
+    setAuthMessage('비밀번호가 변경되었습니다. 새 비밀번호로 다시 로그인해 주세요.', 'success');
+  } finally {
+    passwordBusy = false;
+    if (button) {
+      button.disabled = false;
+      button.textContent = '비밀번호 변경';
+    }
+  }
+}
+
+async function requestMemberPasswordReset() {
+  if (!supabase || currentProfile?.role !== 'ADMIN' || !selectedMemberId || adminPasswordResetBusy) return;
+  if (!window.confirm('이 회원에게 비밀번호 재설정 메일을 발송할까요?')) return;
+  const button = byId('memberPasswordResetButton');
+  adminPasswordResetBusy = true;
+  if (button) {
+    button.disabled = true;
+    button.textContent = '발송 중...';
+  }
+  try {
+    const { data, error } = await supabase.rpc('request_member_password_reset', { p_user_id: selectedMemberId });
+    if (error || !data?.email) return window.toast('관리자 권한 또는 회원 정보를 확인하지 못했습니다.');
+    const { error: mailError } = await supabase.auth.resetPasswordForEmail(data.email, {
+      redirectTo: `${window.location.origin}/?password_recovery=1`,
+    });
+    if (mailError) return window.toast(mailError.message || '재설정 메일 발송에 실패했습니다.');
+    window.toast(`${data.email}로 비밀번호 재설정 메일을 발송했습니다.`);
+  } finally {
+    adminPasswordResetBusy = false;
+    if (button) {
+      button.disabled = false;
+      button.textContent = '비밀번호 재설정 메일 발송';
+    }
+  }
+}
 
 window.openPage = (id) => {
   if (!pages[id]) return;
@@ -970,6 +1054,7 @@ async function openMemberDetail(userId) {
   byId('memberDetailTitle').textContent = '불러오는 중...';
   byId('memberDetailEmail').textContent = '';
   byId('memberDetailSummary').innerHTML = '';
+  byId('memberPasswordResetActions')?.classList.add('hidden');
   byId('memberMonthlyPerformance').innerHTML = '<tr><td colspan="6" class="empty-cell">월별 수익을 불러오는 중입니다.</td></tr>';
   memberDetailBusy = true;
   const { data, error } = await supabase.rpc('get_admin_member_monthly_performance', {
@@ -994,6 +1079,7 @@ async function openMemberDetail(userId) {
     <div><small>최대 포지션 비중</small><b>${Number(member.max_position_ratio ?? 30)}%</b></div>
     <div><small>가입일</small><b>${member.created_at ? new Date(member.created_at).toLocaleDateString('ko-KR') : '-'}</b></div>
     ${member.role === 'MEMBER' ? '<div class="member-control-actions"><small>관리자 카피 제어</small><div class="actions"><button class="btn" type="button" data-member-control="PAUSE">일시중지</button><button class="btn" type="button" data-member-control="REDUCE_ONLY">축소 전용</button><button class="btn red" type="button" data-member-control="HALT">중단</button><button class="btn green" type="button" data-member-control="RESUME">재개</button></div></div>' : ''}`;
+  byId('memberPasswordResetActions')?.classList.toggle('hidden', member.role !== 'MEMBER');
   byId('memberMonthlyPerformance').innerHTML = months.length ? months.map((month) => {
     const netPnl = Number(month.net_pnl || 0);
     const returnPct = month.return_pct == null ? null : Number(month.return_pct);
@@ -1092,6 +1178,7 @@ document.addEventListener('click', async (event) => {
   if (event.target.closest('#adminGateApiDisconnect')) await disconnectAdminMasterGateApi();
   if (event.target.closest('#adminEventsRefresh')) await loadAdminOperationalEvents();
   if (event.target.closest('#adminAuditRefresh')) await loadAdminAuditLog();
+  if (event.target.closest('#memberPasswordResetButton')) await requestMemberPasswordReset();
   if (event.target.closest('#copySettingsSave')) await saveCopySettings();
   if (event.target.closest('#adminAnalysisLoad')) await loadAdminMemberTradingAnalysis();
   const memberDetailButton = event.target.closest('[data-member-detail]');
@@ -1127,6 +1214,10 @@ document.addEventListener('submit', async (event) => {
     event.preventDefault();
     await saveAdminGateApiCredentials();
   }
+  if (event.target.id === 'passwordChangeForm') {
+    event.preventDefault();
+    await changeMyPassword();
+  }
 });
 
 async function boot() {
@@ -1145,12 +1236,24 @@ async function boot() {
     setAuthMessage('Supabase 환경변수를 설정하면 실제 회원가입과 로그인이 활성화됩니다.', 'warn-box');
     return;
   }
-  const { data } = await supabase.auth.getSession();
-  await routeSession(data.session);
   supabase.auth.onAuthStateChange((event, session) => {
     if (event === 'SIGNED_OUT') showAuth('login');
     if (event === 'TOKEN_REFRESHED' && session) routeSession(session);
+    if (event === 'PASSWORD_RECOVERY' && session) {
+      passwordRecoveryMode = true;
+      window.setTimeout(async () => {
+        await routeSession(session);
+        if (currentProfile?.role === 'MEMBER') {
+          openPage('member-account');
+          byId('currentPasswordField')?.classList.add('hidden');
+          byId('passwordRecoveryNotice')?.classList.remove('hidden');
+          byId('newPassword')?.focus();
+        }
+      }, 0);
+    }
   });
+  const { data } = await supabase.auth.getSession();
+  await routeSession(data.session);
 }
 
 boot();

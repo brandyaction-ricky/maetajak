@@ -400,6 +400,51 @@ td,
   margin-top: 8px;
 }
 
+.member-password-reset-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  margin: 18px 0;
+  padding: 16px;
+  border: 1px solid #303030;
+  border-radius: 10px;
+  background: #121212;
+}
+
+.member-password-reset-actions h3,
+.member-password-reset-actions p {
+  margin: 0;
+}
+
+.member-password-reset-actions p {
+  margin-top: 6px;
+  color: #888;
+  font-size: 10px;
+}
+
+.account-password-divider {
+  margin: 20px 0 4px;
+  border-top: 1px solid #303030;
+}
+
+.password-change-form {
+  margin-top: 12px;
+}
+
+.password-recovery-notice {
+  margin-top: 12px;
+  border-color: #1f6747;
+  color: #28d18b;
+}
+
+.notice.success {
+  margin-bottom: 14px;
+  border-color: #1f6747;
+  background: #0c251a;
+  color: #72e6af;
+}
+
 .payload-cell {
   max-width: 360px;
   overflow: hidden;
@@ -1129,6 +1174,15 @@ td,
   #member-account .card {
     min-height: 0;
     height: auto;
+  }
+
+  .member-password-reset-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .member-password-reset-actions .btn {
+    width: 100%;
   }
 
   #gateApiForm .permission-check {
