@@ -11,12 +11,13 @@ export const ACCOUNT_MAIN_KEYS_PATH = '/api/v4/account/main_keys';
 export const GATE_CHANNEL_ID_PATTERN = /^[a-z0-9]{1,19}$/;
 
 export class GateApiError extends Error {
-  constructor(message, { code = 'GATE_API_ERROR', status = 0, payload = null, outcomeUnknown = false } = {}) {
+  constructor(message, { code = 'GATE_API_ERROR', status = 0, payload = null, path = '', outcomeUnknown = false } = {}) {
     super(message);
     this.name = 'GateApiError';
     this.code = code;
     this.status = status;
     this.payload = payload;
+    this.path = path;
     this.outcomeUnknown = outcomeUnknown;
   }
 }
@@ -87,7 +88,7 @@ export async function gateRequest({
   if (!response.ok) {
     const mapped = mapGateError(response.status, payload);
     throw new GateApiError(mapped.message, {
-      code: mapped.code, status: response.status, payload,
+      code: mapped.code, status: response.status, payload, path,
       outcomeUnknown: isWrite && (response.status >= 500 || response.status === 408),
     });
   }
@@ -157,21 +158,42 @@ export async function verifyGateAccount({ gateUid, apiKey, secretKey, expectedPu
     return { success: false, errorCode: 'WORKER_IP_NOT_CONFIGURED', errorMessage: '고정 Worker IP가 아직 설정되지 않았습니다.' };
   }
   try {
-    const [futuresResponse, detailResponse, keysResponse] = await Promise.all([
-      gateRequest({ apiKey, secretKey, path: FUTURES_ACCOUNT_PATH, fetchImpl, baseUrl }),
-      gateRequest({ apiKey, secretKey, path: ACCOUNT_DETAIL_PATH, fetchImpl, baseUrl }),
-      gateRequest({ apiKey, secretKey, path: ACCOUNT_MAIN_KEYS_PATH, fetchImpl, baseUrl }),
-    ]);
+    // Keep these checks sequential so a failure in the new main-keys endpoint
+    // cannot be misreported as a Futures read failure. Gate added main_keys in
+    // API v4.105.11 and access can differ from the Futures account endpoint.
+    const futuresResponse = await gateRequest({ apiKey, secretKey, path: FUTURES_ACCOUNT_PATH, fetchImpl, baseUrl });
     const gateUserId = futuresResponse.payload?.user == null ? '' : String(futuresResponse.payload.user);
     if (!gateUserId || gateUserId !== String(gateUid)) {
       return { success: false, gateUserId, errorCode: 'UID_MISMATCH', errorMessage: '입력한 UID와 API Key 계정이 일치하지 않습니다.' };
     }
+    const detailResponse = await gateRequest({ apiKey, secretKey, path: ACCOUNT_DETAIL_PATH, fetchImpl, baseUrl });
     if (detailResponse.payload?.user_id != null && String(detailResponse.payload.user_id) !== String(gateUid)) {
       return { success: false, gateUserId, errorCode: 'UID_MISMATCH', errorMessage: '입력한 UID와 API Key 계정이 일치하지 않습니다.' };
     }
     const ipWhitelist = Array.isArray(detailResponse.payload?.ip_whitelist) ? detailResponse.payload.ip_whitelist.map(String) : [];
     if (!ipWhitelist.includes(String(expectedPublicIp))) {
       return { success: false, gateUserId, errorCode: 'IP_NOT_ALLOWED', errorMessage: 'Gate.io API IP Whitelist에 현재 Worker 고정 IP를 등록해 주세요.' };
+    }
+    let keysResponse;
+    try {
+      keysResponse = await gateRequest({ apiKey, secretKey, path: ACCOUNT_MAIN_KEYS_PATH, fetchImpl, baseUrl });
+    } catch (error) {
+      if (error instanceof GateApiError) {
+        return {
+          success: false,
+          gateUserId,
+          errorCode: error.status === 403 ? 'API_PERMISSION_LOOKUP_DENIED' : 'API_PERMISSION_LOOKUP_FAILED',
+          errorMessage: error.status === 403
+            ? 'Gate.io가 선물 계정 조회는 허용했지만 API 권한 정보 조회를 거부했습니다.'
+            : 'Gate.io API 권한 정보 조회에 실패했습니다.',
+          diagnostic: {
+            path: error.path || ACCOUNT_MAIN_KEYS_PATH,
+            status: error.status || 0,
+            label: String(error.payload?.label || '').slice(0, 80),
+          },
+        };
+      }
+      throw error;
     }
     const keyInfo = matchingKeyInfo(apiKey, keysResponse.payload);
     if (!keyInfo || Number(keyInfo.state || 0) !== 1) {
@@ -198,7 +220,14 @@ export async function verifyGateAccount({ gateUid, apiKey, secretKey, expectedPu
     }
     return { success: true, gateUserId, futuresRead: true, futuresTrade, ipWhitelisted: true, withdrawalDisabled: true };
   } catch (error) {
-    return { success: false, errorCode: error instanceof GateApiError ? error.code : 'GATE_UNREACHABLE', errorMessage: error instanceof GateApiError ? error.message : 'Gate.io API에 연결하지 못했습니다.' };
+    return {
+      success: false,
+      errorCode: error instanceof GateApiError ? error.code : 'GATE_UNREACHABLE',
+      errorMessage: error instanceof GateApiError ? error.message : 'Gate.io API에 연결하지 못했습니다.',
+      diagnostic: error instanceof GateApiError ? {
+        path: error.path || '', status: error.status || 0, label: String(error.payload?.label || '').slice(0, 80),
+      } : undefined,
+    };
   }
 }
 
