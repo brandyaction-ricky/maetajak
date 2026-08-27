@@ -18,7 +18,7 @@ export function suppressExecutableIntents(positions, mode) {
   return positions.map(({ intent: _intent, ...observation }) => observation);
 }
 
-export function planMemberPositions({ cycleId, system, master, member, contracts }) {
+export function planMemberPositions({ cycleId, system, master, member, contracts, simulateSystemHalt = false }) {
   const masterPositions = positionMap(master.positions);
   const memberPositions = positionMap(member.positions);
   const previousStates = new Map((member.previous_states || []).map((state) => [state.contract, state]));
@@ -45,12 +45,13 @@ export function planMemberPositions({ cycleId, system, master, member, contracts
     const manual = detectManualOverride({
       previousActualSize: Number(previous?.actual_size || 0), currentActualSize: memberPosition.size,
       knownPlatformFillDelta: Number(previous?.known_fill_delta || 0), sizeStep: contractInfo.sizeStep,
-      hasUnresolvedPlatformOrder: Boolean(previous?.has_unresolved_order), hasBaseline: Boolean(previous),
+      hasUnresolvedPlatformOrder: Boolean(previous?.has_unresolved_order),
+      hasBaseline: Boolean(previous) && !['HALTED', 'PAUSED'].includes(previous.state),
     });
     const leverageExceeded = Number(memberPosition.leverage || 0) > Number(member.max_leverage || 10);
     const reduceOnly = leverageExceeded || Boolean(member.reduce_only) || Boolean(member.close_positions_requested);
     const state = deriveCopyState({
-      systemHalted: Boolean(system.emergency_halted), memberHalted: Boolean(member.halted),
+      systemHalted: Boolean(system.emergency_halted) && !simulateSystemHalt, memberHalted: Boolean(member.halted),
       symbolPaused: Boolean(member.copy_paused) && !member.close_positions_requested,
       manualOverride: manual.detected || previous?.state === 'MANUAL_OVERRIDE', reduceOnly,
       targetSize: target.targetSize, actualSize: memberPosition.size, driftToleranceSize: contractInfo.sizeStep,
@@ -133,7 +134,14 @@ export class TradingRunner {
     for (const memberContext of memberContexts) {
       try {
         const member = await this.readAccount(memberContext);
-        const plannedPositions = planMemberPositions({ cycleId, system: context.system, master, member, contracts });
+        const plannedPositions = planMemberPositions({
+          cycleId,
+          system: context.system,
+          master,
+          member,
+          contracts,
+          simulateSystemHalt: this.mode === 'DRY_RUN',
+        });
         simulatedIntents += plannedPositions.filter((position) => position.intent).length;
         member.planned_positions = suppressExecutableIntents(plannedPositions, this.mode);
         members.push(member);
