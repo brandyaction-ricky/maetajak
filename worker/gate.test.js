@@ -77,12 +77,13 @@ test('Gate API Broker Channel ID follows the official format', () => {
   }
 });
 
-test('Gate futures account uses cross-margin equity when classic total is zero', async () => {
+test('Gate new classic futures account uses cross-margin equity when classic total is zero', async () => {
   const account = await getFuturesAccount({
     apiKey: 'api-key', secretKey: 'secret-key',
     fetchImpl: async () => new Response(JSON.stringify({
       user: 45997867,
       total: '0',
+      margin_mode: 0,
       available: '17150.83563',
       cross_margin_balance: '17320.25',
       unrealized_pnl: '-4.75',
@@ -91,6 +92,33 @@ test('Gate futures account uses cross-margin equity when classic total is zero',
   assert.equal(account.total, 17320.25);
   assert.equal(account.available, 17150.83563);
   assert.equal(account.unrealisedPnl, -4.75);
+});
+
+test('Gate unified futures account uses unified total equity', async () => {
+  const account = await getFuturesAccount({
+    apiKey: 'api-key', secretKey: 'secret-key',
+    fetchImpl: async (url) => {
+      if (url.endsWith('/futures/usdt/accounts')) return new Response(JSON.stringify({
+        user: 45997867, total: '0', margin_mode: 3,
+        available: '17150.85265', cross_margin_balance: '0.000000002075',
+      }), { status: 200 });
+      if (url.endsWith('/unified/accounts')) return new Response(JSON.stringify({
+        unified_account_total_equity: '17160.25',
+      }), { status: 200 });
+      throw new Error(`unexpected URL: ${url}`);
+    },
+  });
+  assert.equal(account.total, 17160.25);
+  assert.equal(account.available, 17150.85265);
+});
+
+test('Gate futures account rejects implausibly small equity', async () => {
+  await assert.rejects(() => getFuturesAccount({
+    apiKey: 'api-key', secretKey: 'secret-key',
+    fetchImpl: async () => new Response(JSON.stringify({
+      user: 45997867, total: '0.000000002075', available: '17150.85265', margin_mode: 0,
+    }), { status: 200 }),
+  }), (error) => error instanceof GateApiError && error.code === 'INVALID_ACCOUNT_EQUITY');
 });
 
 test('Gate account verification rejects a mismatched UID', async () => {
