@@ -86,8 +86,10 @@ Preflight가 `ok: true`를 반환하기 전에는 Worker를 시작하지 않습�
 - 마지막 활성화:
 
 ```bash
-COPY_ACTIVATION_CONFIRMATION=ENABLE_LIVE_COPY_TRADING npm run worker:activate
+sudo /opt/maetajak/deploy/lightsail-enable-live.sh
 ```
+
+스크립트에서 `ENABLE_LIVE_COPY_TRADING`을 직접 입력해야 합니다. Telegram/Webhook 테스트 알림, LIVE Preflight, Worker 재시작, 40초 임대 교체, DB 실행 활성화를 순서대로 수행합니다. 활성화 완료 전 단계가 하나라도 실패하면 `/etc/maetajak/worker.env.before-live` 백업으로 DRY_RUN 설정을 복구하고 DB 실행 잠금은 해제하지 않습니다.
 
 DB는 최근 Worker heartbeat, 운영 Gate URL, 고정 IP, 최근 준비 테스트, 검증된 Master와 회원이 모두 확인될 때만 활성화를 허용합니다. Worker heartbeat가 30초 넘게 끊긴 상태에서 주문을 가져오려 하면 자동으로 전체 실행이 중단됩니다.
 
