@@ -2,6 +2,7 @@ import { createHash, createHmac } from 'node:crypto';
 
 export const GATE_API_BASE_URL = 'https://api.gateio.ws';
 export const FUTURES_ACCOUNT_PATH = '/api/v4/futures/usdt/accounts';
+export const UNIFIED_ACCOUNT_PATH = '/api/v4/unified/accounts';
 export const FUTURES_POSITIONS_PATH = '/api/v4/futures/usdt/positions';
 export const FUTURES_CONTRACTS_PATH = '/api/v4/futures/usdt/contracts';
 export const FUTURES_ORDERS_PATH = '/api/v4/futures/usdt/orders';
@@ -233,17 +234,27 @@ export async function verifyGateAccount({ gateUid, apiKey, secretKey, expectedPu
 
 export async function getFuturesAccount(options) {
   const { payload } = await gateRequest({ ...options, path: FUTURES_ACCOUNT_PATH });
-  // Gate only populates `total` for classic futures accounts. Newer
-  // cross-margin modes expose the account equity as `cross_margin_balance`.
-  // Do not substitute `available`: doing so would overstate the Master's
-  // exposure whenever margin is already committed to a position.
+  // Gate only populates `total` for classic futures accounts. Unified margin
+  // modes (1-3) must use the unified-account equity endpoint; fields such as
+  // `cross_margin_balance` are not account equity in those modes.
   const classicTotal = Number(payload?.total || 0);
   const crossMarginBalance = Number(payload?.cross_margin_balance || 0);
-  const total = crossMarginBalance > 0 ? crossMarginBalance : classicTotal;
+  const marginMode = Number(payload?.margin_mode || 0);
+  let total;
+  if (marginMode > 0 || (!(classicTotal > 0) && !(crossMarginBalance > 0))) {
+    const unified = await gateRequest({ ...options, path: UNIFIED_ACCOUNT_PATH });
+    total = Number(unified.payload?.unified_account_total_equity || 0);
+  } else {
+    total = classicTotal > 0 ? classicTotal : crossMarginBalance;
+  }
+  const available = Number(payload?.available ?? payload?.cross_available ?? 0);
+  if (!(total > 0) || (available > 0 && total < available * 0.5)) {
+    throw new GateApiError('Gate.io 계정 자산 값을 안전하게 확인할 수 없습니다.', { code: 'INVALID_ACCOUNT_EQUITY', path: FUTURES_ACCOUNT_PATH });
+  }
   return {
     user: payload?.user == null ? '' : String(payload.user),
     total,
-    available: Number(payload?.available ?? payload?.cross_available ?? 0),
+    available,
     unrealisedPnl: Number(payload?.unrealised_pnl ?? payload?.unrealized_pnl ?? payload?.cross_unrealised_pnl ?? 0),
   };
 }
