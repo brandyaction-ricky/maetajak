@@ -35,3 +35,9 @@ test('Master UID, API key and Secret key each use a full-width row', () => {
   assert.match(theme, /\.admin-api-fields\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\)/s);
   assert.match(theme, /\.admin-api-fields \.field,[\s\S]*\.admin-api-fields \.field input\s*\{[^}]*width:\s*100%/s);
 });
+
+test('Master API instructions require Futures Read Only without order permission', () => {
+  assert.match(main, /Perpetual Futures Read Only만 허용/);
+  assert.match(main, /Master 주문 권한/);
+  assert.match(main, /verified && !connection\.futures_trade/);
+});

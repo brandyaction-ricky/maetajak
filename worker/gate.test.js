@@ -59,6 +59,24 @@ test('Gate account verification accepts a signed Futures account response', asyn
   assert.equal(result.withdrawalDisabled, true);
 });
 
+test('Master verification requires Futures Read Only', async () => {
+  const accepted = await verifyGateAccount({
+    gateUid: '45997867', apiKey: 'api-key', secretKey: 'secret-key', expectedPublicIp: '203.0.113.10',
+    requiresTradingPermission: false,
+    fetchImpl: verificationFetch({ permissions: [{ name: 'futures', read_only: true }] }),
+  });
+  assert.equal(accepted.success, true);
+  assert.equal(accepted.futuresTrade, false);
+
+  const rejected = await verifyGateAccount({
+    gateUid: '45997867', apiKey: 'api-key', secretKey: 'secret-key', expectedPublicIp: '203.0.113.10',
+    requiresTradingPermission: false,
+    fetchImpl: verificationFetch({ permissions: [{ name: 'futures', read_only: false }] }),
+  });
+  assert.equal(rejected.success, false);
+  assert.equal(rejected.errorCode, 'MASTER_READ_ONLY_REQUIRED');
+});
+
 test('Gate account verification requires the exact fixed Worker IP', async () => {
   const result = await verifyGateAccount({
     gateUid: '45997867', apiKey: 'api-key', secretKey: 'secret-key', expectedPublicIp: '203.0.113.11',

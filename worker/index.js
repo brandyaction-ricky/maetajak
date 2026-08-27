@@ -45,7 +45,7 @@ export async function runVerificationBatch() {
     for (const job of jobs || []) {
       const result = await verifyGateAccount({
         gateUid: job.gate_uid, apiKey: job.api_key, secretKey: job.secret_key,
-        expectedPublicIp: workerPublicIp, baseUrl,
+        expectedPublicIp: workerPublicIp, requiresTradingPermission: job.connection_role !== 'MASTER', baseUrl,
       });
       const { error: completionError } = await supabase.rpc('complete_gate_api_verification', {
         p_job_id: job.job_id, p_success: result.success, p_gate_user_id: result.gateUserId || null,

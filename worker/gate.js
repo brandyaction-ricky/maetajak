@@ -136,6 +136,9 @@ export async function verifyGateAccount({ gateUid, apiKey, secretKey, expectedPu
       return { success: false, gateUserId, errorCode: 'FUTURES_READ_REQUIRED', errorMessage: 'Perpetual Futures 권한을 활성화해 주세요.' };
     }
     const futuresTrade = futuresPermission.read_only === false;
+    if (!requiresTradingPermission && futuresTrade) {
+      return { success: false, gateUserId, errorCode: 'MASTER_READ_ONLY_REQUIRED', errorMessage: 'Master API의 Perpetual Futures 권한을 Read Only로 설정해 주세요.' };
+    }
     if (requiresTradingPermission && !futuresTrade) {
       return { success: false, gateUserId, errorCode: 'FUTURES_TRADE_REQUIRED', errorMessage: 'Perpetual Futures 권한을 Read-Write로 설정해 주세요.' };
     }
