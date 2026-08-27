@@ -22,7 +22,9 @@ git merge --ff-only origin/main
 export MAETAJAK_ENV_FILE="${ENV_FILE}"
 docker compose -f docker-compose.worker.yml build --pull copy-worker
 docker compose -f docker-compose.worker.yml run --rm copy-worker npm run worker:preflight
-systemctl restart maetajak-worker.service
+systemctl stop maetajak-worker.service
+sleep 40
+systemctl start maetajak-worker.service
 
 echo "Updated ${previous_sha} -> $(git rev-parse HEAD)"
 echo "If verification fails, stop the worker before performing a reviewed rollback."
