@@ -35,6 +35,30 @@ test('global halt blocks all order intents', () => {
   assert.equal(position.intent, null);
 });
 
+test('DRY_RUN can calculate a simulated delta while the global live halt remains enabled', () => {
+  const [position] = planMemberPositions({
+    ...base,
+    system: { emergency_halted: true },
+    simulateSystemHalt: true,
+  });
+  assert.equal(position.state, 'DRIFT');
+  assert.equal(position.delta_size, 30);
+  assert.equal(position.intent.delta_size, 30);
+});
+
+test('a halted observation becomes the new baseline before copy testing resumes', () => {
+  const input = structuredClone(base);
+  input.member.positions = [];
+  input.member.previous_states = [{
+    contract: 'BTC_USDT', actual_size: 20, known_fill_delta: 0,
+    has_unresolved_order: false, state: 'HALTED',
+  }];
+  const [position] = planMemberPositions({ ...input, contracts, simulateSystemHalt: true });
+  assert.equal(position.state, 'DRIFT');
+  assert.equal(position.unexplained_delta, 0);
+  assert.equal(position.intent.delta_size, 30);
+});
+
 test('large deltas are chunked to the strictest Gate order size limit', () => {
   const limitedContracts = new Map([['BTC_USDT', { ...contracts.get('BTC_USDT'), orderSizeMax: 25, marketOrderSizeMax: 10 }]]);
   const [position] = planMemberPositions({ ...base, contracts: limitedContracts });
@@ -69,7 +93,7 @@ test('DRY_RUN records target, actual, and delta without an intent key', async ()
   runner.rpc = async (name, parameters = {}) => {
     if (name === 'get_copy_worker_context') {
       return {
-        system: { emergency_halted: false },
+        system: { emergency_halted: true },
         master: { trading_account_id: 'master-1' },
         members: [{
           trading_account_id: 'member-account-1', user_id: 'member-1', copy_ratio: 100,
