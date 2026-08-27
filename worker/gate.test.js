@@ -6,13 +6,14 @@ import {
   validateGateChannelId, verifyGateAccount,
 } from './gate.js';
 
-function verificationFetch({ user = 45997867, ipWhitelist = ['203.0.113.10'], permissions = [{ name: 'futures', read_only: false }], legacyKeyList = false } = {}) {
+function verificationFetch({ user = 45997867, ipWhitelist = ['203.0.113.10'], permissions = [{ name: 'futures', read_only: false }], legacyKeyList = false, mainKeysStatus = 200, mainKeysLabel = 'FORBIDDEN' } = {}) {
   return async (url, options) => {
     assert.equal(options.method, 'GET');
     assert.match(options.headers.SIGN, /^[a-f0-9]{128}$/);
     if (url.endsWith('/futures/usdt/accounts')) return new Response(JSON.stringify({ user, total: '0' }), { status: 200 });
     if (url.endsWith('/account/detail')) return new Response(JSON.stringify({ user_id: user, ip_whitelist: ipWhitelist }), { status: 200 });
     if (url.endsWith('/account/main_keys')) {
+      if (mainKeysStatus !== 200) return new Response(JSON.stringify({ label: mainKeysLabel }), { status: mainKeysStatus });
       const keyInfo = { state: 1, key: { mode: 1 }, perms: permissions };
       return new Response(JSON.stringify(legacyKeyList ? [{ ...keyInfo, key: 'api-key' }] : keyInfo), { status: 200 });
     }
@@ -99,6 +100,17 @@ test('Gate account verification accepts a Perpetual Futures alias with explicit 
   });
   assert.equal(result.success, true);
   assert.equal(result.futuresTrade, true);
+});
+
+test('Gate main-keys denial is not misreported as missing Futures read permission', async () => {
+  const result = await verifyGateAccount({
+    gateUid: '45997867', apiKey: 'api-key', secretKey: 'secret-key', expectedPublicIp: '203.0.113.10',
+    fetchImpl: verificationFetch({ mainKeysStatus: 403 }),
+  });
+  assert.equal(result.success, false);
+  assert.equal(result.errorCode, 'API_PERMISSION_LOOKUP_DENIED');
+  assert.equal(result.diagnostic.path, '/api/v4/account/main_keys');
+  assert.equal(result.diagnostic.status, 403);
 });
 
 test('Master verification requires Futures Read Only', async () => {
