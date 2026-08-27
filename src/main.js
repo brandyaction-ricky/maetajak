@@ -784,6 +784,8 @@ function renderGateConnection(connection) {
     FUTURES_READ_REQUIRED: 'Perpetual Futures Read 권한을 확인해 주세요.',
     FUTURES_TRADE_REQUIRED: 'Perpetual Futures 권한을 Read-Write로 설정해 주세요.',
     API_KEY_DETAILS_UNAVAILABLE: 'API Key 상태와 권한 정보를 확인할 수 없습니다.',
+    API_PERMISSION_LOOKUP_DENIED: '선물 계정 접속은 성공했지만 Gate.io가 API 권한 정보 조회를 거부했습니다.',
+    API_PERMISSION_LOOKUP_FAILED: '선물 계정 접속은 성공했지만 Gate.io API 권한 정보 조회에 실패했습니다.',
     EXCESS_API_PERMISSIONS: 'Futures 외의 쓰기 권한을 모두 비활성화해 주세요.',
     GATE_UNREACHABLE: 'Gate.io 연결이 지연되고 있습니다. 잠시 후 다시 검증해 주세요.',
     GATE_API_ERROR: 'Gate.io API 응답을 확인하지 못했습니다.',
