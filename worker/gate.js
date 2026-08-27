@@ -8,6 +8,7 @@ export const FUTURES_ORDERS_PATH = '/api/v4/futures/usdt/orders';
 export const FUTURES_TRADES_PATH = '/api/v4/futures/usdt/my_trades';
 export const ACCOUNT_DETAIL_PATH = '/api/v4/account/detail';
 export const ACCOUNT_MAIN_KEYS_PATH = '/api/v4/account/main_keys';
+export const GATE_CHANNEL_ID_PATTERN = /^[a-z0-9]{1,19}$/;
 
 export class GateApiError extends Error {
   constructor(message, { code = 'GATE_API_ERROR', status = 0, payload = null, outcomeUnknown = false } = {}) {
@@ -20,10 +21,21 @@ export class GateApiError extends Error {
   }
 }
 
-export function buildGateHeaders({ apiKey, secretKey, method = 'GET', path, query = '', body = '', timestamp = Math.floor(Date.now() / 1000) }) {
+export function validateGateChannelId(channelId) {
+  const normalized = String(channelId || '').trim();
+  if (!GATE_CHANNEL_ID_PATTERN.test(normalized)) {
+    throw new GateApiError('Gate API Broker Channel ID 설정이 올바르지 않습니다.', { code: 'INVALID_GATE_CHANNEL_ID' });
+  }
+  return normalized;
+}
+
+export function buildGateHeaders({ apiKey, secretKey, method = 'GET', path, query = '', body = '', timestamp = Math.floor(Date.now() / 1000), channelId = '' }) {
   const hashedPayload = createHash('sha512').update(body).digest('hex');
   const source = [method.toUpperCase(), path, query, hashedPayload, timestamp].join('\n');
-  return { Accept: 'application/json', KEY: apiKey, Timestamp: String(timestamp), SIGN: createHmac('sha512', secretKey).update(source).digest('hex') };
+  const headers = { Accept: 'application/json', KEY: apiKey, Timestamp: String(timestamp), SIGN: createHmac('sha512', secretKey).update(source).digest('hex') };
+  if (path.startsWith('/api/v4/futures/')) headers['X-Gate-Size-Decimal'] = '1';
+  if (channelId) headers['X-Gate-Channel-Id'] = validateGateChannelId(channelId);
+  return headers;
 }
 
 export function mapGateError(status, payload) {
@@ -50,11 +62,14 @@ export function parseGateJson(text) {
 
 export async function gateRequest({
   apiKey, secretKey, method = 'GET', path, query = {}, body,
-  fetchImpl = fetch, baseUrl = GATE_API_BASE_URL, timeoutMs = 10_000, expiresAtMs,
+  fetchImpl = fetch, baseUrl = GATE_API_BASE_URL, timeoutMs = 10_000, expiresAtMs, channelId = '',
 }) {
+  const normalizedMethod = method.toUpperCase();
+  const isWrite = normalizedMethod !== 'GET';
+  const brokerChannelId = isWrite ? validateGateChannelId(channelId) : (channelId ? validateGateChannelId(channelId) : '');
   const queryString = typeof query === 'string' ? query : encodeQuery(query);
   const bodyString = body === undefined ? '' : JSON.stringify(body);
-  const headers = buildGateHeaders({ apiKey, secretKey, method, path, query: queryString, body: bodyString });
+  const headers = buildGateHeaders({ apiKey, secretKey, method: normalizedMethod, path, query: queryString, body: bodyString, channelId: brokerChannelId });
   if (bodyString) headers['Content-Type'] = 'application/json';
   if (expiresAtMs) headers['X-Gate-Exptime'] = String(Math.trunc(expiresAtMs));
   let response;
@@ -63,7 +78,6 @@ export async function gateRequest({
       method, headers, body: bodyString || undefined, signal: AbortSignal.timeout(timeoutMs),
     });
   } catch (error) {
-    const isWrite = method.toUpperCase() !== 'GET';
     throw new GateApiError(isWrite ? '주문 결과를 확인하지 못했습니다.' : 'Gate.io API에 연결하지 못했습니다.', {
       code: error?.name === 'TimeoutError' ? 'GATE_TIMEOUT' : 'GATE_UNREACHABLE', outcomeUnknown: isWrite,
     });
@@ -72,7 +86,10 @@ export async function gateRequest({
   try { payload = parseGateJson(await response.text()); } catch { /* Gate can return an empty error response. */ }
   if (!response.ok) {
     const mapped = mapGateError(response.status, payload);
-    throw new GateApiError(mapped.message, { code: mapped.code, status: response.status, payload });
+    throw new GateApiError(mapped.message, {
+      code: mapped.code, status: response.status, payload,
+      outcomeUnknown: isWrite && (response.status >= 500 || response.status === 408),
+    });
   }
   return { payload, status: response.status };
 }
@@ -88,7 +105,7 @@ function matchingKeyInfo(apiKey, keys) {
   return matches.length === 1 ? matches[0] : null;
 }
 
-export async function verifyGateAccount({ gateUid, apiKey, secretKey, expectedPublicIp, fetchImpl = fetch, baseUrl = GATE_API_BASE_URL }) {
+export async function verifyGateAccount({ gateUid, apiKey, secretKey, expectedPublicIp, requiresTradingPermission = true, fetchImpl = fetch, baseUrl = GATE_API_BASE_URL }) {
   if (!expectedPublicIp) {
     return { success: false, errorCode: 'WORKER_IP_NOT_CONFIGURED', errorMessage: '고정 Worker IP가 아직 설정되지 않았습니다.' };
   }
@@ -118,14 +135,15 @@ export async function verifyGateAccount({ gateUid, apiKey, secretKey, expectedPu
     if (!futuresPermission) {
       return { success: false, gateUserId, errorCode: 'FUTURES_READ_REQUIRED', errorMessage: 'Perpetual Futures 권한을 활성화해 주세요.' };
     }
-    if (futuresPermission.read_only !== false) {
+    const futuresTrade = futuresPermission.read_only === false;
+    if (requiresTradingPermission && !futuresTrade) {
       return { success: false, gateUserId, errorCode: 'FUTURES_TRADE_REQUIRED', errorMessage: 'Perpetual Futures 권한을 Read-Write로 설정해 주세요.' };
     }
     const unsafePermission = permissions.find((permission) => permission?.name !== 'futures' && permission?.read_only === false);
     if (unsafePermission) {
       return { success: false, gateUserId, errorCode: 'EXCESS_API_PERMISSIONS', errorMessage: `${unsafePermission.name} 쓰기 권한을 비활성화하고 Futures 권한만 사용해 주세요.` };
     }
-    return { success: true, gateUserId, futuresRead: true, futuresTrade: true, ipWhitelisted: true, withdrawalDisabled: true };
+    return { success: true, gateUserId, futuresRead: true, futuresTrade, ipWhitelisted: true, withdrawalDisabled: true };
   } catch (error) {
     return { success: false, errorCode: error instanceof GateApiError ? error.code : 'GATE_UNREACHABLE', errorMessage: error instanceof GateApiError ? error.message : 'Gate.io API에 연결하지 못했습니다.' };
   }

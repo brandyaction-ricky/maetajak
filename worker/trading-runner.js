@@ -13,6 +13,11 @@ function sourceHash(value) { return createHash('sha256').update(JSON.stringify(v
 function positionMap(positions) { return new Map(positions.map((position) => [position.contract, position])); }
 function credentials(account) { return { apiKey: account.api_key, secretKey: account.secret_key }; }
 
+export function suppressExecutableIntents(positions, mode) {
+  if (mode === 'LIVE') return positions;
+  return positions.map((position) => ({ ...position, intent: null }));
+}
+
 export function planMemberPositions({ cycleId, system, master, member, contracts }) {
   const masterPositions = positionMap(master.positions);
   const memberPositions = positionMap(member.positions);
@@ -77,8 +82,8 @@ export function planMemberPositions({ cycleId, system, master, member, contracts
 }
 
 export class TradingRunner {
-  constructor({ supabase, baseUrl, workerId, workerVersion, publicIp, mode = 'OBSERVE', fetchImpl = fetch, logger = console }) {
-    Object.assign(this, { supabase, baseUrl, workerId, workerVersion, publicIp, mode, fetchImpl, logger });
+  constructor({ supabase, baseUrl, workerId, workerVersion, publicIp, channelId, mode = 'OBSERVE', fetchImpl = fetch, logger = console }) {
+    Object.assign(this, { supabase, baseUrl, workerId, workerVersion, publicIp, channelId, mode, fetchImpl, logger });
     this.contracts = null;
     this.contractsLoadedAt = 0;
   }
@@ -88,7 +93,7 @@ export class TradingRunner {
     return data;
   }
   async heartbeat(testPassed = false) {
-    return this.rpc('copy_worker_heartbeat', { p_worker_id: this.workerId, p_worker_version: this.workerVersion, p_gate_base_url: this.baseUrl, p_public_ip: this.publicIp || null, p_mode: this.mode, p_test_passed: testPassed });
+    return this.rpc('copy_worker_heartbeat', { p_worker_id: this.workerId, p_worker_version: this.workerVersion, p_gate_base_url: this.baseUrl, p_public_ip: this.publicIp || null, p_broker_channel_id: this.channelId || null, p_mode: this.mode, p_test_passed: testPassed });
   }
   async reportCycle(success, errorCode = null) {
     return this.rpc('report_copy_worker_cycle', { p_success: Boolean(success), p_error_code: errorCode ? String(errorCode).slice(0, 80) : null });
@@ -123,23 +128,26 @@ export class TradingRunner {
     const observedAt = new Date().toISOString();
     const master = await this.readAccount(context.master);
     const members = [];
+    let simulatedIntents = 0;
     for (const memberContext of context.members) {
       try {
         const member = await this.readAccount(memberContext);
-        member.planned_positions = planMemberPositions({ cycleId, system: context.system, master, member, contracts });
+        const plannedPositions = planMemberPositions({ cycleId, system: context.system, master, member, contracts });
+        simulatedIntents += plannedPositions.filter((position) => position.intent).length;
+        member.planned_positions = suppressExecutableIntents(plannedPositions, this.mode);
         members.push(member);
       } catch (error) {
         members.push({ ...memberContext, error_code: safeError(error), positions: [], planned_positions: [] });
       }
     }
     await this.rpc('record_copy_worker_cycle', { p_payload: { cycle_id: cycleId, source_version: sourceHash({ observedAt, master: master.positions }), observed_at: observedAt, master, members } });
-    return { observed: members.length, intents: members.reduce((sum, member) => sum + member.planned_positions.filter((position) => position.intent).length, 0) };
+    return { observed: members.length, intents: simulatedIntents };
   }
   async submitOrders(limit = 10) {
     const jobs = await this.rpc('claim_copy_order_intents', { p_limit: limit });
     for (const job of jobs || []) {
       try {
-        const response = await placeFuturesOrder({ apiKey: job.api_key, secretKey: job.secret_key, baseUrl: this.baseUrl, fetchImpl: this.fetchImpl, contract: job.contract, size: job.delta_size, reduceOnly: job.reduce_only, text: job.gate_order_text, slippageRatio: job.slippage_ratio });
+        const response = await placeFuturesOrder({ apiKey: job.api_key, secretKey: job.secret_key, channelId: this.channelId, baseUrl: this.baseUrl, fetchImpl: this.fetchImpl, contract: job.contract, size: job.delta_size, reduceOnly: job.reduce_only, text: job.gate_order_text, slippageRatio: job.slippage_ratio });
         const summary = summarizeGateOrder(response.payload);
         await this.rpc('complete_copy_order_attempt', { p_intent_id: job.intent_id, p_result_status: summary.finalStatus, p_gate_order_id: summary.gateOrderId, p_filled_size: summary.filledSize, p_average_fill_price: summary.averageFillPrice, p_http_status: response.status, p_gate_label: summary.finishAs, p_error_code: null, p_safe_response: { finish_as: summary.finishAs, left: summary.left } });
       } catch (error) {

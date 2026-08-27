@@ -1,6 +1,6 @@
 import { createClient } from '@supabase/supabase-js';
 import { randomUUID } from 'node:crypto';
-import { verifyGateAccount } from './gate.js';
+import { validateGateChannelId, verifyGateAccount } from './gate.js';
 import { TradingRunner } from './trading-runner.js';
 import { sendWorkerAlert } from './alerts.js';
 
@@ -12,17 +12,24 @@ const baseUrl = process.env.GATE_API_BASE_URL || 'https://api.gateio.ws';
 const workerId = `${process.env.WORKER_ID || 'maetajak-worker'}:${randomUUID()}`;
 const workerVersion = process.env.WORKER_VERSION || process.env.npm_package_version || 'dev';
 const workerPublicIp = process.env.WORKER_PUBLIC_IP || '';
+const gateChannelId = process.env.GATE_CHANNEL_ID || '';
 const tradingMode = process.env.TRADING_MODE || 'OBSERVE';
 const readinessCheck = process.env.RUN_READINESS_CHECK === 'true';
 const alertWebhookUrl = process.env.ALERT_WEBHOOK_URL || '';
 const alertWebhookBearer = process.env.ALERT_WEBHOOK_BEARER || '';
 if (!supabaseUrl || !serviceRoleKey) throw new Error('SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required');
+if (gateChannelId) validateGateChannelId(gateChannelId);
+if (gateChannelId && gateChannelId !== 'maetajak') throw new Error('GATE_CHANNEL_ID must equal the approved Channel ID maetajak');
+if (['DRY_RUN', 'LIVE'].includes(tradingMode) && !gateChannelId) {
+  throw new Error('DRY_RUN and LIVE modes require GATE_CHANNEL_ID');
+}
 if (tradingMode === 'LIVE' && (!workerPublicIp || baseUrl !== 'https://api.gateio.ws')) {
   throw new Error('LIVE mode requires WORKER_PUBLIC_IP and the production Gate API base URL');
 }
+if (tradingMode === 'LIVE' && !alertWebhookUrl) throw new Error('LIVE mode requires ALERT_WEBHOOK_URL');
 
 const supabase = createClient(supabaseUrl, serviceRoleKey, { auth: { persistSession: false, autoRefreshToken: false } });
-const runner = new TradingRunner({ supabase, baseUrl, workerId, workerVersion, publicIp: workerPublicIp, mode: tradingMode });
+const runner = new TradingRunner({ supabase, baseUrl, workerId, workerVersion, publicIp: workerPublicIp, channelId: gateChannelId, mode: tradingMode });
 const state = { verification: false, trading: false, stopping: false };
 
 function log(event, details = {}) {
@@ -36,7 +43,10 @@ export async function runVerificationBatch() {
     const { data: jobs, error } = await supabase.rpc('claim_gate_api_verification_jobs', { p_limit: 5 });
     if (error) throw error;
     for (const job of jobs || []) {
-      const result = await verifyGateAccount({ gateUid: job.gate_uid, apiKey: job.api_key, secretKey: job.secret_key, expectedPublicIp: workerPublicIp, baseUrl });
+      const result = await verifyGateAccount({
+        gateUid: job.gate_uid, apiKey: job.api_key, secretKey: job.secret_key,
+        expectedPublicIp: workerPublicIp, baseUrl,
+      });
       const { error: completionError } = await supabase.rpc('complete_gate_api_verification', {
         p_job_id: job.job_id, p_success: result.success, p_gate_user_id: result.gateUserId || null,
         p_error_code: result.errorCode || null, p_error_message: result.errorMessage || null,
@@ -56,7 +66,7 @@ export async function runTradingCycle() {
   try {
     await runner.heartbeat(false);
     const observation = await runner.syncOnce();
-    if (readinessCheck && tradingMode === 'DRY_RUN' && observation.observed > 0) await runner.heartbeat(true);
+    if (readinessCheck && tradingMode === 'DRY_RUN' && observation.observed > 0 && observation.intents > 0) await runner.heartbeat(true);
     const reconciled = await runner.reconcileOrders();
     const submitted = await runner.submitOrders();
     await runner.reportCycle(true);
@@ -82,7 +92,7 @@ function stop(signal) {
 process.on('SIGTERM', () => stop('SIGTERM'));
 process.on('SIGINT', () => stop('SIGINT'));
 
-log('worker_started', { mode: tradingMode, gate_base_url: baseUrl, fixed_ip_configured: Boolean(workerPublicIp) });
+log('worker_started', { mode: tradingMode, gate_base_url: baseUrl, broker_channel_id: gateChannelId || null, fixed_ip_configured: Boolean(workerPublicIp) });
 await runVerificationBatch();
 await runTradingCycle();
 setInterval(runVerificationBatch, pollIntervalMs);

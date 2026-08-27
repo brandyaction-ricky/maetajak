@@ -33,6 +33,8 @@ Add these variables to Preview and Production environments in the `tajakman/maet
 
 The production deployment builds with Vite and publishes `dist`.
 
+Before starting the fixed-IP Worker, run `npm run worker:preflight` inside the configured container. It fails closed on a placeholder/private IP, a non-service Supabase key, a non-production Gate URL, a Channel ID other than `maetajak`, or LIVE mode without an external alert webhook.
+
 ## Gate.io verification worker
 
 Gate.io credentials are encrypted in the private Supabase schema. Saving credentials creates a verification job; the browser never receives the stored Key or Secret again.
@@ -42,6 +44,7 @@ Run the verification worker on the server whose fixed outbound IP is registered 
 ```bash
 SUPABASE_URL=https://YOUR_PROJECT.supabase.co \
 SUPABASE_SERVICE_ROLE_KEY=YOUR_SERVER_ONLY_KEY \
+GATE_CHANNEL_ID=maetajak \
 npm run worker:gate
 ```
 
@@ -52,3 +55,5 @@ Keep `SUPABASE_SERVICE_ROLE_KEY` only in the worker's secret manager. The worker
 The position-based copy engine and database control plane are documented in [`docs/COPY_ENGINE.md`](docs/COPY_ENGINE.md). The implementation calculates `Master actual position → member target position → member actual position → delta`, detects unexplained position changes as `MANUAL_OVERRIDE`, creates deterministic order idempotency keys, and provides an `UNKNOWN` reconciliation queue.
 
 Live execution is fail-closed: the database starts with execution disabled and emergency halt enabled. The browser cannot enable live orders. Migrations `202608210006_live_worker_runtime.sql` and `202608210007_strict_gate_readiness.sql` add the service-role-only observation, strict Gate permission/IP verification, order, crash-safe reconciliation, heartbeat, and deployment activation functions. See [`docs/WORKER_DEPLOYMENT.md`](docs/WORKER_DEPLOYMENT.md) for the fixed-IP deployment and activation checklist.
+
+Migration `202608270001_gate_broker_channel.sql` binds the approved Broker Channel ID `maetajak` to the Worker heartbeat and live activation gate. Every Gate Futures order is rejected locally unless `X-Gate-Channel-Id: maetajak` can be attached.

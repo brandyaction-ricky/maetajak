@@ -82,7 +82,7 @@ function enhanceGateApiForm() {
       <label class="permission-check"><input id="gatePermissionConfirmed" type="checkbox" required><span>Trading Account · Perpetual Futures Read/Write만 허용하고 출금 권한은 사용하지 않았습니다.</span></label>
       <div class="credential-actions"><button id="gateApiConnect" class="btn primary" type="submit">저장 및 연결 검증</button><button id="gateApiDisconnect" class="btn red" type="button">API 연결 해제</button></div>
     </form>
-    <details class="api-guide"><summary>Gate.io API 발급 설정 확인</summary><ol><li>Trading Account를 선택합니다.</li><li>Perpetual Futures의 Read and Write만 허용합니다.</li><li>출금 권한은 절대 활성화하지 않습니다.</li><li>${workerPublicIp ? `Trading Worker 고정 IP <code>${workerPublicIp}</code>를 Whitelist에 등록합니다.` : '고정 IP는 Trading Worker 구축 후 안내됩니다. 현재 임시 IP는 등록하지 마세요.'}</li></ol></details>
+    <details class="api-guide"><summary>Gate.io API 발급 설정 확인</summary><ol><li>Trading Account를 선택합니다.</li><li>Perpetual Futures의 Read and Write만 허용합니다.</li><li>출금 권한은 절대 활성화하지 않습니다.</li><li>${workerPublicIp ? `Trading Worker 고정 IP <code>${workerPublicIp}</code>를 Whitelist에 등록합니다.` : '고정 IP는 Trading Worker 구축 후 안내됩니다. 현재 임시 IP는 등록하지 마세요.'}</li><li>API Broker Channel ID <code>maetajak</code>는 주문 시 서버에서 자동 적용됩니다.</li></ol></details>
     <p class="secret-warning">Secret Key는 화면이나 브라우저 저장소에 보관하지 않고 서버에서 암호화해 저장합니다.</p>
   `;
 
@@ -132,7 +132,7 @@ function enhanceOperationsStatusUi() {
       <div class="card section"><div class="section-head"><h3>실거래 실행 상태</h3><span id="opsExecutionChip" class="chip yellow">확인 중</span></div>
         <div class="metric"><span>주문 실행</span><b id="opsExecution">-</b></div><div class="metric"><span>비상 중단</span><b id="opsHalt">-</b></div><div class="metric"><span>중단 사유</span><b id="opsReason">-</b></div><div class="metric"><span>최종 변경</span><b id="opsUpdated">-</b></div></div>
       <div class="card section"><div class="section-head"><h3>Trading Worker</h3><span id="opsWorkerChip" class="chip yellow">미연결</span></div>
-        <div class="metric"><span>모드</span><b id="opsWorkerMode">OBSERVE</b></div><div class="metric"><span>고정 IP</span><b id="opsWorkerIp">미설정</b></div><div class="metric"><span>Heartbeat</span><b id="opsHeartbeat">없음</b></div><div class="metric"><span>마지막 정상 Cycle</span><b id="opsLastSuccess">없음</b></div><div class="metric"><span>연속 실패</span><b id="opsFailures">0</b></div><div class="metric"><span>준비 테스트</span><b id="opsTest">미완료</b></div></div>
+        <div class="metric"><span>모드</span><b id="opsWorkerMode">OBSERVE</b></div><div class="metric"><span>고정 IP</span><b id="opsWorkerIp">미설정</b></div><div class="metric"><span>Broker Channel</span><b id="opsBrokerChannel">미설정</b></div><div class="metric"><span>Heartbeat</span><b id="opsHeartbeat">없음</b></div><div class="metric"><span>마지막 정상 Cycle</span><b id="opsLastSuccess">없음</b></div><div class="metric"><span>연속 실패</span><b id="opsFailures">0</b></div><div class="metric"><span>준비 테스트</span><b id="opsTest">미완료</b></div></div>
     </div><div class="notice warn-box operations-note">브라우저에서는 실거래를 켤 수 없습니다. 고정 IP Worker, Master·회원 API 검증, 준비 테스트가 완료된 뒤 서버 배포 명령으로만 활성화됩니다.</div>`;
   const risk = byId('admin-risk');
   if (risk) risk.innerHTML = `<div class="card section"><div class="section-head"><div><h3>Risk / Emergency Control</h3><p>긴급 중단은 신규 주문을 즉시 차단합니다. 미확정 주문은 계속 조회합니다.</p></div></div><div class="actions"><button id="adminEmergencyHalt" class="btn red" type="button">전체 카피 긴급 중단</button><button class="btn" type="button" onclick="openPage('admin-settings')">Worker 상태 확인</button></div></div>`;
@@ -179,7 +179,7 @@ function enhanceAdminApiPage() {
           <label class="permission-check"><input id="adminGatePermissionConfirmed" type="checkbox" required><span>Trading Account · Perpetual Futures Read/Write만 허용했으며 출금 권한은 비활성화했습니다.</span></label>
           <div class="admin-api-submit-row"><div class="credential-actions"><button id="adminGateApiConnect" class="btn primary" type="submit">암호화 저장 및 검증 요청</button><button id="adminGateApiDisconnect" class="btn red" type="button">Master API 연결 해제</button></div><p>Secret Key는 브라우저에 저장하지 않습니다.</p></div>
         </form>
-        <details class="api-guide"><summary>Gate.io Master API 설정 안내</summary><ol><li>API 유형은 Trading Account를 선택합니다.</li><li>Perpetual Futures의 Read and Write만 활성화합니다.</li><li>출금 권한은 절대 활성화하지 않습니다.</li><li>${workerPublicIp ? `IP Whitelist에 Worker 고정 IP <code>${workerPublicIp}</code>를 등록합니다.` : 'Worker 고정 IP 준비 전에는 암호화 저장까지만 가능하며 실제 검증·거래는 시작되지 않습니다.'}</li></ol></details>
+        <details class="api-guide"><summary>Gate.io Master API 설정 안내</summary><ol><li>API 유형은 Trading Account를 선택합니다.</li><li>Perpetual Futures의 Read and Write만 활성화합니다.</li><li>출금 권한은 절대 활성화하지 않습니다.</li><li>${workerPublicIp ? `IP Whitelist에 Worker 고정 IP <code>${workerPublicIp}</code>를 등록합니다.` : 'Worker 고정 IP 준비 전에는 암호화 저장까지만 가능하며 실제 검증·거래는 시작되지 않습니다.'}</li><li>API Broker Channel ID <code>maetajak</code>는 회원 주문 요청에 Worker가 자동 적용합니다.</li></ol></details>
       </div>
       <div class="card section admin-master-security">
         <div class="section-head"><div><h3>Master 연결 보안 상태</h3><p id="adminGateVerificationDetail">실제 연결 검증 전입니다.</p></div></div>
@@ -593,6 +593,11 @@ function renderCopySystemStatus(status) {
   byId('opsExecutionChip').className = live ? 'chip' : 'chip yellow';
   byId('opsWorkerMode').textContent = worker.mode || 'OBSERVE';
   byId('opsWorkerIp').textContent = worker.public_ip || '미설정';
+  if (byId('opsBrokerChannel')) {
+    const brokerChannelReady = Boolean(worker.broker_channel_id && worker.broker_channel_id === status?.broker_channel_id);
+    byId('opsBrokerChannel').textContent = worker.broker_channel_id || status?.broker_channel_id || '미설정';
+    byId('opsBrokerChannel').className = brokerChannelReady ? 'pos' : 'warn';
+  }
   byId('opsHeartbeat').textContent = worker.heartbeat_at ? new Date(worker.heartbeat_at).toLocaleString('ko-KR') : '없음';
   byId('opsLastSuccess').textContent = worker.last_success_at ? new Date(worker.last_success_at).toLocaleString('ko-KR') : '없음';
   byId('opsFailures').textContent = String(worker.consecutive_failures || 0);

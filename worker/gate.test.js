@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   buildGateHeaders, FUTURES_ACCOUNT_PATH, GateApiError, gateRequest, getFuturesContracts,
-  parseGateJson, placeFuturesOrder, summarizeGateOrder, verifyGateAccount,
+  parseGateJson, placeFuturesOrder, summarizeGateOrder, validateGateChannelId, verifyGateAccount,
 } from './gate.js';
 
 function verificationFetch({ user = 45997867, ipWhitelist = ['203.0.113.10'], permissions = [{ name: 'futures', read_only: false }] } = {}) {
@@ -20,6 +20,7 @@ test('Gate API v4 signature is deterministic and keeps secrets out of the URL', 
   const headers = buildGateHeaders({ apiKey: 'api-key', secretKey: 'secret-key', path: FUTURES_ACCOUNT_PATH, timestamp: 1_700_000_000 });
   assert.equal(headers.KEY, 'api-key');
   assert.equal(headers.Timestamp, '1700000000');
+  assert.equal(headers['X-Gate-Size-Decimal'], '1');
   assert.match(headers.SIGN, /^[a-f0-9]{128}$/);
   assert.doesNotMatch(FUTURES_ACCOUNT_PATH, /api-key|secret-key/);
 });
@@ -33,6 +34,13 @@ test('Gate API v4 signature matches the official authentication example', () => 
     timestamp: 1541993715,
   });
   assert.equal(headers.SIGN, '55f84ea195d6fe57ce62464daaa7c3c02fa9d1dde954e4c898289c9a2407a3d6fb3faf24deff16790d726b66ac9f74526668b13bd01029199cc4fcc522418b8a');
+});
+
+test('Gate API Broker Channel ID follows the official format', () => {
+  assert.equal(validateGateChannelId('maetajak'), 'maetajak');
+  for (const invalid of ['', 'MAETAJAK', 'maetajak-copy-trading', 'maetajak_1']) {
+    assert.throws(() => validateGateChannelId(invalid), (error) => error instanceof GateApiError && error.code === 'INVALID_GATE_CHANNEL_ID');
+  }
 });
 
 test('Gate account verification rejects a mismatched UID', async () => {
@@ -72,10 +80,12 @@ test('Gate account verification rejects extra write permissions', async () => {
 test('live delta order is a signed market IOC order with idempotent text', async () => {
   const result = await placeFuturesOrder({
     apiKey: 'api-key', secretKey: 'secret-key', contract: 'BTC_USDT', size: -3,
-    reduceOnly: true, text: 't-mtj-12345678901234567890', slippageRatio: 0.005,
+    reduceOnly: true, text: 't-mtj-12345678901234567890', slippageRatio: 0.005, channelId: 'maetajak',
     fetchImpl: async (url, options) => {
       assert.equal(url, 'https://api.gateio.ws/api/v4/futures/usdt/orders');
       assert.match(options.headers.SIGN, /^[a-f0-9]{128}$/);
+      assert.equal(options.headers['X-Gate-Channel-Id'], 'maetajak');
+      assert.equal(options.headers['X-Gate-Size-Decimal'], '1');
       assert.ok(Number(options.headers['X-Gate-Exptime']) > Date.now());
       assert.deepEqual(JSON.parse(options.body), {
         contract: 'BTC_USDT', size: '-3', price: '0', tif: 'ioc', reduce_only: true,
@@ -87,10 +97,27 @@ test('live delta order is a signed market IOC order with idempotent text', async
   assert.equal(result.status, 201);
 });
 
+test('live write is blocked when API Broker Channel ID is missing', async () => {
+  await assert.rejects(
+    placeFuturesOrder({ apiKey: 'api-key', secretKey: 'secret-key', contract: 'BTC_USDT', size: 1, text: 't-mtj-12345678901234567890' }),
+    (error) => error instanceof GateApiError && error.code === 'INVALID_GATE_CHANNEL_ID',
+  );
+});
+
 test('write timeout is UNKNOWN and must not be blindly retried', async () => {
   await assert.rejects(
-    gateRequest({ apiKey: 'key', secretKey: 'secret', method: 'POST', path: '/api/v4/futures/usdt/orders', body: {}, fetchImpl: async () => { throw new DOMException('timeout', 'TimeoutError'); } }),
+    gateRequest({ apiKey: 'key', secretKey: 'secret', channelId: 'maetajak', method: 'POST', path: '/api/v4/futures/usdt/orders', body: {}, fetchImpl: async () => { throw new DOMException('timeout', 'TimeoutError'); } }),
     (error) => error instanceof GateApiError && error.code === 'GATE_TIMEOUT' && error.outcomeUnknown,
+  );
+});
+
+test('Gate 5xx after an order request is UNKNOWN and must be reconciled', async () => {
+  await assert.rejects(
+    gateRequest({
+      apiKey: 'key', secretKey: 'secret', channelId: 'maetajak', method: 'POST', path: '/api/v4/futures/usdt/orders', body: {},
+      fetchImpl: async () => new Response(JSON.stringify({ label: 'INTERNAL' }), { status: 503 }),
+    }),
+    (error) => error instanceof GateApiError && error.status === 503 && error.outcomeUnknown,
   );
 });
 

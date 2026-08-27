@@ -12,6 +12,16 @@
 6. 소액 전용 계정으로 주문·부분 체결·취소·네트워크 타임아웃·긴급중단을 검증합니다.
 7. 마지막에만 `LIVE` 모드와 실행 활성화를 적용합니다.
 
+## Gate 계정과 Broker 귀속
+
+- 추천인 계정 UID: `45997867` - 신규 회원은 이 계정의 추천 링크로 가입합니다.
+- API Broker 커미션 수령 UID: `49084031` - Channel ID `maetajak`에 귀속된 20%를 수령합니다.
+- API Broker Channel ID: `maetajak` - Worker가 모든 회원 Futures 주문 헤더에 `X-Gate-Channel-Id: maetajak`를 자동 주입합니다.
+- Futures decimal size: 최신 Gate API 규격에 맞춰 인증된 Futures 요청에 `X-Gate-Size-Decimal: 1`을 자동 주입합니다.
+- Master UID: 실제 신호 원본으로 사용할 Gate 계정 UID를 관리자 화면에 연결합니다. 추천인 UID나 Broker 수령 UID와 반드시 같을 필요는 없습니다.
+
+Gate 가이드상 자기 Channel ID를 사용한 API Broker 본인 계정의 거래에는 Broker 리베이트가 발생하지 않습니다. 회원 거래는 추천 링크와 Channel ID를 모두 충족해야 추천 리베이트와 API Broker 리베이트가 함께 귀속됩니다.
+
 ## 설치
 
 ```bash
@@ -23,14 +33,19 @@ cp .env.worker.example .env.worker
 chmod 600 .env.worker
 ```
 
-`.env.worker`에서 `SUPABASE_SERVICE_ROLE_KEY`, 실제 고정 `WORKER_PUBLIC_IP`를 입력합니다. 이 파일은 Git에 올리지 않습니다. 회원과 Master API 연결 검증은 Gate.io의 `account/detail`과 `account/main_keys`를 조회해 Worker IP Whitelist, 활성 Key 상태, Futures Read/Write, 불필요한 쓰기 권한 비활성화를 실제 응답으로 확인합니다.
+`.env.worker`에서 `SUPABASE_SERVICE_ROLE_KEY`, 실제 고정 `WORKER_PUBLIC_IP`를 입력하고 `GATE_CHANNEL_ID=maetajak`를 유지합니다. 이 파일은 Git에 올리지 않습니다. 회원과 Master API 연결 검증은 Gate.io의 `account/detail`과 `account/main_keys`를 조회해 Worker IP Whitelist, 활성 Key 상태, Futures Read/Write, 불필요한 쓰기 권한 비활성화를 실제 응답으로 확인합니다.
+
+`DRY_RUN`과 `LIVE`는 Channel ID가 없거나 형식이 잘못되면 Worker 시작 단계에서 차단됩니다. 운영 DB도 승인된 Channel ID와 Worker의 Channel ID가 정확히 일치해야 준비 테스트 기록과 실거래 활성화를 허용합니다.
 
 장애를 사이트 밖에서도 즉시 확인하려면 `ALERT_WEBHOOK_URL`을 운영 알림 Webhook으로 설정합니다. 수신 서버가 Bearer 인증을 지원하면 `ALERT_WEBHOOK_BEARER`도 함께 설정합니다. 전송 내용에는 API Key·Secret Key·Service Role Key가 포함되지 않습니다.
 
 ```bash
+docker compose -f docker-compose.worker.yml run --rm copy-worker npm run worker:preflight
 docker compose -f docker-compose.worker.yml up -d --build
 docker compose -f docker-compose.worker.yml logs -f --tail=100
 ```
+
+Preflight가 `ok: true`를 반환하기 전에는 Worker를 시작하지 않습니다. 고정 공인 IPv4, 운영 Supabase Service Role, Gate 운영 URL, 승인 Channel ID, 모드별 준비 설정을 검사하며, LIVE에서는 외부 장애 알림 Webhook도 필수입니다. 출력에는 Secret이나 Service Role Key가 포함되지 않습니다.
 
 ## 단계별 전환
 
@@ -44,6 +59,8 @@ COPY_ACTIVATION_CONFIRMATION=ENABLE_LIVE_COPY_TRADING npm run worker:activate
 ```
 
 DB는 최근 Worker heartbeat, 운영 Gate URL, 고정 IP, 최근 준비 테스트, 검증된 Master와 회원이 모두 확인될 때만 활성화를 허용합니다. Worker heartbeat가 30초 넘게 끊긴 상태에서 주문을 가져오려 하면 자동으로 전체 실행이 중단됩니다.
+
+`OBSERVE`와 `DRY_RUN`에서는 Target/Actual/Delta만 기록하고 실행 가능한 주문 의도는 저장하지 않습니다. 또한 LIVE 활성화 시각 이전에 생성된 모든 주문 의도는 DB에서 가져올 수 없으므로, 테스트 중 계산된 Delta가 나중에 실주문으로 바뀌지 않습니다. 준비 완료 시각은 Master 포지션에서 실제 Delta가 한 건 이상 계산된 DRY_RUN에만 기록됩니다.
 
 ## 긴급 중단
 

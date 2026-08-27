@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { planMemberPositions } from './trading-runner.js';
+import { planMemberPositions, suppressExecutableIntents } from './trading-runner.js';
 
 const contracts = new Map([['BTC_USDT', { quantoMultiplier: 0.001, sizeStep: 1, orderSizeMin: 1, orderSizeMax: 0, marketOrderSizeMax: 0, inDelisting: false }]]);
 const base = {
@@ -40,4 +40,12 @@ test('large deltas are chunked to the strictest Gate order size limit', () => {
   const [position] = planMemberPositions({ ...base, contracts: limitedContracts });
   assert.equal(position.target_size, 30);
   assert.equal(position.intent.delta_size, 10);
+});
+
+test('OBSERVE and DRY_RUN cannot persist executable order intents', () => {
+  const planned = planMemberPositions(base);
+  assert.ok(planned[0].intent);
+  assert.equal(suppressExecutableIntents(planned, 'OBSERVE')[0].intent, null);
+  assert.equal(suppressExecutableIntents(planned, 'DRY_RUN')[0].intent, null);
+  assert.ok(suppressExecutableIntents(planned, 'LIVE')[0].intent);
 });

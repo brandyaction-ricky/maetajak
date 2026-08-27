@@ -11,6 +11,7 @@
     "test": "node --test tests/*.test.js worker/*.test.js",
     "worker:gate": "node worker/index.js",
     "worker:start": "node worker/index.js",
+    "worker:preflight": "node scripts/worker-preflight.js",
     "worker:activate": "node scripts/activate-live.js",
     "worker:halt": "node scripts/halt-live.js"
   },
