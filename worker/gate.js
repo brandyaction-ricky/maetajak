@@ -233,7 +233,19 @@ export async function verifyGateAccount({ gateUid, apiKey, secretKey, expectedPu
 
 export async function getFuturesAccount(options) {
   const { payload } = await gateRequest({ ...options, path: FUTURES_ACCOUNT_PATH });
-  return { user: payload?.user == null ? '' : String(payload.user), total: Number(payload?.total || 0), available: Number(payload?.available || 0), unrealisedPnl: Number(payload?.unrealised_pnl || 0) };
+  // Gate only populates `total` for classic futures accounts. Newer
+  // cross-margin modes expose the account equity as `cross_margin_balance`.
+  // Do not substitute `available`: doing so would overstate the Master's
+  // exposure whenever margin is already committed to a position.
+  const classicTotal = Number(payload?.total || 0);
+  const crossMarginBalance = Number(payload?.cross_margin_balance || 0);
+  const total = crossMarginBalance > 0 ? crossMarginBalance : classicTotal;
+  return {
+    user: payload?.user == null ? '' : String(payload.user),
+    total,
+    available: Number(payload?.available ?? payload?.cross_available ?? 0),
+    unrealisedPnl: Number(payload?.unrealised_pnl ?? payload?.unrealized_pnl ?? payload?.cross_unrealised_pnl ?? 0),
+  };
 }
 
 export function normalizeGatePositions(payload) {
