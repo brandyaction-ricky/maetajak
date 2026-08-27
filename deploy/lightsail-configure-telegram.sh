@@ -54,6 +54,8 @@ trap - EXIT
 export MAETAJAK_ENV_FILE="${ENV_FILE}"
 docker compose -f docker-compose.worker.yml run --rm copy-worker npm run worker:preflight
 docker compose -f docker-compose.worker.yml run --rm copy-worker npm run worker:alert-test
-systemctl restart maetajak-worker.service
+systemctl stop maetajak-worker.service
+sleep 40
+systemctl start maetajak-worker.service
 
 echo "Telegram alert configured and test message sent."
