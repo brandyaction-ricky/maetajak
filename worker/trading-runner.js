@@ -69,15 +69,18 @@ export function planMemberPositions({ cycleId, system, master, member, contracts
       delta.reason = 'BELOW_MINIMUM_ORDER_SIZE';
     }
     const idempotencyKey = delta.shouldSubmit ? buildIdempotencyKey({ cycleId, userId: member.user_id, contract, targetSize: target.targetSize, actualSize: memberPosition.size }) : null;
-    planned.push({
+    const plannedPosition = {
       contract, size: memberPosition.size, mark_price: memberPosition.markPrice || markPrice,
       entry_price: memberPosition.entryPrice || null, leverage: memberPosition.leverage || null,
       quanto_multiplier: contractInfo.quantoMultiplier, target_size: target.targetSize,
       state, delta_size: delta.deltaSize, previous_actual_size: previous?.actual_size ?? null,
       unexplained_delta: manual.unexplainedDelta,
       pause_reason: manual.detected ? 'MEMBER_POSITION_CHANGED_OUTSIDE_PLATFORM' : member.risk_halt_reason || (leverageExceeded ? 'MAX_LEVERAGE_EXCEEDED' : member.copy_paused ? 'MEMBER_PAUSED' : null),
-      intent: delta.shouldSubmit ? { delta_size: delta.deltaSize, reduce_only: delta.reduceOnly, idempotency_key: idempotencyKey, gate_order_text: buildGateOrderText(idempotencyKey) } : null,
-    });
+    };
+    if (delta.shouldSubmit) {
+      plannedPosition.intent = { delta_size: delta.deltaSize, reduce_only: delta.reduceOnly, idempotency_key: idempotencyKey, gate_order_text: buildGateOrderText(idempotencyKey) };
+    }
+    planned.push(plannedPosition);
   }
   return planned;
 }
