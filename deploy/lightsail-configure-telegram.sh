@@ -20,7 +20,9 @@ if [[ ! "${telegram_bot_token}" =~ ^[0-9]+:[A-Za-z0-9_-]{20,}$ ]]; then
   exit 1
 fi
 
-telegram_chat_id="$(TELEGRAM_BOT_TOKEN="${telegram_bot_token}" node --input-type=module <<'NODE'
+cd "${APP_DIR}"
+telegram_chat_id="$(MAETAJAK_ENV_FILE="${ENV_FILE}" docker compose -f docker-compose.worker.yml run --rm -T \
+  -e TELEGRAM_BOT_TOKEN="${telegram_bot_token}" copy-worker node --input-type=module <<'NODE'
 const token = process.env.TELEGRAM_BOT_TOKEN;
 const response = await fetch(`https://api.telegram.org/bot${token}/getUpdates`, { signal: AbortSignal.timeout(10_000) });
 if (!response.ok) process.exit(2);
@@ -49,7 +51,6 @@ chmod 600 "${temp_env}"
 mv -f "${temp_env}" "${ENV_FILE}"
 trap - EXIT
 
-cd "${APP_DIR}"
 export MAETAJAK_ENV_FILE="${ENV_FILE}"
 docker compose -f docker-compose.worker.yml run --rm copy-worker npm run worker:preflight
 docker compose -f docker-compose.worker.yml run --rm copy-worker npm run worker:alert-test
