@@ -110,6 +110,48 @@ export function matchingKeyInfo(apiKey, keys) {
   return matches.length === 1 ? matches[0] : null;
 }
 
+function normalizePermissionName(value) {
+  const name = String(value || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
+  if (['futures', 'perpetual', 'perpetual_futures', 'perpetual_contract', 'contract'].includes(name)) {
+    return 'futures';
+  }
+  return name;
+}
+
+function normalizeReadOnly(value) {
+  if (value === true || value === 1) return true;
+  if (value === false || value === 0) return false;
+  const normalized = String(value ?? '').trim().toLowerCase().replace(/[\s-]+/g, '_');
+  if (['true', '1', 'read', 'readonly', 'read_only'].includes(normalized)) return true;
+  if (['false', '0', 'write', 'readwrite', 'read_write', 'read_and_write'].includes(normalized)) return false;
+  return null;
+}
+
+export function normalizeGatePermissions(keyInfo) {
+  const rawPermissions = keyInfo?.perms ?? keyInfo?.permissions ?? keyInfo?.key?.perms ?? keyInfo?.key?.permissions ?? [];
+  const entries = Array.isArray(rawPermissions)
+    ? rawPermissions
+    : rawPermissions && typeof rawPermissions === 'object'
+      ? Object.entries(rawPermissions).map(([name, permission]) => (
+          permission && typeof permission === 'object' ? { name, ...permission } : { name, access: permission }
+        ))
+      : [];
+
+  return entries.map((permission) => {
+    if (typeof permission === 'string') {
+      const [name, access] = permission.split(/[:=]/, 2);
+      return { name: normalizePermissionName(name), readOnly: normalizeReadOnly(access) };
+    }
+    return {
+      name: normalizePermissionName(permission?.name ?? permission?.permission ?? permission?.type),
+      readOnly: normalizeReadOnly(
+        permission?.read_only ?? permission?.readOnly ?? permission?.readonly
+        ?? permission?.access ?? permission?.permission_mode ?? permission?.mode,
+      ),
+    };
+  }).filter((permission) => permission.name);
+}
+
 export async function verifyGateAccount({ gateUid, apiKey, secretKey, expectedPublicIp, requiresTradingPermission = true, fetchImpl = fetch, baseUrl = GATE_API_BASE_URL }) {
   if (!expectedPublicIp) {
     return { success: false, errorCode: 'WORKER_IP_NOT_CONFIGURED', errorMessage: '고정 Worker IP가 아직 설정되지 않았습니다.' };
@@ -135,19 +177,22 @@ export async function verifyGateAccount({ gateUid, apiKey, secretKey, expectedPu
     if (!keyInfo || Number(keyInfo.state || 0) !== 1) {
       return { success: false, gateUserId, errorCode: 'API_KEY_DETAILS_UNAVAILABLE', errorMessage: 'API Key 상태와 권한 정보를 확인할 수 없습니다.' };
     }
-    const permissions = Array.isArray(keyInfo.perms) ? keyInfo.perms : [];
-    const futuresPermission = permissions.find((permission) => permission?.name === 'futures');
+    const permissions = normalizeGatePermissions(keyInfo);
+    const futuresPermission = permissions.find((permission) => permission.name === 'futures');
     if (!futuresPermission) {
       return { success: false, gateUserId, errorCode: 'FUTURES_READ_REQUIRED', errorMessage: 'Perpetual Futures 권한을 활성화해 주세요.' };
     }
-    const futuresTrade = futuresPermission.read_only === false;
+    if (futuresPermission.readOnly === null) {
+      return { success: false, gateUserId, errorCode: 'FUTURES_PERMISSION_DETAILS_UNAVAILABLE', errorMessage: 'Perpetual Futures의 Read Only/Read-Write 상태를 확인할 수 없습니다.' };
+    }
+    const futuresTrade = futuresPermission.readOnly === false;
     if (!requiresTradingPermission && futuresTrade) {
       return { success: false, gateUserId, errorCode: 'MASTER_READ_ONLY_REQUIRED', errorMessage: 'Master API의 Perpetual Futures 권한을 Read Only로 설정해 주세요.' };
     }
     if (requiresTradingPermission && !futuresTrade) {
       return { success: false, gateUserId, errorCode: 'FUTURES_TRADE_REQUIRED', errorMessage: 'Perpetual Futures 권한을 Read-Write로 설정해 주세요.' };
     }
-    const unsafePermission = permissions.find((permission) => permission?.name !== 'futures' && permission?.read_only === false);
+    const unsafePermission = permissions.find((permission) => permission.name !== 'futures' && permission.readOnly === false);
     if (unsafePermission) {
       return { success: false, gateUserId, errorCode: 'EXCESS_API_PERMISSIONS', errorMessage: `${unsafePermission.name} 쓰기 권한을 비활성화하고 Futures 권한만 사용해 주세요.` };
     }
