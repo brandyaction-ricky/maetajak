@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  buildGateHeaders, FUTURES_ACCOUNT_PATH, GateApiError, gateRequest, getFuturesContracts,
+  buildGateHeaders, FUTURES_ACCOUNT_PATH, GateApiError, gateRequest, getFuturesAccount, getFuturesContracts,
   matchingKeyInfo, normalizeGatePermissions, normalizeGatePositions, parseGateJson, placeFuturesOrder, summarizeGateOrder,
   validateGateChannelId, verifyGateAccount,
 } from './gate.js';
@@ -75,6 +75,22 @@ test('Gate API Broker Channel ID follows the official format', () => {
   for (const invalid of ['', 'MAETAJAK', 'maetajak-copy-trading', 'maetajak_1']) {
     assert.throws(() => validateGateChannelId(invalid), (error) => error instanceof GateApiError && error.code === 'INVALID_GATE_CHANNEL_ID');
   }
+});
+
+test('Gate futures account uses cross-margin equity when classic total is zero', async () => {
+  const account = await getFuturesAccount({
+    apiKey: 'api-key', secretKey: 'secret-key',
+    fetchImpl: async () => new Response(JSON.stringify({
+      user: 45997867,
+      total: '0',
+      available: '17150.83563',
+      cross_margin_balance: '17320.25',
+      unrealized_pnl: '-4.75',
+    }), { status: 200 }),
+  });
+  assert.equal(account.total, 17320.25);
+  assert.equal(account.available, 17150.83563);
+  assert.equal(account.unrealisedPnl, -4.75);
 });
 
 test('Gate account verification rejects a mismatched UID', async () => {
