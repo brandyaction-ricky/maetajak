@@ -15,7 +15,7 @@ function credentials(account) { return { apiKey: account.api_key, secretKey: acc
 
 export function suppressExecutableIntents(positions, mode) {
   if (mode === 'LIVE') return positions;
-  return positions.map((position) => ({ ...position, intent: null }));
+  return positions.map(({ intent: _intent, ...observation }) => observation);
 }
 
 export function planMemberPositions({ cycleId, system, master, member, contracts }) {
