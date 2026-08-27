@@ -19,20 +19,31 @@ test('worker plans Master position to member target to delta order', () => {
   assert.match(position.intent.gate_order_text, /^t-mtj-/);
 });
 
+test('synced LIVE position omits the executable intent key', () => {
+  const positions = planMemberPositions({
+    cycleId: 'cycle-synced', system: { emergency_halted: false },
+    master: { total: 10_000, positions: [{ contract: 'BTC_USDT', size: 10, markPrice: 100 }] },
+    member: { ...base.member, total: 10_000, positions: [{ contract: 'BTC_USDT', size: 10, markPrice: 100 }] },
+    contracts,
+  });
+  assert.equal(positions[0].state, 'SYNCED');
+  assert.equal(Object.hasOwn(positions[0], 'intent'), false);
+});
+
 test('manual member change pauses the symbol and blocks re-entry', () => {
   const input = structuredClone(base);
   input.member.positions = [{ contract: 'BTC_USDT', size: 20, markPrice: 50_000, leverage: 2 }];
   input.member.previous_states = [{ contract: 'BTC_USDT', actual_size: 50, known_fill_delta: 0, has_unresolved_order: false, state: 'SYNCED' }];
   const [position] = planMemberPositions({ ...input, contracts });
   assert.equal(position.state, 'MANUAL_OVERRIDE');
-  assert.equal(position.intent, null);
+  assert.equal(Object.hasOwn(position, 'intent'), false);
   assert.equal(position.pause_reason, 'MEMBER_POSITION_CHANGED_OUTSIDE_PLATFORM');
 });
 
 test('global halt blocks all order intents', () => {
   const [position] = planMemberPositions({ ...base, system: { emergency_halted: true } });
   assert.equal(position.state, 'HALTED');
-  assert.equal(position.intent, null);
+  assert.equal(Object.hasOwn(position, 'intent'), false);
 });
 
 test('DRY_RUN can calculate a simulated delta while the global live halt remains enabled', () => {
