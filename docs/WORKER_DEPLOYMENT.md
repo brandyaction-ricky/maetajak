@@ -24,6 +24,29 @@ Gate 가이드상 자기 Channel ID를 사용한 API Broker 본인 계정의 거
 
 ## 설치
 
+### AWS Lightsail (권장 운영 구성)
+
+서울 리전에서 Linux/Unix `OS Only → Ubuntu` 인스턴스를 만든 뒤 Static IP를 연결합니다. 이 Worker는 외부 요청을 받는 웹서버가 아니므로 HTTP/HTTPS 포트를 열지 않습니다. Lightsail IPv4 방화벽은 SSH 22번만 운영자 IP로 제한하고 IPv6는 비활성화합니다.
+
+인스턴스 생성 화면의 Launch script에는 `deploy/lightsail-bootstrap.sh` 내용을 사용합니다. 부팅 완료 후 Lightsail 브라우저 SSH에서 아래 명령으로 운영 환경을 입력합니다. Service Role Key와 알림 Webhook은 화면에 표시되지 않으며 `/etc/maetajak/worker.env`에 root 전용 `600` 권한으로 저장됩니다.
+
+```bash
+sudo /opt/maetajak/deploy/lightsail-configure.sh
+```
+
+설정 스크립트는 서버의 실제 외부 IPv4를 AWS 엔드포인트로 확인하고 `OBSERVE` 모드만 기동합니다. Gate.io에는 스크립트가 마지막에 표시한 동일 IPv4를 Master와 모든 회원 API Whitelist에 등록합니다.
+
+상태 확인과 검토된 수동 업데이트는 다음 명령만 사용합니다.
+
+```bash
+sudo /opt/maetajak/deploy/lightsail-status.sh
+sudo /opt/maetajak/deploy/lightsail-update.sh
+```
+
+서버 업데이트는 자동 배포하지 않습니다. 화면 코드 배포와 달리 Worker 업데이트는 주문 실행에 영향을 줄 수 있으므로 Preflight 통과 후 명시적으로 재시작합니다.
+
+### 일반 Docker 서버
+
 ```bash
 sudo mkdir -p /opt/maetajak
 sudo chown "$USER":"$USER" /opt/maetajak

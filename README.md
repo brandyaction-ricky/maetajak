@@ -35,6 +35,8 @@ The production deployment builds with Vite and publishes `dist`.
 
 Before starting the fixed-IP Worker, run `npm run worker:preflight` inside the configured container. It fails closed on a placeholder/private IP, a non-service Supabase key, a non-production Gate URL, a Channel ID other than `maetajak`, or LIVE mode without an external alert webhook.
 
+For AWS Lightsail, use the reviewed scripts in `deploy/lightsail-*.sh`. They keep the service-role key outside the Git checkout, start in `OBSERVE`, run Preflight from systemd before every service start, and provide explicit status/update commands. See [`docs/WORKER_DEPLOYMENT.md`](docs/WORKER_DEPLOYMENT.md).
+
 ## Gate.io verification worker
 
 Gate.io credentials are encrypted in the private Supabase schema. Saving credentials creates a verification job; the browser never receives the stored Key or Secret again.

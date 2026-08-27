@@ -7,6 +7,8 @@ Requires=docker.service
 Type=oneshot
 RemainAfterExit=yes
 WorkingDirectory=/opt/maetajak
+Environment=MAETAJAK_ENV_FILE=/etc/maetajak/worker.env
+ExecStartPre=/usr/bin/docker compose -f docker-compose.worker.yml run --rm copy-worker npm run worker:preflight
 ExecStart=/usr/bin/docker compose -f docker-compose.worker.yml up -d --build
 ExecStop=/usr/bin/docker compose -f docker-compose.worker.yml down
 TimeoutStartSec=180

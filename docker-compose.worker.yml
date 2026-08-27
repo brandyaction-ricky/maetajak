@@ -3,7 +3,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.worker
-    env_file: .env.worker
+    env_file:
+      - ${MAETAJAK_ENV_FILE:-.env.worker}
     restart: unless-stopped
     init: true
     read_only: true
