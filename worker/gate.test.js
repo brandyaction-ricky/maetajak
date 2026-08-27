@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   buildGateHeaders, FUTURES_ACCOUNT_PATH, GateApiError, gateRequest, getFuturesContracts,
-  matchingKeyInfo, normalizeGatePositions, parseGateJson, placeFuturesOrder, summarizeGateOrder,
+  matchingKeyInfo, normalizeGatePermissions, normalizeGatePositions, parseGateJson, placeFuturesOrder, summarizeGateOrder,
   validateGateChannelId, verifyGateAccount,
 } from './gate.js';
 
@@ -25,6 +25,28 @@ test('Gate key details support the current AccountKeyInfo object and legacy list
   assert.equal(matchingKeyInfo('api-key', current), current);
   assert.equal(matchingKeyInfo('api-key', [{ ...current, key: 'api-key' }])?.state, 1);
   assert.equal(matchingKeyInfo('api-key', [{ ...current, key: 'different-key' }]), null);
+});
+
+test('Gate permissions normalize REST, SDK, alias, and object-map response shapes', () => {
+  assert.deepEqual(normalizeGatePermissions({ perms: [{ name: 'futures', read_only: false }] }), [
+    { name: 'futures', readOnly: false },
+  ]);
+  assert.deepEqual(normalizeGatePermissions({ permissions: [{ type: 'Perpetual Futures', readOnly: false }] }), [
+    { name: 'futures', readOnly: false },
+  ]);
+  assert.deepEqual(normalizeGatePermissions({ perms: { perpetual_contract: 'read_and_write', wallet: 'read_only' } }), [
+    { name: 'futures', readOnly: false },
+    { name: 'wallet', readOnly: true },
+  ]);
+  assert.deepEqual(normalizeGatePermissions({ key: { permissions: ['futures:read_write'] } }), [
+    { name: 'futures', readOnly: false },
+  ]);
+});
+
+test('Gate permission normalization does not guess an unknown write scope', () => {
+  assert.deepEqual(normalizeGatePermissions({ permissions: ['futures'] }), [
+    { name: 'futures', readOnly: null },
+  ]);
 });
 
 test('Gate API v4 signature is deterministic and keeps secrets out of the URL', () => {
@@ -68,6 +90,15 @@ test('Gate account verification accepts a signed Futures account response', asyn
   assert.equal(result.success, true);
   assert.equal(result.gateUserId, '45997867');
   assert.equal(result.withdrawalDisabled, true);
+});
+
+test('Gate account verification accepts a Perpetual Futures alias with explicit Read/Write', async () => {
+  const result = await verifyGateAccount({
+    gateUid: '45997867', apiKey: 'api-key', secretKey: 'secret-key', expectedPublicIp: '203.0.113.10',
+    fetchImpl: verificationFetch({ permissions: [{ type: 'Perpetual Futures', readOnly: false }] }),
+  });
+  assert.equal(result.success, true);
+  assert.equal(result.futuresTrade, true);
 });
 
 test('Master verification requires Futures Read Only', async () => {
