@@ -47,6 +47,14 @@ export async function runVerificationBatch() {
         gateUid: job.gate_uid, apiKey: job.api_key, secretKey: job.secret_key,
         expectedPublicIp: workerPublicIp, requiresTradingPermission: job.connection_role !== 'MASTER', baseUrl,
       });
+      log('verification_result', {
+        gate_uid: job.gate_uid,
+        success: result.success,
+        error_code: result.errorCode || null,
+        error_path: result.diagnostic?.path || null,
+        error_status: result.diagnostic?.status || null,
+        upstream_label: result.diagnostic?.label || null,
+      });
       const { error: completionError } = await supabase.rpc('complete_gate_api_verification', {
         p_job_id: job.job_id, p_success: result.success, p_gate_user_id: result.gateUserId || null,
         p_error_code: result.errorCode || null, p_error_message: result.errorMessage || null,
