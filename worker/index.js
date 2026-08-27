@@ -17,6 +17,9 @@ const tradingMode = process.env.TRADING_MODE || 'OBSERVE';
 const readinessCheck = process.env.RUN_READINESS_CHECK === 'true';
 const alertWebhookUrl = process.env.ALERT_WEBHOOK_URL || '';
 const alertWebhookBearer = process.env.ALERT_WEBHOOK_BEARER || '';
+const telegramBotToken = process.env.TELEGRAM_BOT_TOKEN || '';
+const telegramChatId = process.env.TELEGRAM_CHAT_ID || '';
+const alertsConfigured = Boolean(alertWebhookUrl || (telegramBotToken && telegramChatId));
 if (!supabaseUrl || !serviceRoleKey) throw new Error('SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required');
 if (gateChannelId) validateGateChannelId(gateChannelId);
 if (gateChannelId && gateChannelId !== 'maetajak') throw new Error('GATE_CHANNEL_ID must equal the approved Channel ID maetajak');
@@ -26,7 +29,7 @@ if (['DRY_RUN', 'LIVE'].includes(tradingMode) && !gateChannelId) {
 if (tradingMode === 'LIVE' && (!workerPublicIp || baseUrl !== 'https://api.gateio.ws')) {
   throw new Error('LIVE mode requires WORKER_PUBLIC_IP and the production Gate API base URL');
 }
-if (tradingMode === 'LIVE' && !alertWebhookUrl) throw new Error('LIVE mode requires ALERT_WEBHOOK_URL');
+if (tradingMode === 'LIVE' && !alertsConfigured) throw new Error('LIVE mode requires a Telegram or webhook alert destination');
 
 const supabase = createClient(supabaseUrl, serviceRoleKey, { auth: { persistSession: false, autoRefreshToken: false } });
 const runner = new TradingRunner({ supabase, baseUrl, workerId, workerVersion, publicIp: workerPublicIp, channelId: gateChannelId, mode: tradingMode });
@@ -34,6 +37,16 @@ const state = { verification: false, trading: false, stopping: false };
 
 function log(event, details = {}) {
   console.log(JSON.stringify({ at: new Date().toISOString(), worker_id: workerId, event, ...details }));
+}
+
+function sendAlert(options) {
+  return sendWorkerAlert({
+    webhookUrl: alertWebhookUrl,
+    bearerToken: alertWebhookBearer,
+    telegramBotToken,
+    telegramChatId,
+    ...options,
+  });
 }
 
 export async function runVerificationBatch() {
@@ -61,7 +74,7 @@ export async function runVerificationBatch() {
         p_worker_public_ip: workerPublicIp || null,
       });
       if (completionError) throw completionError;
-      if (!result.success) await sendWorkerAlert({ webhookUrl: alertWebhookUrl, bearerToken: alertWebhookBearer, event: 'GATE_API_VERIFICATION_FAILED', details: { gate_uid: job.gate_uid, error_code: result.errorCode || 'UNKNOWN' } });
+      if (!result.success) await sendAlert({ event: 'GATE_API_VERIFICATION_FAILED', details: { gate_uid: job.gate_uid, error_code: result.errorCode || 'UNKNOWN' } });
     }
   } catch (error) {
     log('verification_error', { code: error instanceof Error ? error.message : 'unknown' });
@@ -84,7 +97,7 @@ export async function runTradingCycle() {
     try {
       const failure = await runner.reportCycle(false, code);
       if ([1, 3].includes(Number(failure?.consecutive_failures)) || Number(failure?.consecutive_failures) % 10 === 0) {
-        await sendWorkerAlert({ webhookUrl: alertWebhookUrl, bearerToken: alertWebhookBearer, event: Number(failure?.consecutive_failures) >= 3 ? 'COPY_SYSTEM_AUTO_HALTED' : 'WORKER_CYCLE_FAILED', severity: 'CRITICAL', details: { failures: failure?.consecutive_failures, error_code: failure?.last_error_code || code } });
+        await sendAlert({ event: Number(failure?.consecutive_failures) >= 3 ? 'COPY_SYSTEM_AUTO_HALTED' : 'WORKER_CYCLE_FAILED', severity: 'CRITICAL', details: { failures: failure?.consecutive_failures, error_code: failure?.last_error_code || code } });
       }
     }
     catch (reportError) { log('worker_failure_report_error', { code: reportError instanceof Error ? reportError.message : 'unknown' }); }

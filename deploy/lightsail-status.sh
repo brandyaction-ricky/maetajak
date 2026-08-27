@@ -21,6 +21,17 @@ if [[ -n "${configured_ip}" && "${configured_ip}" != "${outbound_ip}" ]]; then
 fi
 echo "ip_match=true"
 
+if grep -Eq '^TELEGRAM_BOT_TOKEN=.+$' "${ENV_FILE}" && grep -Eq '^TELEGRAM_CHAT_ID=.+$' "${ENV_FILE}"; then
+  echo "alerts_configured=true"
+  echo "alert_provider=telegram"
+elif grep -Eq '^ALERT_WEBHOOK_URL=https://.+$' "${ENV_FILE}"; then
+  echo "alerts_configured=true"
+  echo "alert_provider=webhook"
+else
+  echo "alerts_configured=false"
+  echo "alert_provider=missing"
+fi
+
 cd "${APP_DIR}"
 MAETAJAK_ENV_FILE="${ENV_FILE}" docker compose -f docker-compose.worker.yml ps
 MAETAJAK_ENV_FILE="${ENV_FILE}" docker compose -f docker-compose.worker.yml logs --tail=50 copy-worker

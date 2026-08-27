@@ -17,7 +17,7 @@ test('worker passes Channel ID to heartbeat and every live order', () => {
   assert.match(worker, /GATE_CHANNEL_ID/);
   assert.match(worker, /approved Channel ID maetajak/);
   assert.match(worker, /DRY_RUN and LIVE modes require GATE_CHANNEL_ID/);
-  assert.match(worker, /LIVE mode requires ALERT_WEBHOOK_URL/);
+  assert.match(worker, /LIVE mode requires a Telegram or webhook alert destination/);
   assert.match(runner, /p_broker_channel_id: this\.channelId/);
   assert.match(runner, /channelId: this\.channelId/);
 });

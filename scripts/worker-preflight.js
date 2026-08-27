@@ -34,6 +34,10 @@ export function validatePreflightEnvironment(env) {
   const baseUrl = env.GATE_API_BASE_URL || PRODUCTION_GATE_URL;
   const channelId = String(env.GATE_CHANNEL_ID || '').trim();
   const publicIp = String(env.WORKER_PUBLIC_IP || '').trim();
+  const telegramBotToken = String(env.TELEGRAM_BOT_TOKEN || '').trim();
+  const telegramChatId = String(env.TELEGRAM_CHAT_ID || '').trim();
+  const telegramConfigured = Boolean(telegramBotToken && telegramChatId);
+  const webhookConfigured = Boolean(String(env.ALERT_WEBHOOK_URL || '').trim());
   if (!/^https:\/\/[a-z0-9-]+\.supabase\.co\/?$/i.test(env.SUPABASE_URL || '')) errors.push('SUPABASE_URL must be the production Supabase project URL');
   if (jwtRole(env.SUPABASE_SERVICE_ROLE_KEY) !== 'service_role') errors.push('SUPABASE_SERVICE_ROLE_KEY must be a server-only service role key');
   if (baseUrl !== PRODUCTION_GATE_URL) errors.push('GATE_API_BASE_URL must be https://api.gateio.ws');
@@ -43,8 +47,21 @@ export function validatePreflightEnvironment(env) {
   if (!['OBSERVE', 'DRY_RUN', 'LIVE'].includes(mode)) errors.push('TRADING_MODE must be OBSERVE, DRY_RUN, or LIVE');
   if (env.RUN_READINESS_CHECK === 'true' && mode !== 'DRY_RUN') errors.push('RUN_READINESS_CHECK=true is only allowed in DRY_RUN');
   if (mode === 'DRY_RUN' && env.RUN_READINESS_CHECK !== 'true') warnings.push('DRY_RUN will not record readiness until RUN_READINESS_CHECK=true');
-  if (mode === 'LIVE' && !env.ALERT_WEBHOOK_URL) errors.push('ALERT_WEBHOOK_URL is required before accepting real members in LIVE');
-  return { ok: errors.length === 0, errors, warnings, mode, gate_base_url: baseUrl, broker_channel_id: channelId || null, worker_public_ip: publicIp || null, alerts_configured: Boolean(env.ALERT_WEBHOOK_URL) };
+  if (Boolean(telegramBotToken) !== Boolean(telegramChatId)) errors.push('TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID must be configured together');
+  if (telegramBotToken && !/^\d+:[A-Za-z0-9_-]{20,}$/.test(telegramBotToken)) errors.push('TELEGRAM_BOT_TOKEN has an invalid format');
+  if (telegramChatId && !/^(?:-?\d+|@[A-Za-z0-9_]{5,})$/.test(telegramChatId)) errors.push('TELEGRAM_CHAT_ID has an invalid format');
+  if (mode === 'LIVE' && !telegramConfigured && !webhookConfigured) errors.push('A Telegram or webhook alert destination is required before accepting real members in LIVE');
+  return {
+    ok: errors.length === 0,
+    errors,
+    warnings,
+    mode,
+    gate_base_url: baseUrl,
+    broker_channel_id: channelId || null,
+    worker_public_ip: publicIp || null,
+    alerts_configured: telegramConfigured || webhookConfigured,
+    alert_provider: telegramConfigured ? 'telegram' : webhookConfigured ? 'webhook' : null,
+  };
 }
 
 async function main() {

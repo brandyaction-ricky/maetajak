@@ -56,6 +56,8 @@ trap 'rm -f "${temp_env:-}"' EXIT
   printf 'SYNC_INTERVAL_MS=5000\n'
   printf 'ALERT_WEBHOOK_URL=%s\n' "${alert_webhook_url}"
   printf 'ALERT_WEBHOOK_BEARER=%s\n' "${alert_webhook_bearer}"
+  printf 'TELEGRAM_BOT_TOKEN=\n'
+  printf 'TELEGRAM_CHAT_ID=\n'
 } > "${temp_env}"
 chown root:root "${temp_env}"
 chmod 600 "${temp_env}"

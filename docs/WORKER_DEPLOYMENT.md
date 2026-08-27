@@ -60,7 +60,15 @@ chmod 600 .env.worker
 
 `DRY_RUN`과 `LIVE`는 Channel ID가 없거나 형식이 잘못되면 Worker 시작 단계에서 차단됩니다. 운영 DB도 승인된 Channel ID와 Worker의 Channel ID가 정확히 일치해야 준비 테스트 기록과 실거래 활성화를 허용합니다.
 
-장애를 사이트 밖에서도 즉시 확인하려면 `ALERT_WEBHOOK_URL`을 운영 알림 Webhook으로 설정합니다. 수신 서버가 Bearer 인증을 지원하면 `ALERT_WEBHOOK_BEARER`도 함께 설정합니다. 전송 내용에는 API Key·Secret Key·Service Role Key가 포함되지 않습니다.
+장애를 사이트 밖에서도 즉시 확인하려면 일반 Webhook 또는 Telegram Bot 알림을 설정합니다. Telegram을 사용할 때는 @BotFather에서 Bot Token을 발급하고 해당 Bot에게 `/start`를 보낸 뒤 아래 스크립트를 실행합니다. 스크립트는 최신 대화의 Chat ID를 Telegram `getUpdates`로 확인하고, Token과 Chat ID를 `/etc/maetajak/worker.env`에 root 전용 `600` 권한으로 저장한 다음 실제 테스트 알림까지 전송합니다. Token을 터미널 화면이나 Git에 출력하지 않습니다.
+
+```bash
+sudo /opt/maetajak/deploy/lightsail-configure-telegram.sh
+```
+
+일반 Webhook을 사용할 때는 `ALERT_WEBHOOK_URL`과 선택적인 `ALERT_WEBHOOK_BEARER`를 설정합니다. Telegram은 `TELEGRAM_BOT_TOKEN`과 `TELEGRAM_CHAT_ID`를 함께 요구합니다. 전송 내용에는 API Key·Secret Key·Service Role Key가 포함되지 않습니다.
+
+상태 스크립트는 비밀값을 표시하지 않고 `alerts_configured=true`, `alert_provider=telegram`만 출력합니다.
 
 ```bash
 docker compose -f docker-compose.worker.yml run --rm copy-worker npm run worker:preflight
@@ -68,7 +76,7 @@ docker compose -f docker-compose.worker.yml up -d --build
 docker compose -f docker-compose.worker.yml logs -f --tail=100
 ```
 
-Preflight가 `ok: true`를 반환하기 전에는 Worker를 시작하지 않습니다. 고정 공인 IPv4, 운영 Supabase Service Role, Gate 운영 URL, 승인 Channel ID, 모드별 준비 설정을 검사하며, LIVE에서는 외부 장애 알림 Webhook도 필수입니다. 출력에는 Secret이나 Service Role Key가 포함되지 않습니다.
+Preflight가 `ok: true`를 반환하기 전에는 Worker를 시작하지 않습니다. 고정 공인 IPv4, 운영 Supabase Service Role, Gate 운영 URL, 승인 Channel ID, 모드별 준비 설정을 검사하며, LIVE에서는 정상 동작이 검증된 Telegram 또는 Webhook 장애 알림도 필수입니다. 출력에는 Secret이나 Service Role Key가 포함되지 않습니다.
 
 ## 단계별 전환
 

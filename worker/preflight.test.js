@@ -21,5 +21,26 @@ test('worker preflight rejects placeholders, wrong channels, and LIVE without al
   assert.equal(result.ok, false);
   assert.ok(result.errors.some((message) => message.includes('fixed public IPv4')));
   assert.ok(result.errors.some((message) => message.includes('approved Channel ID')));
-  assert.ok(result.errors.some((message) => message.includes('ALERT_WEBHOOK_URL')));
+  assert.ok(result.errors.some((message) => message.includes('Telegram or webhook')));
+});
+
+test('worker preflight accepts complete Telegram alerts for LIVE', () => {
+  const result = validatePreflightEnvironment({
+    ...base,
+    TRADING_MODE: 'LIVE',
+    TELEGRAM_BOT_TOKEN: '123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcdef',
+    TELEGRAM_CHAT_ID: '-1001234567890',
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.alerts_configured, true);
+  assert.equal(result.alert_provider, 'telegram');
+});
+
+test('worker preflight rejects incomplete Telegram alert credentials', () => {
+  const result = validatePreflightEnvironment({
+    ...base,
+    TELEGRAM_BOT_TOKEN: '123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcdef',
+  });
+  assert.equal(result.ok, false);
+  assert.ok(result.errors.some((message) => message.includes('configured together')));
 });
