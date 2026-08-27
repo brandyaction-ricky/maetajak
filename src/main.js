@@ -177,7 +177,7 @@ function enhanceAdminApiPage() {
             <div class="field admin-secret-field"><label for="adminGateSecretKey">Secret Key</label><input id="adminGateSecretKey" type="password" autocomplete="new-password" autocapitalize="off" spellcheck="false" placeholder="Secret Key 입력" required></div>
           </div>
           <label class="permission-check"><input id="adminGatePermissionConfirmed" type="checkbox" required><span>Trading Account · Perpetual Futures Read Only만 허용했으며 출금 권한은 비활성화했습니다.</span></label>
-          <div class="admin-api-submit-row"><div class="credential-actions"><button id="adminGateApiConnect" class="btn primary" type="submit">암호화 저장 및 검증 요청</button><button id="adminGateApiDisconnect" class="btn red" type="button">Master API 연결 해제</button></div><p>Secret Key는 브라우저에 저장하지 않습니다.</p></div>
+          <div class="admin-api-submit-row"><div class="credential-actions"><button id="adminGateApiConnect" class="btn primary" type="submit">암호화 저장 및 검증 요청</button><button id="adminGateApiDisconnect" class="btn red" type="button">Master API 연결 해제</button></div><p id="adminGateCredentialHelp">Secret Key는 브라우저에 저장하지 않습니다.</p></div>
         </form>
         <details class="api-guide"><summary>Gate.io Master API 설정 안내</summary><ol><li>API 유형은 Trading Account를 선택합니다.</li><li>Perpetual Futures의 Read Only만 활성화합니다.</li><li>Master API에는 주문·출금 등 다른 쓰기 권한을 절대 활성화하지 않습니다.</li><li>${workerPublicIp ? `IP Whitelist에 Worker 고정 IP <code>${workerPublicIp}</code>를 등록합니다.` : 'Worker 고정 IP 준비 전에는 암호화 저장까지만 가능하며 실제 검증·거래는 시작되지 않습니다.'}</li><li>API Broker Channel ID <code>maetajak</code>는 회원 주문 요청에 Worker가 자동 적용합니다.</li></ol></details>
       </div>
@@ -377,8 +377,8 @@ function showApp(profile) {
   if (role === 'member') {
     loadGateConnection();
     loadMemberLiveData();
-    startGateStatusPolling();
   }
+  startGateStatusPolling();
 }
 
 async function loadProfile(userId) {
@@ -805,10 +805,23 @@ function renderAdminMasterGateConnection(connection) {
     setState('adminGateWorker', workerPublicIp ? '검증 대기' : '미설정');
     setState('adminGateWithdrawal', 'DISABLED 확인 필요');
     byId('adminGateVerificationDetail').textContent = 'UID와 API Key, Secret Key를 입력해 주세요.';
+    byId('adminGateApiForm').dataset.hasStoredCredential = 'false';
+    byId('adminGateApiKey').required = true;
+    byId('adminGateSecretKey').required = true;
+    byId('adminGateApiConnect').textContent = '암호화 저장 및 검증 요청';
+    byId('adminGateCredentialHelp').textContent = 'Secret Key는 브라우저에 저장하지 않습니다.';
     return;
   }
   byId('adminGateUid').value = connection.gate_uid || '';
   byId('adminGateApiKey').placeholder = connection.api_key_last4 ? `저장됨 ····${connection.api_key_last4}` : 'API Key 입력';
+  const hasStoredCredential = Boolean(connection.api_key_last4);
+  byId('adminGateApiForm').dataset.hasStoredCredential = String(hasStoredCredential);
+  byId('adminGateApiKey').required = !hasStoredCredential;
+  byId('adminGateSecretKey').required = !hasStoredCredential;
+  byId('adminGateApiConnect').textContent = hasStoredCredential ? '저장된 Master API 재검증' : '암호화 저장 및 검증 요청';
+  byId('adminGateCredentialHelp').textContent = hasStoredCredential
+    ? '저장된 암호화 Key로 재검증합니다. Key를 교체할 때만 두 값을 다시 입력하세요.'
+    : 'Secret Key는 브라우저에 저장하지 않습니다.';
   const verified = connection.status === 'VERIFIED';
   const errored = connection.status === 'ERROR';
   const labels = { VERIFIED: '연결됨', VERIFYING: '검증 중', ERROR: '연결 오류', DISABLED: '비활성', PENDING_VERIFICATION: '검증 대기' };
@@ -854,26 +867,41 @@ async function saveAdminGateApiCredentials() {
   const apiKey = byId('adminGateApiKey').value.trim();
   const secretKey = byId('adminGateSecretKey').value.trim();
   const permissionConfirmed = byId('adminGatePermissionConfirmed').checked;
-  if (!gateUid || apiKey.length < 16 || secretKey.length < 16) return window.toast('Master UID와 API Key, Secret Key를 정확히 입력해 주세요.');
   if (!permissionConfirmed) return window.toast('Master의 Futures Read Only와 출금 비활성화 설정을 확인해 주세요.');
+  const hasStoredCredential = byId('adminGateApiForm').dataset.hasStoredCredential === 'true';
+  const isReverification = hasStoredCredential && !apiKey && !secretKey;
+  if (!isReverification && (!gateUid || apiKey.length < 16 || secretKey.length < 16)) {
+    return window.toast('Master UID와 API Key, Secret Key를 정확히 입력해 주세요.');
+  }
+  if ((apiKey && !secretKey) || (!apiKey && secretKey)) {
+    return window.toast('API Key를 교체하려면 API Key와 Secret Key를 모두 입력해 주세요.');
+  }
   adminGateApiBusy = true;
   const button = byId('adminGateApiConnect');
   button.disabled = true;
-  button.textContent = '암호화 저장 중...';
-  const { data, error } = await supabase.rpc('save_admin_gate_api_credentials', {
-    p_gate_uid: gateUid,
-    p_api_key: apiKey,
-    p_secret_key: secretKey,
-    p_permission_confirmed: permissionConfirmed,
-  });
+  button.textContent = isReverification ? '재검증 요청 중...' : '암호화 저장 중...';
+  const { data, error } = isReverification
+    ? await supabase.rpc('retry_admin_master_gate_api_verification', {
+        p_permission_confirmed: permissionConfirmed,
+      })
+    : await supabase.rpc('save_admin_gate_api_credentials', {
+        p_gate_uid: gateUid,
+        p_api_key: apiKey,
+        p_secret_key: secretKey,
+        p_permission_confirmed: permissionConfirmed,
+      });
   byId('adminGateApiKey').value = '';
   byId('adminGateSecretKey').value = '';
   button.disabled = false;
-  button.textContent = '암호화 저장 및 검증 요청';
+  button.textContent = isReverification ? '저장된 Master API 재검증' : '암호화 저장 및 검증 요청';
   adminGateApiBusy = false;
-  if (error) return window.toast('Master API 정보를 저장하지 못했습니다. 입력값과 관리자 권한을 확인해 주세요.');
+  if (error) return window.toast(isReverification
+    ? '저장된 Master API의 재검증을 요청하지 못했습니다.'
+    : 'Master API 정보를 저장하지 못했습니다. 입력값과 관리자 권한을 확인해 주세요.');
   renderAdminMasterGateConnection(data);
-  window.toast(workerPublicIp ? '암호화 저장 완료 · Worker 검증을 요청했습니다.' : '암호화 저장 완료 · Worker 연결 전까지 안전 중지 상태입니다.');
+  window.toast(workerPublicIp
+    ? `${isReverification ? '저장된 Master API' : '암호화 저장'} · Worker 검증을 요청했습니다.`
+    : '암호화 저장 완료 · Worker 연결 전까지 안전 중지 상태입니다.');
   await loadAdminMasterGateConnection(false);
 }
 
@@ -886,6 +914,10 @@ function startGateStatusPolling() {
   stopGateStatusPolling();
   gateStatusTimer = window.setInterval(() => {
     if (currentProfile?.role === 'MEMBER' && !document.hidden) loadGateConnection(false);
+    if (currentProfile?.role === 'ADMIN' && byId('admin-api')?.classList.contains('active') && !document.hidden) {
+      loadAdminMasterGateConnection(false);
+      loadAdminGateConnections();
+    }
   }, 5000);
 }
 

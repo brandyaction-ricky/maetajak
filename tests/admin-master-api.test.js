@@ -5,6 +5,7 @@ import { readFileSync } from 'node:fs';
 const main = readFileSync(new URL('../src/main.js', import.meta.url), 'utf8');
 const theme = readFileSync(new URL('../src/theme.css', import.meta.url), 'utf8');
 const migration = readFileSync(new URL('../supabase/migrations/202608210004_admin_master_api.sql', import.meta.url), 'utf8');
+const reverifyMigration = readFileSync(new URL('../supabase/migrations/202608280001_admin_master_api_reverify.sql', import.meta.url), 'utf8');
 
 test('admin can submit a separate Master Gate.io credential form', () => {
   for (const id of ['adminGateApiForm', 'adminGateUid', 'adminGateApiKey', 'adminGateSecretKey', 'adminGatePermissionConfirmed', 'adminGateApiConnect']) {
@@ -40,4 +41,21 @@ test('Master API instructions require Futures Read Only without order permission
   assert.match(main, /Perpetual Futures Read Only만 허용/);
   assert.match(main, /Master 주문 권한/);
   assert.match(main, /verified && !connection\.futures_trade/);
+});
+
+test('admin can reverify a stored Master credential without exposing or replacing its secret', () => {
+  assert.match(main, /retry_admin_master_gate_api_verification/);
+  assert.match(main, /저장된 Master API 재검증/);
+  assert.match(main, /hasStoredCredential/);
+  assert.match(reverifyMigration, /connection_role = 'MASTER'/);
+  assert.match(reverifyMigration, /insert into private\.gate_api_verification_jobs/);
+  assert.match(reverifyMigration, /futures_trade = false/);
+  assert.doesNotMatch(reverifyMigration, /pgp_sym_decrypt|secret_key_ciphertext\s*=/);
+});
+
+test('Master reverification remains admin-only and disables the source until verification succeeds', () => {
+  assert.match(reverifyMigration, /if not public\.is_approved_admin\(\)/);
+  assert.match(reverifyMigration, /update private\.trading_accounts[\s\S]*status = 'DISABLED'/);
+  assert.match(reverifyMigration, /revoke all on function public\.retry_admin_master_gate_api_verification\(boolean\)[\s\S]*from public, anon/);
+  assert.match(reverifyMigration, /grant execute on function public\.retry_admin_master_gate_api_verification\(boolean\)[\s\S]*to authenticated/);
 });

@@ -24,7 +24,7 @@ test('pgcrypto-using security definer functions can resolve the managed extensio
     assert.match(
       migration,
       new RegExp(
-        `alter function public\\\\.${escaped}\\\\s+set search_path = public, extensions, pg_temp`,
+        `alter function public\\.${escaped}\\s+set search_path = public, extensions, pg_temp`,
         'i',
       ),
       `missing hardened search_path for ${signature}`,
