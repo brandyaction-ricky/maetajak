@@ -29,7 +29,9 @@ install -m 600 -o root -g root "${ENV_FILE}" "${BACKUP_FILE}"
 rollback() {
   if [[ "${activated}" != "true" && -f "${BACKUP_FILE}" ]]; then
     install -m 600 -o root -g root "${BACKUP_FILE}" "${ENV_FILE}"
-    systemctl restart maetajak-worker.service || true
+    systemctl stop maetajak-worker.service || true
+    sleep 40
+    systemctl start maetajak-worker.service || true
     echo "LIVE activation failed. DRY_RUN configuration was restored." >&2
   fi
 }
@@ -50,8 +52,10 @@ chmod 600 "${temp_env}"
 mv -f "${temp_env}" "${ENV_FILE}"
 
 docker compose -f docker-compose.worker.yml run --rm copy-worker npm run worker:preflight
-systemctl restart maetajak-worker.service
+systemctl stop maetajak-worker.service
 sleep 40
+systemctl start maetajak-worker.service
+sleep 15
 docker compose -f docker-compose.worker.yml run --rm \
   -e COPY_ACTIVATION_CONFIRMATION=ENABLE_LIVE_COPY_TRADING \
   copy-worker npm run worker:activate
