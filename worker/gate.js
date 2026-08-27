@@ -40,10 +40,13 @@ export function buildGateHeaders({ apiKey, secretKey, method = 'GET', path, quer
   return headers;
 }
 
-export function mapGateError(status, payload) {
+export function mapGateError(status, payload, path = '') {
   const label = String(payload?.label || '').toUpperCase();
   if (label.includes('IP') || label.includes('WHITE')) return { code: 'IP_NOT_ALLOWED', message: 'Trading Worker IP가 Gate.io Whitelist에 등록되지 않았습니다.' };
   if (status === 401 || label.includes('INVALID_KEY') || label.includes('INVALID_SIGNATURE')) return { code: 'INVALID_CREDENTIALS', message: 'API Key 또는 Secret Key가 올바르지 않습니다.' };
+  if ((status === 403 || label.includes('FORBIDDEN') || label.includes('PERMISSION')) && path.startsWith('/api/v4/unified/')) {
+    return { code: 'UNIFIED_READ_REQUIRED', message: '통합계정 자산 조회를 위해 Unified Read 권한을 확인해 주세요.' };
+  }
   if (status === 403 || label.includes('FORBIDDEN') || label.includes('PERMISSION')) return { code: 'FUTURES_READ_REQUIRED', message: 'Perpetual Futures Read 권한을 확인해 주세요.' };
   return { code: 'GATE_API_ERROR', message: 'Gate.io API 응답을 확인하지 못했습니다.' };
 }
@@ -87,7 +90,7 @@ export async function gateRequest({
   let payload = null;
   try { payload = parseGateJson(await response.text()); } catch { /* Gate can return an empty error response. */ }
   if (!response.ok) {
-    const mapped = mapGateError(response.status, payload);
+    const mapped = mapGateError(response.status, payload, path);
     throw new GateApiError(mapped.message, {
       code: mapped.code, status: response.status, payload, path,
       outcomeUnknown: isWrite && (response.status >= 500 || response.status === 408),

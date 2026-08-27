@@ -52,9 +52,17 @@ export function calculateTargetPosition({
   const ratio = Math.max(0, finiteNumber(copyRatio, 'copyRatio')) / 100;
   const positionCapRatio = Math.max(0, finiteNumber(maxPositionRatio, 'maxPositionRatio')) / 100;
 
+  // Scale the contract quantity by account equity first. Price and contract
+  // multiplier adjustments keep the same exposure percentage even if Gate
+  // reports different instrument units for the two accounts.
+  const equityScale = memberAccountEquity / masterAccountEquity;
+  const rawTargetSizeByEquity = signedMasterSize
+    * equityScale
+    * ratio
+    * (masterPrice * masterMultiplier) / (memberPrice * memberMultiplier);
+  const uncappedTargetNotional = rawTargetSizeByEquity * memberPrice * memberMultiplier;
   const masterNotional = signedMasterSize * masterPrice * masterMultiplier;
   const masterExposureRatio = masterNotional / masterAccountEquity;
-  const uncappedTargetNotional = memberAccountEquity * masterExposureRatio * ratio;
   const maxTargetNotional = memberAccountEquity * positionCapRatio;
   const targetNotional = Math.sign(uncappedTargetNotional)
     * Math.min(Math.abs(uncappedTargetNotional), maxTargetNotional);
@@ -66,6 +74,7 @@ export function calculateTargetPosition({
     targetNotional,
     uncappedTargetNotional,
     masterExposureRatio,
+    equityScale,
     capped: Math.abs(uncappedTargetNotional) > maxTargetNotional,
   };
 }

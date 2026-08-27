@@ -2,7 +2,7 @@ import { createClient } from '@supabase/supabase-js';
 import { randomUUID } from 'node:crypto';
 import { validateGateChannelId, verifyGateAccount } from './gate.js';
 import { TradingRunner } from './trading-runner.js';
-import { sendWorkerAlert } from './alerts.js';
+import { sendWorkerAlert, shouldSendFailureAlert } from './alerts.js';
 
 const supabaseUrl = process.env.SUPABASE_URL;
 const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -96,7 +96,7 @@ export async function runTradingCycle() {
     const code = error instanceof Error ? error.message : 'unknown';
     try {
       const failure = await runner.reportCycle(false, code);
-      if ([1, 3].includes(Number(failure?.consecutive_failures)) || Number(failure?.consecutive_failures) % 10 === 0) {
+      if (shouldSendFailureAlert(failure?.consecutive_failures)) {
         await sendAlert({ event: Number(failure?.consecutive_failures) >= 3 ? 'COPY_SYSTEM_AUTO_HALTED' : 'WORKER_CYCLE_FAILED', severity: 'CRITICAL', details: { failures: failure?.consecutive_failures, error_code: failure?.last_error_code || code } });
       }
     }

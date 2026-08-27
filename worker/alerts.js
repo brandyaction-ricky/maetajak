@@ -2,6 +2,13 @@ function safeAlertText(value, limit = 300) {
   return String(value || '').replace(/[\r\n\t]+/g, ' ').slice(0, limit);
 }
 
+export function shouldSendFailureAlert(consecutiveFailures) {
+  const failures = Number(consecutiveFailures);
+  // One warning and one auto-halt notice are enough for a continuous failure.
+  // Do not resend the same critical message every ten polling cycles.
+  return failures === 1 || failures === 3;
+}
+
 function alertPayload({ event, severity, details }) {
   return {
     source: 'maetajak-worker',

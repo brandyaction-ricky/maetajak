@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   buildGateHeaders, FUTURES_ACCOUNT_PATH, GateApiError, gateRequest, getFuturesAccount, getFuturesContracts,
-  matchingKeyInfo, normalizeGatePermissions, normalizeGatePositions, parseGateJson, placeFuturesOrder, summarizeGateOrder,
+  mapGateError, matchingKeyInfo, normalizeGatePermissions, normalizeGatePositions, parseGateJson, placeFuturesOrder, summarizeGateOrder,
   validateGateChannelId, verifyGateAccount,
 } from './gate.js';
 
@@ -57,6 +57,13 @@ test('Gate API v4 signature is deterministic and keeps secrets out of the URL', 
   assert.equal(headers['X-Gate-Size-Decimal'], '1');
   assert.match(headers.SIGN, /^[a-f0-9]{128}$/);
   assert.doesNotMatch(FUTURES_ACCOUNT_PATH, /api-key|secret-key/);
+});
+
+test('Unified account permission failures are not mislabeled as Futures read failures', () => {
+  assert.deepEqual(mapGateError(403, { label: 'FORBIDDEN' }, '/api/v4/unified/accounts'), {
+    code: 'UNIFIED_READ_REQUIRED',
+    message: '통합계정 자산 조회를 위해 Unified Read 권한을 확인해 주세요.',
+  });
 });
 
 test('Gate API v4 signature matches the official authentication example', () => {

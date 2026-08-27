@@ -27,6 +27,28 @@ test('target position follows master exposure and member copy ratio', () => {
   assert.equal(result.capped, false);
 });
 
+test('reported incident values scale every member strictly by account equity', () => {
+  const input = {
+    masterSize: -12,
+    masterEquity: 17_150.85,
+    masterMarkPrice: 80_271.6,
+    masterQuantoMultiplier: 0.0001,
+    copyRatio: 100,
+    maxPositionRatio: 40,
+    sizeStep: 1,
+  };
+  const small = calculateTargetPosition({ ...input, memberEquity: 2_000 });
+  const incidentMember = calculateTargetPosition({ ...input, memberEquity: 15_440.54 });
+  const large = calculateTargetPosition({ ...input, memberEquity: 20_000 });
+
+  assert.equal(small.targetSize, -1);
+  assert.equal(incidentMember.targetSize, -10);
+  assert.equal(large.targetSize, -13);
+  assert.equal(incidentMember.equityScale, 15_440.54 / 17_150.85);
+  assert.equal(incidentMember.capped, false);
+  assert.ok(Math.abs(incidentMember.targetSize) < 20);
+});
+
 test('target position applies copy ratio and maximum position cap', () => {
   const result = calculateTargetPosition({
     masterSize: -100,
