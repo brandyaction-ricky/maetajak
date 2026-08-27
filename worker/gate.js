@@ -94,7 +94,12 @@ export async function gateRequest({
   return { payload, status: response.status };
 }
 
-function matchingKeyInfo(apiKey, keys) {
+export function matchingKeyInfo(apiKey, keys) {
+  // Gate's current OpenAPI schema returns the authenticated key as one
+  // AccountKeyInfo object. Older responses returned a list whose `key` value
+  // could be matched against the caller's API key.
+  if (keys && !Array.isArray(keys) && typeof keys === 'object') return keys;
+
   const matches = (Array.isArray(keys) ? keys : []).filter((item) => {
     const listedKey = String(item?.key || '');
     if (!listedKey) return false;

@@ -2,19 +2,30 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   buildGateHeaders, FUTURES_ACCOUNT_PATH, GateApiError, gateRequest, getFuturesContracts,
-  normalizeGatePositions, parseGateJson, placeFuturesOrder, summarizeGateOrder, validateGateChannelId, verifyGateAccount,
+  matchingKeyInfo, normalizeGatePositions, parseGateJson, placeFuturesOrder, summarizeGateOrder,
+  validateGateChannelId, verifyGateAccount,
 } from './gate.js';
 
-function verificationFetch({ user = 45997867, ipWhitelist = ['203.0.113.10'], permissions = [{ name: 'futures', read_only: false }] } = {}) {
+function verificationFetch({ user = 45997867, ipWhitelist = ['203.0.113.10'], permissions = [{ name: 'futures', read_only: false }], legacyKeyList = false } = {}) {
   return async (url, options) => {
     assert.equal(options.method, 'GET');
     assert.match(options.headers.SIGN, /^[a-f0-9]{128}$/);
     if (url.endsWith('/futures/usdt/accounts')) return new Response(JSON.stringify({ user, total: '0' }), { status: 200 });
     if (url.endsWith('/account/detail')) return new Response(JSON.stringify({ user_id: user, ip_whitelist: ipWhitelist }), { status: 200 });
-    if (url.endsWith('/account/main_keys')) return new Response(JSON.stringify([{ state: 1, key: 'api-key', perms: permissions }]), { status: 200 });
+    if (url.endsWith('/account/main_keys')) {
+      const keyInfo = { state: 1, key: { mode: 1 }, perms: permissions };
+      return new Response(JSON.stringify(legacyKeyList ? [{ ...keyInfo, key: 'api-key' }] : keyInfo), { status: 200 });
+    }
     throw new Error(`unexpected URL: ${url}`);
   };
 }
+
+test('Gate key details support the current AccountKeyInfo object and legacy lists', () => {
+  const current = { state: 1, key: { mode: 1 }, perms: [{ name: 'futures', read_only: false }] };
+  assert.equal(matchingKeyInfo('api-key', current), current);
+  assert.equal(matchingKeyInfo('api-key', [{ ...current, key: 'api-key' }])?.state, 1);
+  assert.equal(matchingKeyInfo('api-key', [{ ...current, key: 'different-key' }]), null);
+});
 
 test('Gate API v4 signature is deterministic and keeps secrets out of the URL', () => {
   const headers = buildGateHeaders({ apiKey: 'api-key', secretKey: 'secret-key', path: FUTURES_ACCOUNT_PATH, timestamp: 1_700_000_000 });

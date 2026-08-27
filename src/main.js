@@ -751,10 +751,19 @@ function renderGateConnection(connection) {
     status.textContent = '미연결';
     status.className = 'chip yellow';
     byId('gateVerificationDetail').textContent = 'UID, API Key, Secret Key를 입력해 연결을 검증해 주세요.';
+    byId('gateApiForm').dataset.hasStoredCredential = 'false';
+    byId('gateApiKey').required = true;
+    byId('gateSecretKey').required = true;
+    byId('gateApiConnect').textContent = '저장 및 연결 검증';
     return;
   }
   byId('gateUid').value = connection.gate_uid || '';
   byId('gateApiKey').placeholder = connection.api_key_last4 ? `저장됨 ····${connection.api_key_last4}` : 'API Key 입력';
+  const hasStoredCredential = Boolean(connection.api_key_last4);
+  byId('gateApiForm').dataset.hasStoredCredential = String(hasStoredCredential);
+  byId('gateApiKey').required = !hasStoredCredential;
+  byId('gateSecretKey').required = !hasStoredCredential;
+  byId('gateApiConnect').textContent = hasStoredCredential ? '저장된 API 재검증' : '저장 및 연결 검증';
   const verified = connection.status === 'VERIFIED';
   const statusLabels = { VERIFIED: '연결됨', VERIFYING: '검증 중', ERROR: '연결 오류', DISABLED: '비활성', PENDING_VERIFICATION: '검증 대기' };
   status.textContent = statusLabels[connection.status] || '검증 대기';
@@ -937,26 +946,39 @@ async function saveGateApiCredentials() {
   const apiKey = byId('gateApiKey').value.trim();
   const secretKey = byId('gateSecretKey').value.trim();
   const permissionConfirmed = byId('gatePermissionConfirmed').checked;
-  if (!gateUid || apiKey.length < 16 || secretKey.length < 16) return window.toast('UID와 API Key, Secret Key를 정확히 입력해 주세요.');
   if (!permissionConfirmed) return window.toast('선물 권한과 출금 권한 설정을 확인해 주세요.');
+  const hasStoredCredential = byId('gateApiForm').dataset.hasStoredCredential === 'true';
+  const isReverification = hasStoredCredential && !apiKey && !secretKey;
+  if (!isReverification && (!gateUid || apiKey.length < 16 || secretKey.length < 16)) {
+    return window.toast('UID와 API Key, Secret Key를 정확히 입력해 주세요.');
+  }
+  if ((apiKey && !secretKey) || (!apiKey && secretKey)) {
+    return window.toast('API Key를 교체하려면 API Key와 Secret Key를 모두 입력해 주세요.');
+  }
   gateApiBusy = true;
   const button = byId('gateApiConnect');
   button.disabled = true;
-  button.textContent = '암호화 저장 및 검증 요청 중...';
-  const { data, error } = await supabase.rpc('save_gate_api_credentials', {
-    p_gate_uid: gateUid,
-    p_api_key: apiKey,
-    p_secret_key: secretKey,
-    p_permission_confirmed: permissionConfirmed,
-  });
+  button.textContent = isReverification ? '재검증 요청 중...' : '암호화 저장 및 검증 요청 중...';
+  const { data, error } = isReverification
+    ? await supabase.rpc('retry_my_gate_api_verification', {
+        p_permission_confirmed: permissionConfirmed,
+      })
+    : await supabase.rpc('save_gate_api_credentials', {
+        p_gate_uid: gateUid,
+        p_api_key: apiKey,
+        p_secret_key: secretKey,
+        p_permission_confirmed: permissionConfirmed,
+      });
   byId('gateApiKey').value = '';
   byId('gateSecretKey').value = '';
   button.disabled = false;
-  button.textContent = '저장 및 연결 검증';
+  button.textContent = isReverification ? '저장된 API 재검증' : '저장 및 연결 검증';
   gateApiBusy = false;
-  if (error) return window.toast('API 정보를 저장하지 못했습니다. 입력값을 확인해 주세요.');
+  if (error) return window.toast(isReverification
+    ? '저장된 API의 재검증을 요청하지 못했습니다.'
+    : 'API 정보를 저장하지 못했습니다. 입력값을 확인해 주세요.');
   renderGateConnection(data);
-  window.toast('암호화 저장 완료 · Worker 검증을 요청했습니다.');
+  window.toast(`${isReverification ? '저장된 API' : '암호화 저장 완료'} · Worker 검증을 요청했습니다.`);
   await loadGateConnection(false);
 }
 
