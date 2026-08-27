@@ -157,11 +157,29 @@ export async function getFuturesAccount(options) {
   return { user: payload?.user == null ? '' : String(payload.user), total: Number(payload?.total || 0), available: Number(payload?.available || 0), unrealisedPnl: Number(payload?.unrealised_pnl || 0) };
 }
 
+export function normalizeGatePositions(payload) {
+  const positions = (Array.isArray(payload) ? payload : []).map((position) => ({
+    contract: String(position.contract || ''),
+    size: Number(position.size || 0),
+    markPrice: Number(position.mark_price || 0),
+    entryPrice: Number(position.entry_price || 0),
+    leverage: Number(position.lever ?? position.leverage ?? position.cross_leverage_limit ?? 0),
+    mode: String(position.mode || 'single'),
+    posMarginMode: String(position.pos_margin_mode || ''),
+  })).filter((position) => position.contract && Number.isFinite(position.size) && position.size !== 0);
+  const contracts = new Set();
+  for (const position of positions) {
+    if (contracts.has(position.contract)) {
+      throw new GateApiError('동일 종목의 롱·숏 동시 포지션은 아직 안전하게 복사할 수 없습니다.', { code: 'HEDGED_POSITION_UNSUPPORTED' });
+    }
+    contracts.add(position.contract);
+  }
+  return positions;
+}
+
 export async function getFuturesPositions(options) {
   const { payload } = await gateRequest({ ...options, path: FUTURES_POSITIONS_PATH });
-  return (Array.isArray(payload) ? payload : []).map((position) => ({
-    contract: String(position.contract), size: Number(position.size || 0), markPrice: Number(position.mark_price || 0), entryPrice: Number(position.entry_price || 0), leverage: Number(position.leverage || 0),
-  })).filter((position) => position.contract && Number.isFinite(position.size));
+  return normalizeGatePositions(payload);
 }
 
 export async function getFuturesContracts({ fetchImpl = fetch, baseUrl = GATE_API_BASE_URL } = {}) {

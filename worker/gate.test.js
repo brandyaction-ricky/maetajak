@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   buildGateHeaders, FUTURES_ACCOUNT_PATH, GateApiError, gateRequest, getFuturesContracts,
-  parseGateJson, placeFuturesOrder, summarizeGateOrder, validateGateChannelId, verifyGateAccount,
+  normalizeGatePositions, parseGateJson, placeFuturesOrder, summarizeGateOrder, validateGateChannelId, verifyGateAccount,
 } from './gate.js';
 
 function verificationFetch({ user = 45997867, ipWhitelist = ['203.0.113.10'], permissions = [{ name: 'futures', read_only: false }] } = {}) {
@@ -157,4 +157,21 @@ test('decimal futures contracts use their minimum quantity as the lot step', asy
     name: 'TEST_USDT', quantoMultiplier: 0.01, sizeStep: 0.001, orderSizeMin: 0.001,
     orderSizeMax: 100, marketOrderSizeMax: 25, inDelisting: false,
   });
+});
+
+test('dual position responses keep only the open side for a contract', () => {
+  assert.deepEqual(normalizeGatePositions([
+    { contract: 'BTC_USDT', size: '2', mark_price: '60000', entry_price: '58000', lever: '3', mode: 'dual_long' },
+    { contract: 'BTC_USDT', size: '0', mark_price: '60000', entry_price: '0', lever: '3', mode: 'dual_short' },
+  ]), [{
+    contract: 'BTC_USDT', size: 2, markPrice: 60000, entryPrice: 58000,
+    leverage: 3, mode: 'dual_long', posMarginMode: '',
+  }]);
+});
+
+test('simultaneous long and short positions fail closed instead of being netted', () => {
+  assert.throws(() => normalizeGatePositions([
+    { contract: 'BTC_USDT', size: '2', mark_price: '60000', mode: 'dual_long' },
+    { contract: 'BTC_USDT', size: '-1', mark_price: '60000', mode: 'dual_short' },
+  ]), (error) => error instanceof GateApiError && error.code === 'HEDGED_POSITION_UNSUPPORTED');
 });
