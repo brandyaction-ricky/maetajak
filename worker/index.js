@@ -70,7 +70,7 @@ export async function runTradingCycle() {
     const reconciled = await runner.reconcileOrders();
     const submitted = await runner.submitOrders();
     await runner.reportCycle(true);
-    if (observation.observed || reconciled || submitted) log('cycle_complete', { ...observation, reconciled, submitted });
+    if (observation.masterObserved || observation.observed || reconciled || submitted) log('cycle_complete', { ...observation, reconciled, submitted });
   } catch (error) {
     const code = error instanceof Error ? error.message : 'unknown';
     try {

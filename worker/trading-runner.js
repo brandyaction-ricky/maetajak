@@ -122,14 +122,15 @@ export class TradingRunner {
   }
   async syncOnce() {
     const context = await this.rpc('get_copy_worker_context');
-    if (!context?.master || !(context.members || []).length) return { observed: 0, intents: 0 };
-    const contracts = await this.loadContracts();
+    if (!context?.master) return { observed: 0, masterObserved: 0, intents: 0 };
+    const memberContexts = Array.isArray(context.members) ? context.members : [];
+    const contracts = memberContexts.length ? await this.loadContracts() : new Map();
     const cycleId = randomUUID();
     const observedAt = new Date().toISOString();
     const master = await this.readAccount(context.master);
     const members = [];
     let simulatedIntents = 0;
-    for (const memberContext of context.members) {
+    for (const memberContext of memberContexts) {
       try {
         const member = await this.readAccount(memberContext);
         const plannedPositions = planMemberPositions({ cycleId, system: context.system, master, member, contracts });
@@ -141,7 +142,7 @@ export class TradingRunner {
       }
     }
     await this.rpc('record_copy_worker_cycle', { p_payload: { cycle_id: cycleId, source_version: sourceHash({ observedAt, master: master.positions }), observed_at: observedAt, master, members } });
-    return { observed: members.length, intents: simulatedIntents };
+    return { observed: members.length, masterObserved: 1, intents: simulatedIntents };
   }
   async submitOrders(limit = 10) {
     const jobs = await this.rpc('claim_copy_order_intents', { p_limit: limit });

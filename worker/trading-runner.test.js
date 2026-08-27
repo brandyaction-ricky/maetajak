@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { planMemberPositions, suppressExecutableIntents } from './trading-runner.js';
+import { planMemberPositions, suppressExecutableIntents, TradingRunner } from './trading-runner.js';
 
 const contracts = new Map([['BTC_USDT', { quantoMultiplier: 0.001, sizeStep: 1, orderSizeMin: 1, orderSizeMax: 0, marketOrderSizeMax: 0, inDelisting: false }]]);
 const base = {
@@ -48,4 +48,41 @@ test('OBSERVE and DRY_RUN cannot persist executable order intents', () => {
   assert.equal(suppressExecutableIntents(planned, 'OBSERVE')[0].intent, null);
   assert.equal(suppressExecutableIntents(planned, 'DRY_RUN')[0].intent, null);
   assert.ok(suppressExecutableIntents(planned, 'LIVE')[0].intent);
+});
+
+test('worker snapshots a verified Master before any member API is connected', async () => {
+  let recordedPayload = null;
+  const runner = new TradingRunner({
+    supabase: {},
+    baseUrl: 'https://api.gateio.ws',
+    workerId: 'worker-test',
+    workerVersion: 'test',
+    publicIp: '3.37.231.51',
+    channelId: 'maetajak',
+    mode: 'OBSERVE',
+  });
+  runner.rpc = async (name, parameters = {}) => {
+    if (name === 'get_copy_worker_context') {
+      return { system: {}, master: { trading_account_id: 'master-1' }, members: [] };
+    }
+    if (name === 'record_copy_worker_cycle') {
+      recordedPayload = parameters.p_payload;
+      return 'cycle-1';
+    }
+    throw new Error(`unexpected rpc: ${name}`);
+  };
+  runner.loadContracts = async () => { throw new Error('contracts should not load without members'); };
+  runner.readAccount = async (account) => ({
+    ...account,
+    total: 10_000,
+    available: 9_000,
+    unrealisedPnl: 100,
+    positions: [{ contract: 'BTC_USDT', size: 2, markPrice: 60_000, entryPrice: 58_000, leverage: 3 }],
+  });
+
+  const observation = await runner.syncOnce();
+
+  assert.deepEqual(observation, { observed: 0, masterObserved: 1, intents: 0 });
+  assert.equal(recordedPayload.master.positions[0].contract, 'BTC_USDT');
+  assert.deepEqual(recordedPayload.members, []);
 });
