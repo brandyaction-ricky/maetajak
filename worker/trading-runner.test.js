@@ -45,9 +45,59 @@ test('large deltas are chunked to the strictest Gate order size limit', () => {
 test('OBSERVE and DRY_RUN cannot persist executable order intents', () => {
   const planned = planMemberPositions(base);
   assert.ok(planned[0].intent);
-  assert.equal(suppressExecutableIntents(planned, 'OBSERVE')[0].intent, null);
-  assert.equal(suppressExecutableIntents(planned, 'DRY_RUN')[0].intent, null);
+  const observed = suppressExecutableIntents(planned, 'OBSERVE')[0];
+  const dryRun = suppressExecutableIntents(planned, 'DRY_RUN')[0];
+  assert.equal('intent' in observed, false);
+  assert.equal('intent' in dryRun, false);
+  assert.equal(observed.delta_size, 30);
+  assert.equal(dryRun.delta_size, 30);
+  assert.equal(JSON.parse(JSON.stringify(dryRun)).intent, undefined);
   assert.ok(suppressExecutableIntents(planned, 'LIVE')[0].intent);
+});
+
+test('DRY_RUN records target, actual, and delta without an intent key', async () => {
+  let recordedPayload = null;
+  const runner = new TradingRunner({
+    supabase: {},
+    baseUrl: 'https://api.gateio.ws',
+    workerId: 'worker-test',
+    workerVersion: 'test',
+    publicIp: '3.37.231.51',
+    channelId: 'maetajak',
+    mode: 'DRY_RUN',
+  });
+  runner.rpc = async (name, parameters = {}) => {
+    if (name === 'get_copy_worker_context') {
+      return {
+        system: { emergency_halted: false },
+        master: { trading_account_id: 'master-1' },
+        members: [{
+          trading_account_id: 'member-account-1', user_id: 'member-1', copy_ratio: 100,
+          max_position_ratio: 30, max_leverage: 10, previous_states: [],
+        }],
+      };
+    }
+    if (name === 'record_copy_worker_cycle') {
+      recordedPayload = parameters.p_payload;
+      return 'cycle-1';
+    }
+    throw new Error(`unexpected rpc: ${name}`);
+  };
+  runner.loadContracts = async () => contracts;
+  runner.readAccount = async (account) => account.trading_account_id === 'master-1'
+    ? { ...account, total: 10_000, available: 9_000, unrealisedPnl: 0, positions: [{ contract: 'BTC_USDT', size: 100, markPrice: 50_000 }] }
+    : { ...account, total: 5_000, available: 5_000, unrealisedPnl: 0, positions: [] };
+
+  const observation = await runner.syncOnce();
+  const [position] = recordedPayload.members[0].planned_positions;
+
+  assert.deepEqual(observation, { observed: 1, masterObserved: 1, intents: 1 });
+  assert.equal(position.target_size, 30);
+  assert.equal(position.size, 0);
+  assert.equal(position.delta_size, 30);
+  assert.equal('intent' in position, false);
+  assert.equal(JSON.stringify(recordedPayload).includes('gate_order_text'), false);
+  assert.equal(JSON.stringify(recordedPayload).includes('idempotency_key'), false);
 });
 
 test('worker snapshots a verified Master before any member API is connected', async () => {
