@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { planMemberPositions, suppressExecutableIntents, TradingRunner } from './trading-runner.js';
+import { planMemberPositions, safeError, suppressExecutableIntents, TradingRunner } from './trading-runner.js';
 
 const contracts = new Map([['BTC_USDT', { quantoMultiplier: 0.001, sizeStep: 1, orderSizeMin: 1, orderSizeMax: 0, marketOrderSizeMax: 0, inDelisting: false }]]);
 const base = {
@@ -241,4 +241,47 @@ test('worker refreshes cached contract metadata when Master opens an unknown con
   };
   await runner.syncOnce();
   assert.equal(loads, 2);
+});
+
+test('member failures expose a safe stage without leaking upstream messages', async () => {
+  assert.equal(safeError(new Error('secret database detail'), 'baseline init'), 'BASELINE_INIT_FAILED');
+  assert.equal(safeError(new TypeError('secret payload'), 'member account read'), 'MEMBER_ACCOUNT_READ_TYPE_ERROR');
+
+  let recordedPayload = null;
+  const logs = [];
+  const runner = new TradingRunner({
+    supabase: {}, baseUrl: 'https://api.gateio.ws', workerId: 'worker-test',
+    workerVersion: 'test', publicIp: '3.37.231.51', channelId: 'maetajak', mode: 'DRY_RUN',
+    logger: (event, details) => logs.push({ event, details }),
+  });
+  runner.rpc = async (name, parameters = {}) => {
+    if (name === 'get_copy_worker_context') return {
+      system: { emergency_halted: true },
+      master: { trading_account_id: 'master-1' },
+      members: [{ trading_account_id: 'member-account-1', user_id: 'member-1' }],
+    };
+    if (name === 'get_or_initialize_member_copy_baseline') throw new Error('private SQL error');
+    if (name === 'record_copy_worker_cycle') {
+      recordedPayload = parameters.p_payload;
+      return 'cycle-1';
+    }
+    throw new Error(`unexpected rpc: ${name}`);
+  };
+  runner.loadContracts = async () => contracts;
+  runner.readAccount = async (account) => ({
+    ...account, total: 10_000, available: 9_000, positions: [],
+  });
+
+  await runner.syncOnce();
+
+  assert.equal(recordedPayload.members[0].error_code, 'BASELINE_INIT_FAILED');
+  assert.deepEqual(logs.find(({ event }) => event === 'member_sync_failed'), {
+    event: 'member_sync_failed',
+    details: {
+      user_id: 'member-1',
+      trading_account_id: 'member-account-1',
+      error_code: 'BASELINE_INIT_FAILED',
+    },
+  });
+  assert.equal(JSON.stringify(logs).includes('private SQL error'), false);
 });

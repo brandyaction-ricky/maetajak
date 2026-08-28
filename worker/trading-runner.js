@@ -10,7 +10,16 @@ import {
 } from './copy-engine.js';
 import { aggregateMemberPerformance, kstDayRange } from './performance.js';
 
-function safeError(error) { return error instanceof GateApiError ? error.code : 'WORKER_ERROR'; }
+export function safeError(error, stage = 'WORKER') {
+  const safeStage = String(stage).toUpperCase().replace(/[^A-Z0-9_]/g, '_').slice(0, 40) || 'WORKER';
+  const detail = error instanceof GateApiError
+    ? error.code
+    : error instanceof TypeError
+      ? 'TYPE_ERROR'
+      : 'FAILED';
+  const safeDetail = String(detail || 'FAILED').toUpperCase().replace(/[^A-Z0-9_]/g, '_').slice(0, 35);
+  return `${safeStage}_${safeDetail}`.slice(0, 80);
+}
 function sourceHash(value) { return createHash('sha256').update(JSON.stringify(value)).digest('hex'); }
 function positionMap(positions) { return new Map(positions.map((position) => [position.contract, position])); }
 function credentials(account) { return { apiKey: account.api_key, secretKey: account.secret_key }; }
@@ -201,6 +210,7 @@ export class TradingRunner {
     let simulatedIntents = 0;
     const dryRunPlans = [];
     for (const memberContext of memberContexts) {
+      let memberStage = 'BASELINE_INIT';
       try {
         const baseline = await this.rpc('get_or_initialize_member_copy_baseline', {
           p_trading_account_id: memberContext.trading_account_id,
@@ -214,13 +224,16 @@ export class TradingRunner {
           return currentSize === 0 || (baselineSize !== 0 && Math.sign(currentSize) !== Math.sign(baselineSize));
         }).map((position) => position.contract);
         if (contractsToClear.length) {
+          memberStage = 'BASELINE_CLEAR';
           await this.rpc('clear_member_copy_baselines', {
             p_trading_account_id: memberContext.trading_account_id,
             p_contracts: contractsToClear,
           });
         }
         const activeBaselines = baselinePositions.filter((position) => !contractsToClear.includes(position.contract));
+        memberStage = 'MEMBER_ACCOUNT_READ';
         const member = await this.readAccount({ ...memberContext, master_baselines: activeBaselines });
+        memberStage = 'MEMBER_PLAN';
         const plannedPositions = planMemberPositions({
           cycleId,
           system: context.system,
@@ -246,11 +259,13 @@ export class TradingRunner {
           try {
             await this.syncMemberPerformance(member, contracts, observedAt);
           } catch (performanceError) {
-            if (this.logger) this.logger('member_performance_sync_failed', { user_id: member.user_id, error_code: safeError(performanceError) });
+            if (this.logger) this.logger('member_performance_sync_failed', { user_id: member.user_id, error_code: safeError(performanceError, 'PERFORMANCE') });
           }
         }
       } catch (error) {
-        members.push({ ...memberContext, error_code: safeError(error), positions: [], planned_positions: [] });
+        const errorCode = safeError(error, memberStage);
+        if (this.logger) this.logger('member_sync_failed', { user_id: memberContext.user_id, trading_account_id: memberContext.trading_account_id, error_code: errorCode });
+        members.push({ ...memberContext, error_code: errorCode, positions: [], planned_positions: [] });
       }
     }
     await this.rpc('record_copy_worker_cycle', { p_payload: { cycle_id: cycleId, source_version: sourceHash({ observedAt, master: master.positions }), observed_at: observedAt, master, members } });

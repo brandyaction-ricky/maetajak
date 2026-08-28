@@ -1,0 +1,46 @@
+name: Promote production worker to LIVE
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: Type ENABLE_LIVE_COPY_TRADING after reviewing the DRY_RUN plan
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-worker-deploy
+  cancel-in-progress: false
+
+jobs:
+  promote-live:
+    if: ${{ inputs.confirmation == 'ENABLE_LIVE_COPY_TRADING' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: production-live
+    env:
+      DEPLOY_HOST: ${{ secrets.LIGHTSAIL_HOST }}
+      DEPLOY_USER: ${{ secrets.LIGHTSAIL_USER }}
+      DEPLOY_KEY: ${{ secrets.LIGHTSAIL_SSH_PRIVATE_KEY }}
+      DEPLOY_KNOWN_HOSTS: ${{ secrets.LIGHTSAIL_KNOWN_HOSTS }}
+    steps:
+      - name: Configure restricted SSH identity
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          install -m 700 -d "$RUNNER_TEMP/ssh"
+          printf '%s\n' "$DEPLOY_KEY" > "$RUNNER_TEMP/ssh/deploy_key"
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$RUNNER_TEMP/ssh/known_hosts"
+          chmod 600 "$RUNNER_TEMP/ssh/deploy_key" "$RUNNER_TEMP/ssh/known_hosts"
+      - name: Promote verified DRY_RUN to LIVE
+        run: >-
+          ssh -i "$RUNNER_TEMP/ssh/deploy_key"
+          -o BatchMode=yes
+          -o IdentitiesOnly=yes
+          -o StrictHostKeyChecking=yes
+          -o UserKnownHostsFile="$RUNNER_TEMP/ssh/known_hosts"
+          "$DEPLOY_USER@$DEPLOY_HOST"
+          promote-live
