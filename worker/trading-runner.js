@@ -130,10 +130,17 @@ export class TradingRunner {
     const context = await this.rpc('get_copy_worker_context');
     if (!context?.master) return { observed: 0, masterObserved: 0, intents: 0 };
     const memberContexts = Array.isArray(context.members) ? context.members : [];
-    const contracts = memberContexts.length ? await this.loadContracts() : new Map();
+    let contracts = memberContexts.length ? await this.loadContracts() : new Map();
     const cycleId = randomUUID();
     const observedAt = new Date().toISOString();
     const master = await this.readAccount(context.master);
+    // A newly listed or newly traded contract may appear after the hourly
+    // contract metadata cache was built. Refresh immediately instead of
+    // silently dropping that Master position from every member plan.
+    if (memberContexts.length && master.positions.some((position) => !contracts.has(position.contract))) {
+      this.contracts = null;
+      contracts = await this.loadContracts();
+    }
     if (this.mode === 'DRY_RUN' && this.logger) {
       const masterSnapshot = {
         total_equity: master.total,
