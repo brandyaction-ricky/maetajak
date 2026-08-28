@@ -112,13 +112,13 @@ DB는 최근 Worker heartbeat, 운영 Gate URL, 고정 IP, 최근 준비 테스�
 
 `production-dry-run` 환경에는 다음 Secrets가 필요합니다.
 
-- `SUPABASE_ACCESS_TOKEN` (`database_write`만 허용한 Supabase 제한 토큰)
+- `SUPABASE_DB_URL`
 - `LIGHTSAIL_HOST`
 - `LIGHTSAIL_USER`
 - `LIGHTSAIL_SSH_PRIVATE_KEY`
 - `LIGHTSAIL_KNOWN_HOSTS`
 
-`production-live`에는 Lightsail 관련 네 Secrets만 복사하고 필수 승인자를 지정합니다. 기존 운영 DB가 SQL Editor로 수동 구축되었다면 최초 한 번 `supabase_migrations.schema_migrations`에 이미 반영된 버전을 등록한 뒤 자동 배포를 시작합니다. 자동화는 Management API의 제한 토큰으로 이 테이블에 없는 SQL만 트랜잭션으로 적용합니다.
+`production-live`에는 Lightsail 관련 네 Secrets만 복사하고 필수 승인자를 지정합니다. 기존 운영 DB가 SQL Editor로 수동 구축되었다면 최초 한 번 `supabase_migrations.schema_migrations`에 이미 반영된 버전을 등록한 뒤 자동 배포를 시작합니다. Supabase CLI는 이 이력에 없는 SQL만 순서대로 적용합니다.
 
 ## 긴급 중단
 
