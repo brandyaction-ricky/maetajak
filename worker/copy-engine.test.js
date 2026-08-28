@@ -3,12 +3,21 @@ import assert from 'node:assert/strict';
 import {
   buildGateOrderText,
   buildIdempotencyKey,
+  calculateCopyableMasterSize,
   calculateDeltaOrder,
   calculateTargetPosition,
   deriveCopyState,
   detectManualOverride,
   roundTowardZeroToStep,
 } from './copy-engine.js';
+
+test('onboarding baseline ignores existing exposure but copies later additions', () => {
+  assert.deepEqual(calculateCopyableMasterSize({ masterSize: 12, baselineSize: 12 }), { copyableSize: 0, clearBaseline: false });
+  assert.deepEqual(calculateCopyableMasterSize({ masterSize: 18, baselineSize: 12 }), { copyableSize: 6, clearBaseline: false });
+  assert.deepEqual(calculateCopyableMasterSize({ masterSize: 8, baselineSize: 12 }), { copyableSize: 0, clearBaseline: false });
+  assert.deepEqual(calculateCopyableMasterSize({ masterSize: 0, baselineSize: 12 }), { copyableSize: 0, clearBaseline: true });
+  assert.deepEqual(calculateCopyableMasterSize({ masterSize: -4, baselineSize: 12 }), { copyableSize: -4, clearBaseline: true });
+});
 
 test('target position follows master exposure and member copy ratio', () => {
   const result = calculateTargetPosition({
