@@ -86,10 +86,11 @@ export function planMemberPositions({ cycleId, system, master, member, contracts
 }
 
 export class TradingRunner {
-  constructor({ supabase, baseUrl, workerId, workerVersion, publicIp, channelId, mode = 'OBSERVE', fetchImpl = fetch, logger = console }) {
+  constructor({ supabase, baseUrl, workerId, workerVersion, publicIp, channelId, mode = 'OBSERVE', fetchImpl = fetch, logger = null }) {
     Object.assign(this, { supabase, baseUrl, workerId, workerVersion, publicIp, channelId, mode, fetchImpl, logger });
     this.contracts = null;
     this.contractsLoadedAt = 0;
+    this.lastDryRunPlanHash = null;
   }
   async rpc(name, parameters = {}) {
     const { data, error } = await this.supabase.rpc(name, parameters);
@@ -134,6 +135,7 @@ export class TradingRunner {
     const master = await this.readAccount(context.master);
     const members = [];
     let simulatedIntents = 0;
+    const dryRunPlans = [];
     for (const memberContext of memberContexts) {
       try {
         const member = await this.readAccount(memberContext);
@@ -146,6 +148,16 @@ export class TradingRunner {
           simulateSystemHalt: this.mode === 'DRY_RUN',
         });
         simulatedIntents += plannedPositions.filter((position) => position.intent).length;
+        if (this.mode === 'DRY_RUN') {
+          dryRunPlans.push(...plannedPositions.map((position) => ({
+            contract: position.contract,
+            target_size: position.target_size,
+            actual_size: position.size,
+            delta_size: position.delta_size,
+            state: position.state,
+            pause_reason: position.pause_reason,
+          })));
+        }
         member.planned_positions = suppressExecutableIntents(plannedPositions, this.mode);
         members.push(member);
       } catch (error) {
@@ -153,6 +165,13 @@ export class TradingRunner {
       }
     }
     await this.rpc('record_copy_worker_cycle', { p_payload: { cycle_id: cycleId, source_version: sourceHash({ observedAt, master: master.positions }), observed_at: observedAt, master, members } });
+    if (this.mode === 'DRY_RUN' && this.logger && dryRunPlans.length) {
+      const planHash = sourceHash(dryRunPlans);
+      if (planHash !== this.lastDryRunPlanHash) {
+        this.lastDryRunPlanHash = planHash;
+        this.logger('dry_run_plan', { positions: dryRunPlans });
+      }
+    }
     return { observed: members.length, masterObserved: 1, intents: simulatedIntents };
   }
   async submitOrders(limit = 10) {
