@@ -283,7 +283,14 @@ export function normalizeGatePositions(payload) {
 }
 
 export async function getFuturesPositions(options) {
-  const { payload } = await gateRequest({ ...options, path: FUTURES_POSITIONS_PATH });
+  // Gate's official API defines `holding=true` as the explicit real/open
+  // position query. Omitting it can return an empty list for unified accounts
+  // even while the account has an open perpetual position.
+  const { payload } = await gateRequest({
+    ...options,
+    path: FUTURES_POSITIONS_PATH,
+    query: { holding: true, limit: 100, offset: 0 },
+  });
   return normalizeGatePositions(payload);
 }
 
