@@ -2,6 +2,7 @@
 set -Eeuo pipefail
 
 readonly APP_DIR="/opt/maetajak"
+readonly ENV_FILE="/etc/maetajak/worker.env"
 
 if [[ "${EUID}" -ne 0 ]]; then
   echo "Run this auto-deployment check as root." >&2
@@ -27,16 +28,36 @@ if ! git merge-base --is-ancestor "${local_sha}" "${remote_sha}"; then
   exit 1
 fi
 
-# Database changes must be applied and reviewed before a new Worker can use them.
+database_changes=false
+# Database changes may advance only after the production PostgREST schema
+# proves the reviewed hedge-mode RPC is already installed. This keeps DB-first
+# deployment fail-closed without requiring a manual server fast-forward.
 if ! git diff --quiet "${local_sha}" "${remote_sha}" -- supabase/migrations; then
-  echo "auto_deploy=blocked_database_migration" >&2
-  exit 1
+  export MAETAJAK_ENV_FILE="${ENV_FILE}"
+  if ! docker compose -f docker-compose.worker.yml run --rm copy-worker node --input-type=module -e '
+    const response = await fetch(`${process.env.SUPABASE_URL}/rest/v1/`, {
+      headers: {
+        apikey: process.env.SUPABASE_SERVICE_ROLE_KEY,
+        Authorization: `Bearer ${process.env.SUPABASE_SERVICE_ROLE_KEY}`,
+      },
+    });
+    const schema = response.ok ? await response.json() : {};
+    if (!schema.paths?.["/rpc/clear_member_copy_baseline_legs"]) process.exit(1);
+  ' >/dev/null; then
+    echo "auto_deploy=blocked_database_migration" >&2
+    exit 1
+  fi
+  database_changes=true
 fi
 
 if git diff --quiet "${local_sha}" "${remote_sha}" -- \
   deploy scripts worker Dockerfile.worker docker-compose.worker.yml package.json package-lock.json; then
   git merge --ff-only "${remote_sha}"
-  echo "auto_deploy=code_only_fast_forward"
+  if [[ "${database_changes}" == "true" ]]; then
+    echo "auto_deploy=database_migration_already_applied"
+  else
+    echo "auto_deploy=code_only_fast_forward"
+  fi
   echo "commit=${remote_sha}"
   exit 0
 fi

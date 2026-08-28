@@ -22,7 +22,7 @@ test('Lightsail shell scripts have valid Bash syntax', () => {
   }
 });
 
-test('automated deployment fails closed in DRY_RUN and blocks database changes', () => {
+test('automated deployment fails closed in DRY_RUN and requires database-first verification', () => {
   const deploy = readFileSync('deploy/lightsail-deploy-dry-run.sh', 'utf8');
   const verify = readFileSync('deploy/lightsail-verify-deployment.sh', 'utf8');
   const autoDeploy = readFileSync('deploy/lightsail-auto-deploy.sh', 'utf8');
@@ -36,6 +36,8 @@ test('automated deployment fails closed in DRY_RUN and blocks database changes',
   assert.match(deploy, /process-live-promotion-request\.sh/);
   assert.match(verify, /member_sync_failed/);
   assert.match(autoDeploy, /blocked_database_migration/);
+  assert.match(autoDeploy, /clear_member_copy_baseline_legs/);
+  assert.match(autoDeploy, /database_migration_already_applied/);
   assert.match(autoDeploy, /git merge-base --is-ancestor/);
   assert.match(timer, /OnUnitActiveSec=3min/);
   assert.match(workflow, /npm test/);
