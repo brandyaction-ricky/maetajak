@@ -46,6 +46,9 @@ let selectedMemberId = null;
 let passwordBusy = false;
 let passwordRecoveryMode = false;
 let adminPasswordResetBusy = false;
+let memberDashboardRange = 30;
+let memberDashboardMetric = 'ROI';
+let memberDashboardPerformance = null;
 
 function extendCopySettingOptions() {
   const selects = [...document.querySelectorAll('select')];
@@ -145,8 +148,16 @@ function enhanceOperationsStatusUi() {
 function enhanceLiveDataUi() {
   const memberDashboard = byId('member-dashboard');
   if (memberDashboard) memberDashboard.innerHTML = `<div class="status"><div><span id="memberSystemDot" class="dot"></span><b id="memberSystemTitle">운영 상태 확인 중</b><div><span id="memberSystemDetail">Worker와 주문 안전 상태를 불러오고 있습니다.</span></div></div><button class="btn red" onclick="openPause()">카피 관리</button></div>
-    <div class="grid kpis"><div class="card kpi"><label>총 자산</label><strong id="memberLiveEquity">-</strong></div><div class="card kpi"><label>사용 가능 증거금</label><strong id="memberLiveAvailable">-</strong></div><div class="card kpi"><label>미실현 손익</label><strong id="memberLiveUnrealised">-</strong></div><div class="card kpi"><label>마지막 확인</label><strong id="memberLiveObserved">-</strong></div></div>
-    <div class="card section" style="margin-top:14px"><div class="section-head"><div><h3>현재 포지션</h3><p>실제 Target / Actual / Delta</p></div></div><div class="table"><table><thead><tr><th>종목</th><th>Target</th><th>Actual</th><th>Delta</th><th>상태</th></tr></thead><tbody id="memberDashPositions"><tr><td colspan="5" class="empty-cell">실제 포지션을 불러오는 중입니다.</td></tr></tbody></table></div></div>`;
+    <section class="card section member-performance-card">
+      <div class="member-period-tabs" role="group" aria-label="성과 조회 기간">${[7, 30, 90, 180].map((days) => `<button type="button" data-dashboard-range="${days}" class="${days === 30 ? 'active' : ''}">${days}D</button>`).join('')}</div>
+      <div class="member-performance-head"><div><small>카피 시작 이후 실제 선물 원장</small><h3>ROI &amp; PNL</h3></div><div class="member-metric-toggle"><button type="button" data-dashboard-metric="ROI" class="active">ROI</button><button type="button" data-dashboard-metric="PNL">PNL</button></div></div>
+      <strong id="memberPerformanceValue" class="member-performance-value">집계 대기</strong>
+      <div id="memberPerformanceChart" class="member-performance-chart"><div class="member-chart-empty">Trading Worker가 성과를 집계하면 차트가 표시됩니다.</div></div>
+      <div class="member-performance-foot"><span id="memberPerformancePeriod">-</span><span>입출금 제외 · 수수료·펀딩 반영</span></div>
+    </section>
+    <div class="grid kpis member-account-kpis"><div class="card kpi"><label>총 자산</label><strong id="memberLiveEquity">-</strong><small id="memberUsedMargin">사용 증거금 -</small></div><div class="card kpi"><label>사용 가능 증거금</label><strong id="memberLiveAvailable">-</strong><div class="member-margin-track"><i id="memberMarginBar"></i></div><small id="memberMarginUsage">사용률 -</small></div><div class="card kpi"><label>활성 포지션</label><strong id="memberOpenPositionCount">0</strong><small id="memberPositionDirections">Long 0 · Short 0</small></div><div class="card kpi"><label>미실현 손익</label><strong id="memberLiveUnrealised">-</strong><small id="memberLiveObserved">마지막 확인 -</small></div></div>
+    <section class="card section member-trading-data"><div class="section-head"><div><small>TRADING DATA</small><h3>카피 거래 성과</h3></div></div><div class="member-win-summary"><div><span>승률</span><b id="memberWinRate">-</b></div><div><span>거래</span><b id="memberTradeCount">0</b></div></div><div class="member-win-labels"><span>Win <b id="memberWins" class="pos">0</b></span><span>Loss <b id="memberLosses" class="neg">0</b></span></div><div class="member-win-track"><i id="memberWinBar"></i><i id="memberLossBar"></i></div><div class="member-trading-grid"><span>누적 PNL</span><b id="memberStatsPnl">-</b><span>MDD</span><b id="memberMdd">-</b><span>일평균 거래</span><b id="memberAverageTrades">-</b><span>최근 거래</span><b id="memberLastTrade">-</b></div></section>
+    <section class="member-position-section"><div class="member-position-head"><div><h3>현재 포지션 <span id="memberPositionBadge">0</span></h3><p>Gate.io Worker가 확인한 실제 무기한 선물 포지션입니다.</p></div></div><div id="memberOpenPositionCards" class="member-open-position-grid"><div class="master-position-empty">현재 포지션을 불러오는 중입니다.</div></div></section>`;
   const adminDashboard = byId('admin-dashboard');
   if (adminDashboard) adminDashboard.innerHTML = `<div class="status"><div><span id="adminSystemDot" class="dot"></span><b id="adminSystemTitle">운영 상태 확인 중</b><div><span id="adminSystemDetail">Worker heartbeat를 확인하고 있습니다.</span></div></div></div>
     <div class="grid kpis"><div class="card kpi"><label>Master 포지션</label><strong id="adminLiveMasterCount">0</strong></div><div class="card kpi"><label>회원 동기화 종목</label><strong id="adminLiveStateCount">0</strong></div><div class="card kpi"><label>미확정 주문</label><strong id="adminLiveUnknownCount" class="warn">0</strong></div><div class="card kpi"><label>Manual Override</label><strong id="adminLiveOverrideCount" class="warn">0</strong></div></div>
@@ -176,6 +187,31 @@ function enhanceLiveDataUi() {
   if (eventsPage) eventsPage.innerHTML = `<div class="card section"><div class="section-head"><div><h3>Copy Events</h3><p>Worker·주문·동기화·위험 상태의 실제 이벤트입니다.</p></div><button class="btn" type="button" id="adminEventsRefresh">새로고침</button></div><div class="table"><table><thead><tr><th>시간</th><th>회원</th><th>종목</th><th>이벤트</th><th>심각도</th><th>상세</th></tr></thead><tbody id="adminOperationalEvents"><tr><td colspan="6" class="empty-cell">운영 이벤트를 불러오는 중입니다.</td></tr></tbody></table></div></div>`;
   const auditPage = byId('admin-audit');
   if (auditPage) auditPage.innerHTML = `<div class="card section"><div class="section-head"><div><h3>Audit Log</h3><p>관리자 승인·API·카피 제어 변경 이력입니다.</p></div><button class="btn" type="button" id="adminAuditRefresh">새로고침</button></div><div class="table"><table><thead><tr><th>시간</th><th>작업자</th><th>작업</th><th>대상</th><th>변경 내용</th></tr></thead><tbody id="adminAuditRows"><tr><td colspan="5" class="empty-cell">감사 로그를 불러오는 중입니다.</td></tr></tbody></table></div></div>`;
+}
+
+function enhanceCopySettingsUi() {
+  const page = byId('member-copy');
+  if (!page) return;
+  page.innerHTML = `<div class="copy-settings-layout">
+    <section class="card section copy-control-card"><div class="section-head"><div><small>COPY EXPOSURE</small><h3>카피 비율</h3><p>Master의 포지션 변화를 내 자산 기준으로 복제할 비율입니다.</p></div><strong id="copyRatioValue">100%</strong></div><input id="copyRatioSelect" class="copy-range" type="range" min="50" max="200" step="50" value="100"><div class="copy-range-labels"><span>50%</span><span>100%</span><span>150%</span><span>200%</span></div></section>
+    <section class="card section copy-control-card"><div class="section-head"><div><small>POSITION CAP</small><h3>종목당 최대 포지션 비중</h3><p>한 종목이 내 총자산에서 차지할 수 있는 상한입니다.</p></div><strong id="maxPositionRatioValue">30%</strong></div><input id="maxPositionRatioSelect" class="copy-range" type="range" min="20" max="40" step="10" value="30"><div class="copy-range-labels"><span>20% 안전</span><span>30% 균형</span><span>40% 적극</span></div></section>
+    <section class="card section copy-existing-policy"><div><small>EXISTING POSITION MODE</small><h3>기존 포지션 처리</h3><p>API 연결 시점에 Master가 이미 보유한 포지션은 진입하지 않고, 이후 추가·감소 및 신규 진입부터 카피합니다.</p></div><span class="chip">연결 이후만 카피</span></section>
+    <section class="card section copy-risk-card"><div class="section-head"><div><small>RISK LIMITS</small><h3>계정 리스크 한도</h3><p>한도 도달 시 Worker가 신규 주문을 자동 차단합니다.</p></div></div><div class="copy-risk-inputs"><label><span>일일 최대 손실</span><div><input id="dailyLossLimitInput" type="number" min="1" max="10" step="0.5" value="5"><b>%</b></div></label><label><span>최대 Drawdown</span><div><input id="maxDrawdownInput" type="number" min="5" max="30" step="1" value="15"><b>%</b></div></label><label><span>최대 레버리지</span><div><input id="maxLeverageInput" type="number" min="1" max="20" step="1" value="10"><b>x</b></div></label></div></section>
+    <aside class="card section copy-setting-summary"><small>SETTING PREVIEW</small><h3>현재 설정 요약</h3><div class="metric"><span>카피 비율</span><b id="copyPreviewRatio">100%</b></div><div class="metric"><span>종목당 최대 비중</span><b id="copyPreviewCap">30%</b></div><div class="metric"><span>기존 포지션</span><b>진입 안 함</b></div><div class="metric"><span>리스크 차단</span><b id="copyPreviewRisk">-5% · -15% · 10x</b></div><div class="notice">설정 변경은 다음 Worker 주기부터 적용됩니다. 기존 포지션을 임의로 확대하지 않습니다.</div><button id="copySettingsSave" class="btn primary full" type="button">설정 저장</button></aside>
+  </div>`;
+}
+
+function refreshCopySettingPreview() {
+  const ratio = Number(byId('copyRatioSelect')?.value || 100);
+  const cap = Number(byId('maxPositionRatioSelect')?.value || 30);
+  const daily = Number(byId('dailyLossLimitInput')?.value || 5);
+  const drawdown = Number(byId('maxDrawdownInput')?.value || 15);
+  const leverage = Number(byId('maxLeverageInput')?.value || 10);
+  if (byId('copyRatioValue')) byId('copyRatioValue').textContent = `${ratio}%`;
+  if (byId('maxPositionRatioValue')) byId('maxPositionRatioValue').textContent = `${cap}%`;
+  if (byId('copyPreviewRatio')) byId('copyPreviewRatio').textContent = `${ratio}%`;
+  if (byId('copyPreviewCap')) byId('copyPreviewCap').textContent = `${cap}%`;
+  if (byId('copyPreviewRisk')) byId('copyPreviewRisk').textContent = `-${daily}% · -${drawdown}% · ${leverage}x`;
 }
 
 function enhanceAdminApiPage() {
@@ -383,8 +419,12 @@ function showApp(profile) {
   byId('adminNav').classList.toggle('hidden', role !== 'admin');
   byId('accountName').value = profile.full_name || '';
   byId('accountEmail').value = profile.email || '';
-  if (byId('copyRatioSelect')) byId('copyRatioSelect').value = `${Number(profile.copy_ratio ?? 100)}%`;
-  if (byId('maxPositionRatioSelect')) byId('maxPositionRatioSelect').value = `${Number(profile.max_position_ratio ?? 30)}%`;
+  if (byId('copyRatioSelect')) byId('copyRatioSelect').value = String(Number(profile.copy_ratio ?? 100));
+  if (byId('maxPositionRatioSelect')) byId('maxPositionRatioSelect').value = String(Number(profile.max_position_ratio ?? 30));
+  if (byId('dailyLossLimitInput')) byId('dailyLossLimitInput').value = String(Number(profile.daily_loss_limit_pct ?? 5));
+  if (byId('maxDrawdownInput')) byId('maxDrawdownInput').value = String(Number(profile.max_drawdown_pct ?? 15));
+  if (byId('maxLeverageInput')) byId('maxLeverageInput').value = String(Number(profile.max_leverage ?? 10));
+  refreshCopySettingPreview();
   openPage(role === 'admin' ? 'admin-dashboard' : 'member-dashboard');
   loadCopySystemStatus();
   startCopySystemPolling();
@@ -392,6 +432,7 @@ function showApp(profile) {
   if (role === 'member') {
     loadGateConnection();
     loadMemberLiveData();
+    loadMemberDashboardPerformance();
   }
   startGateStatusPolling();
 }
@@ -705,17 +746,98 @@ window.setAdminMasterFilter = (filter, button) => {
   renderAdminMasterPositions();
 };
 
+function renderMemberPerformance() {
+  const data = memberDashboardPerformance;
+  const days = Array.isArray(data?.days) ? data.days : [];
+  const totals = data?.totals || {};
+  const roiSeries = [];
+  let compounded = 1;
+  for (const day of days) {
+    const dailyReturn = Number(day.daily_return_pct || 0);
+    compounded *= Math.max(0, 1 + dailyReturn / 100);
+    roiSeries.push({ date: day.date, value: (compounded - 1) * 100 });
+  }
+  const series = memberDashboardMetric === 'ROI'
+    ? roiSeries
+    : days.map((day, index) => ({ date: day.date, value: days.slice(0, index + 1).reduce((sum, row) => sum + Number(row.net_pnl || 0), 0) }));
+  const value = memberDashboardMetric === 'ROI' ? Number(totals.roi || 0) : Number(totals.net_pnl || 0);
+  const valueNode = byId('memberPerformanceValue');
+  if (valueNode) {
+    valueNode.textContent = memberDashboardMetric === 'ROI' ? `${value >= 0 ? '+' : ''}${value.toFixed(2)}%` : formatUsd(value);
+    valueNode.className = `member-performance-value ${value >= 0 ? 'pos' : 'neg'}`;
+  }
+  if (byId('memberPerformancePeriod')) byId('memberPerformancePeriod').textContent = data?.range_start ? `${data.range_start} → ${data.range_end}` : '-';
+  const chart = byId('memberPerformanceChart');
+  if (chart) {
+    if (!series.length) chart.innerHTML = '<div class="member-chart-empty">선택한 기간에 집계된 거래 성과가 없습니다.</div>';
+    else {
+      const width = 900; const height = 250; const pad = 24;
+      const values = series.map((point) => point.value);
+      const min = Math.min(0, ...values); const max = Math.max(0, ...values);
+      const span = Math.max(1, max - min);
+      const points = series.map((point, index) => ({
+        ...point,
+        x: pad + (series.length === 1 ? 0 : index * (width - pad * 2) / (series.length - 1)),
+        y: pad + (max - point.value) * (height - pad * 2) / span,
+      }));
+      const line = points.map((point) => `${point.x.toFixed(1)},${point.y.toFixed(1)}`).join(' ');
+      const area = `${pad},${height - pad} ${line} ${points.at(-1).x.toFixed(1)},${height - pad}`;
+      chart.innerHTML = `<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="${memberDashboardMetric} 성과 추이"><defs><linearGradient id="memberChartFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#19c997" stop-opacity=".38"/><stop offset="1" stop-color="#19c997" stop-opacity=".02"/></linearGradient></defs><line x1="${pad}" y1="${height - pad}" x2="${width - pad}" y2="${height - pad}" class="member-chart-axis"/><polygon points="${area}" fill="url(#memberChartFill)"/><polyline points="${line}" class="member-chart-line"/>${points.length ? `<circle cx="${points.at(-1).x}" cy="${points.at(-1).y}" r="6" class="member-chart-point"/>` : ''}</svg>`;
+    }
+  }
+  if (byId('memberWinRate')) byId('memberWinRate').textContent = totals.win_rate == null ? '-' : `${Number(totals.win_rate).toFixed(2)}%`;
+  if (byId('memberTradeCount')) byId('memberTradeCount').textContent = Number(totals.trades || 0).toLocaleString();
+  if (byId('memberWins')) byId('memberWins').textContent = Number(totals.wins || 0).toLocaleString();
+  if (byId('memberLosses')) byId('memberLosses').textContent = Number(totals.losses || 0).toLocaleString();
+  const decisions = Number(totals.wins || 0) + Number(totals.losses || 0);
+  if (byId('memberWinBar')) byId('memberWinBar').style.width = `${decisions ? Number(totals.wins || 0) * 100 / decisions : 0}%`;
+  if (byId('memberLossBar')) byId('memberLossBar').style.width = `${decisions ? Number(totals.losses || 0) * 100 / decisions : 0}%`;
+  if (byId('memberStatsPnl')) byId('memberStatsPnl').textContent = formatUsd(totals.net_pnl);
+  if (byId('memberMdd')) byId('memberMdd').textContent = `${Number(totals.mdd || 0).toFixed(2)}%`;
+  if (byId('memberAverageTrades')) byId('memberAverageTrades').textContent = Number(totals.average_daily_trades || 0).toFixed(2);
+  if (byId('memberLastTrade')) byId('memberLastTrade').textContent = totals.last_trade_at ? new Date(totals.last_trade_at).toLocaleString('ko-KR') : '-';
+}
+
+async function loadMemberDashboardPerformance(days = memberDashboardRange) {
+  if (!supabase || currentProfile?.role !== 'MEMBER') return;
+  const { data, error } = await supabase.rpc('get_my_dashboard_performance', { p_days: days });
+  if (error) return window.toast('성과 데이터를 불러오지 못했습니다.');
+  memberDashboardPerformance = data;
+  renderMemberPerformance();
+}
+
+function renderMemberOpenPositions(openPositions, account) {
+  const positions = Array.isArray(openPositions) ? openPositions : [];
+  const totalEquity = Number(account?.total_equity || 0);
+  if (byId('memberOpenPositionCount')) byId('memberOpenPositionCount').textContent = String(positions.length);
+  if (byId('memberPositionBadge')) byId('memberPositionBadge').textContent = String(positions.length);
+  const longs = positions.filter((position) => position.side === 'LONG').length;
+  if (byId('memberPositionDirections')) byId('memberPositionDirections').textContent = `Long ${longs} · Short ${positions.length - longs}`;
+  const container = byId('memberOpenPositionCards');
+  if (!container) return;
+  container.innerHTML = positions.length ? positions.map((position) => {
+    const pnl = Number(position.unrealised_pnl || 0); const roe = Number(position.roe || 0);
+    const exposure = totalEquity > 0 ? Number(position.notional || 0) * 100 / totalEquity : 0;
+    return `<article class="member-open-position-card"><div class="member-position-card-head"><div><b>${escapeHtml(position.contract)}</b><small>USDT 무기한 선물</small></div><span class="${position.side === 'LONG' ? 'long' : 'short'}">${escapeHtml(position.side)} · ${Number(position.leverage || 0)}x</span></div><div class="member-position-pnl"><div><small>미실현 손익</small><strong class="${pnl >= 0 ? 'pos' : 'neg'}">${formatUsd(pnl)}</strong></div><b class="${roe >= 0 ? 'pos' : 'neg'}">${roe >= 0 ? '+' : ''}${roe.toFixed(2)}%</b></div><div class="member-position-metrics"><div><span>진입가</span><b>${Number(position.entry_price || 0).toLocaleString()}</b></div><div><span>현재가</span><b>${Number(position.mark_price || 0).toLocaleString()}</b></div><div><span>포지션 규모</span><b>${formatUsd(Math.abs(Number(position.notional || 0)))}</b></div><div><span>증거금</span><b>${position.margin == null ? '-' : formatUsd(Math.abs(Number(position.margin)))}</b></div></div><div class="member-exposure"><span>총자산 대비 포지션 비중 <b>${exposure.toFixed(2)}%</b></span><div><i style="width:${Math.min(100, Math.max(0, exposure))}%"></i></div></div></article>`;
+  }).join('') : '<div class="master-position-empty">현재 열린 포지션이 없습니다.</div>';
+}
+
 async function loadMemberLiveData() {
   if (!supabase || currentProfile?.role !== 'MEMBER') return;
   const { data, error } = await supabase.rpc('get_my_live_trading_data');
   if (error) return window.toast('실제 거래 데이터를 불러오지 못했습니다.');
   const positions = Array.isArray(data?.positions) ? data.positions : [];
   const events = Array.isArray(data?.events) ? data.events : [];
+  const openPositions = Array.isArray(data?.open_positions) ? data.open_positions : [];
   const account = data?.account;
   if (byId('memberLiveEquity')) byId('memberLiveEquity').textContent = account ? formatUsd(account.total_equity) : '-';
   if (byId('memberLiveAvailable')) byId('memberLiveAvailable').textContent = account ? formatUsd(account.available_equity) : '-';
   if (byId('memberLiveUnrealised')) byId('memberLiveUnrealised').textContent = account ? formatUsd(account.unrealised_pnl) : '-';
-  if (byId('memberLiveObserved')) byId('memberLiveObserved').textContent = account?.observed_at ? new Date(account.observed_at).toLocaleTimeString('ko-KR') : '-';
+  if (byId('memberLiveObserved')) byId('memberLiveObserved').textContent = account?.observed_at ? `마지막 확인 ${new Date(account.observed_at).toLocaleTimeString('ko-KR')}` : '마지막 확인 -';
+  if (byId('memberUsedMargin')) byId('memberUsedMargin').textContent = account ? `사용 증거금 ${formatUsd(Math.abs(Number(account.used_margin || 0)))}` : '사용 증거금 -';
+  if (byId('memberMarginUsage')) byId('memberMarginUsage').textContent = account ? `사용률 ${Number(account.margin_usage_pct || 0).toFixed(2)}%` : '사용률 -';
+  if (byId('memberMarginBar')) byId('memberMarginBar').style.width = `${Math.min(100, Math.max(0, Number(account?.margin_usage_pct || 0)))}%`;
+  renderMemberOpenPositions(openPositions, account);
   const detailedRows = positions.length ? positions.map((position) => `<tr><td>${escapeHtml(position.contract)}</td><td>${Number(position.target_size)}</td><td>${Number(position.actual_size)}</td><td>${Number(position.delta_size)}</td><td>${stateChip(position.state)}${position.pause_reason ? `<small>${escapeHtml(position.pause_reason)}</small>` : ''}</td><td>${position.observed_at ? new Date(position.observed_at).toLocaleString('ko-KR') : '-'}</td></tr>`).join('') : '<tr><td colspan="6" class="empty-cell">Worker가 확인한 실제 포지션이 아직 없습니다.</td></tr>';
   if (byId('memberLivePositions')) byId('memberLivePositions').innerHTML = detailedRows;
   if (byId('memberDashPositions')) byId('memberDashPositions').innerHTML = positions.length ? positions.map((position) => `<tr><td>${escapeHtml(position.contract)}</td><td>${Number(position.target_size)}</td><td>${Number(position.actual_size)}</td><td>${Number(position.delta_size)}</td><td>${stateChip(position.state)}</td></tr>`).join('') : '<tr><td colspan="5" class="empty-cell">Worker가 확인한 실제 포지션이 아직 없습니다.</td></tr>';
@@ -1045,17 +1167,24 @@ async function saveGateApiCredentials() {
 
 async function saveCopySettings() {
   if (!supabase || !currentProfile) return;
-  const copyRatio = Number(byId('copyRatioSelect').value.replace('%', ''));
-  const maxPositionRatio = Number(byId('maxPositionRatioSelect').value.replace('%', ''));
+  const copyRatio = Number(byId('copyRatioSelect').value);
+  const maxPositionRatio = Number(byId('maxPositionRatioSelect').value);
+  const dailyLossLimit = Number(byId('dailyLossLimitInput').value);
+  const maxDrawdown = Number(byId('maxDrawdownInput').value);
+  const maxLeverage = Number(byId('maxLeverageInput').value);
   const saveButton = byId('copySettingsSave');
   saveButton.disabled = true;
   const { data, error } = await supabase.rpc('update_my_copy_settings', {
     new_copy_ratio: copyRatio,
     new_max_position_ratio: maxPositionRatio,
+    new_daily_loss_limit_pct: dailyLossLimit,
+    new_max_drawdown_pct: maxDrawdown,
+    new_max_leverage: maxLeverage,
   });
   saveButton.disabled = false;
   if (error) return window.toast('카피 설정 저장에 실패했습니다.');
   currentProfile = data;
+  refreshCopySettingPreview();
   window.toast('카피 설정을 저장했습니다.');
 }
 
@@ -1312,6 +1441,18 @@ document.addEventListener('click', async (event) => {
   if (event.target.closest('#adminAuditRefresh')) await loadAdminAuditLog();
   if (event.target.closest('#memberPasswordResetButton')) await requestMemberPasswordReset();
   if (event.target.closest('#copySettingsSave')) await saveCopySettings();
+  const dashboardRange = event.target.closest('[data-dashboard-range]');
+  if (dashboardRange) {
+    memberDashboardRange = Number(dashboardRange.dataset.dashboardRange);
+    document.querySelectorAll('[data-dashboard-range]').forEach((button) => button.classList.toggle('active', button === dashboardRange));
+    await loadMemberDashboardPerformance(memberDashboardRange);
+  }
+  const dashboardMetric = event.target.closest('[data-dashboard-metric]');
+  if (dashboardMetric) {
+    memberDashboardMetric = dashboardMetric.dataset.dashboardMetric;
+    document.querySelectorAll('[data-dashboard-metric]').forEach((button) => button.classList.toggle('active', button === dashboardMetric));
+    renderMemberPerformance();
+  }
   if (event.target.closest('#adminAnalysisLoad')) await loadAdminMemberTradingAnalysis();
   const masterFilter = event.target.closest('[data-master-filter]');
   if (masterFilter) window.setAdminMasterFilter(masterFilter.dataset.masterFilter, masterFilter);
@@ -1332,6 +1473,12 @@ document.addEventListener('click', async (event) => {
   else {
     window.toast(approvalButton.dataset.approval === 'APPROVED' ? '회원 가입을 승인했습니다.' : '회원 가입을 거절했습니다.');
     await loadAdminMembers();
+  }
+});
+
+document.addEventListener('input', (event) => {
+  if (event.target.matches('#copyRatioSelect, #maxPositionRatioSelect, #dailyLossLimitInput, #maxDrawdownInput, #maxLeverageInput')) {
+    refreshCopySettingPreview();
   }
 });
 
@@ -1362,6 +1509,7 @@ async function boot() {
   enhancePauseModal();
   enhanceOperationsStatusUi();
   enhanceLiveDataUi();
+  enhanceCopySettingsUi();
   enhanceAdminApiPage();
   enhanceMemberDetailModal();
   enhanceLegalUi();
