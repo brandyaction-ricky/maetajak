@@ -50,7 +50,11 @@ systemctl start maetajak-worker.service
 sleep "${VERIFY_WAIT_SECONDS}"
 EXPECTED_MODE=DRY_RUN "${APP_DIR}/deploy/lightsail-verify-deployment.sh"
 
+# A reviewed, expiring request can promote exactly once after the fail-closed
+# DRY_RUN deployment has completed all health checks. The consumed token is
+# stored outside the Git checkout so later deployments cannot replay it.
+"${APP_DIR}/deploy/process-live-promotion-request.sh"
+
 failed=false
 trap - EXIT
 echo "deployed=${previous_sha}->$(git rev-parse HEAD)"
-echo "live_execution=false"
