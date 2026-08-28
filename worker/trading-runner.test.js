@@ -136,6 +136,9 @@ test('DRY_RUN records target, actual, and delta without an intent key', async ()
   assert.equal(JSON.stringify(recordedPayload).includes('gate_order_text'), false);
   assert.equal(JSON.stringify(recordedPayload).includes('idempotency_key'), false);
   assert.deepEqual(dryRunLogs, [{
+    event: 'dry_run_master_snapshot',
+    details: { total_equity: 10_000, available_equity: 9_000, positions: [{ contract: 'BTC_USDT', size: 100, mark_price: 50_000, leverage: null }] },
+  }, {
     event: 'dry_run_plan',
     details: { positions: [{ contract: 'BTC_USDT', target_size: 30, actual_size: 0, delta_size: 30, state: 'DRIFT', pause_reason: null }] },
   }]);
