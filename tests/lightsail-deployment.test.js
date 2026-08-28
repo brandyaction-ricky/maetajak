@@ -11,6 +11,7 @@ const deploymentFiles = [
   'deploy/set-worker-mode.sh',
   'deploy/lightsail-verify-deployment.sh',
   'deploy/lightsail-deploy-dry-run.sh',
+  'deploy/process-live-promotion-request.sh',
   'deploy/lightsail-auto-deploy.sh',
   'deploy/install-auto-deploy.sh',
 ];
@@ -32,12 +33,28 @@ test('automated deployment fails closed in DRY_RUN and blocks database changes',
   assert.match(deploy, /worker:halt/);
   assert.match(deploy, /set-worker-mode\.sh" DRY_RUN/);
   assert.match(deploy, /lightsail-verify-deployment\.sh/);
+  assert.match(deploy, /process-live-promotion-request\.sh/);
   assert.match(verify, /member_sync_failed/);
   assert.match(autoDeploy, /blocked_database_migration/);
   assert.match(autoDeploy, /git merge-base --is-ancestor/);
   assert.match(timer, /OnUnitActiveSec=3min/);
   assert.match(workflow, /npm test/);
   assert.doesNotMatch(workflow, /LIGHTSAIL_SSH_PRIVATE_KEY/);
+});
+
+test('LIVE promotion is expiring, single-use, and gated by healthy member planning', () => {
+  const promotion = readFileSync('deploy/process-live-promotion-request.sh', 'utf8');
+  const request = readFileSync('deploy/live-promotion.request', 'utf8');
+
+  assert.match(promotion, /STATE_DIR="\/var\/lib\/maetajak\/live-promotions"/);
+  assert.match(promotion, /live_promotion=already_completed/);
+  assert.match(promotion, /live_promotion=expired/);
+  assert.match(promotion, /cycle_complete/);
+  assert.match(promotion, /dry_run_plan/);
+  assert.match(promotion, /lightsail-enable-live\.sh/);
+  assert.match(promotion, /EXPECTED_MODE=LIVE/);
+  assert.match(request, /^token=[a-zA-Z0-9_-]{16,80}$/m);
+  assert.match(request, /^expires_at=\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/m);
 });
 
 test('Lightsail configuration keeps server secrets outside the Git checkout', () => {
