@@ -27,3 +27,12 @@ test('Gate futures ledger and fills aggregate into actual daily performance', ()
   assert.equal(result.daily.losses, 1);
   assert.equal(result.symbols.length, 2);
 });
+
+test('empty Gate ledger contracts never create a ranking row', () => {
+  const result = aggregateMemberPerformance({
+    member: { total: 1000 }, observedAt: '2026-08-28T08:00:00Z',
+    ledger: [{ type: 'fee', change: '-1', contract: '' }],
+    trades: [], contracts: new Map(),
+  });
+  assert.deepEqual(result.symbols, []);
+});

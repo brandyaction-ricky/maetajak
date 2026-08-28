@@ -28,3 +28,11 @@ test('analysis cards and calendars reflow on mobile', () => {
   assert.match(theme, /@media \(max-width: 950px\)[\s\S]*\.analysis-metrics\s*\{[^}]*repeat\(2/s);
   assert.match(theme, /@media \(max-width: 950px\)[\s\S]*\.analysis-lower\s*\{[^}]*minmax\(0, 1fr\)/s);
 });
+
+test('symbol rankings are pruned to the latest Gate snapshot', () => {
+  const runner = readFileSync(new URL('../worker/trading-runner.js', import.meta.url), 'utf8');
+  const syncMigration = readFileSync(new URL('../supabase/migrations/202608290003_sync_copy_performance.sql', import.meta.url), 'utf8');
+  assert.match(runner, /prune_member_symbol_daily_performance/);
+  assert.match(syncMigration, /delete from public\.member_symbol_daily_performance/);
+  assert.match(syncMigration, /trim\(contract\)/);
+});

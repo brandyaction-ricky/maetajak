@@ -65,6 +65,13 @@ test('Gate.io credentials are collected securely and encrypted server-side', () 
   assert.doesNotMatch(gateApiMigration, /secret_key\s+text\s+not null/i);
 });
 
+test('member account keeps only essential cards and supports nickname updates', () => {
+  assert.doesNotMatch(script, /Gate\.io API 발급 설정 확인/);
+  assert.doesNotMatch(script, /<h3>알림 상태<\/h3>/);
+  assert.match(script, /id="accountNickname"/);
+  assert.match(script, /update_my_nickname/);
+});
+
 test('Gate.io verification is queued for a fixed-IP worker and uses signed Futures API requests', () => {
   assert.match(gateVerificationMigration, /gate_api_verification_jobs/i);
   assert.match(gateVerificationMigration, /claim_gate_api_verification_jobs/i);
