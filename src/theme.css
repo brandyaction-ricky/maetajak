@@ -798,13 +798,43 @@ td,
 
 .admin-analysis-selector {
   display: grid;
-  grid-template-columns: minmax(260px, 520px) auto;
+  grid-template-columns: minmax(260px, 520px) 88px;
   align-items: end;
   gap: 12px;
   margin-bottom: 12px;
 }
 
-.admin-analysis-selector .btn { min-height: 48px; }
+.admin-analysis-selector .btn { width: 88px; min-height: 44px; padding-inline: 14px; }
+.admin-api-disconnect { min-width: 72px; padding: 7px 10px; font-size: 10px; white-space: nowrap; }
+.operations-emergency { margin-top: 14px; }
+
+.master-position-section { margin-top: 28px; }
+.master-position-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 18px; margin-bottom: 16px; }
+.master-position-head p { margin: 6px 0 0; color: #838383; font-size: 11px; }
+.master-position-title { display: flex; align-items: center; gap: 8px; }
+.master-position-title h3 { margin: 0; font-size: 19px; }
+.master-position-title span { padding: 3px 7px; border-radius: 6px; background: #262626; color: #aaa; font-size: 10px; }
+.master-filters { display: flex; gap: 6px; }
+.master-filters button { min-width: 54px; padding: 8px 12px; border: 1px solid #303030; border-radius: 8px; background: #111; color: #8d8d8d; }
+.master-filters button.active { border-color: #eee; background: #eee; color: #111; }
+.master-position-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+.master-position-card { min-width: 0; padding: 16px; border: 1px solid #2d2d2d; border-radius: 12px; background: #151515; }
+.master-position-card-head, .master-position-pnl, .master-position-sync { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.master-symbol { display: flex; align-items: center; min-width: 0; gap: 9px; }
+.master-symbol > span { display: grid; width: 34px; height: 34px; flex: 0 0 auto; place-items: center; border-radius: 50%; background: #202b32; color: #f4f4f4; font-size: 10px; font-weight: 800; }
+.master-symbol b, .master-symbol small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.master-symbol b { font-size: 12px; }.master-symbol small { margin-top: 3px; color: #777; font-size: 9px; }
+.master-side { display: flex; align-items: center; gap: 7px; }.master-side span { padding: 5px 7px; border: 1px solid; border-radius: 999px; font-size: 8px; font-weight: 800; }
+.master-side span.long { border-color: #18543b; color: #38d996; }.master-side span.short { border-color: #663038; color: #ff6678; }.master-side small { color: #888; font-size: 9px; }
+.master-position-pnl { align-items: flex-end; margin: 18px 0; padding-bottom: 15px; border-bottom: 1px solid #292929; }
+.master-position-pnl small { color: #7d7d7d; font-size: 9px; }.master-position-pnl strong { font-size: 21px; }
+.master-position-metrics { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 10px; }
+.master-position-metrics span, .master-position-metrics b { display: block; }.master-position-metrics span { margin-bottom: 4px; color: #747474; font-size: 9px; }.master-position-metrics b { font-size: 11px; }
+.master-position-sync { margin-top: 16px; padding-top: 10px; border-top: 1px solid #242424; color: #777; font-size: 8px; }
+.master-position-empty { grid-column: 1 / -1; padding: 46px 20px; border: 1px dashed #303030; border-radius: 12px; color: #888; text-align: center; }
+
+@media (max-width: 1180px) { .master-position-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 560px) { .master-position-head { align-items: flex-start; flex-direction: column; }.master-position-grid { grid-template-columns: 1fr; }.master-filters { width: 100%; }.master-filters button { flex: 1; }.admin-analysis-selector { grid-template-columns: 1fr 76px; }.admin-analysis-selector .btn { width: 76px; } }
 
 #adminGateConnections td:first-child small {
   display: block;
