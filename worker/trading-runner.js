@@ -1,12 +1,14 @@
 import { createHash, randomUUID } from 'node:crypto';
 import {
-  GateApiError, findFuturesOrderByText, getFuturesAccount, getFuturesContracts,
+  GateApiError, findFuturesOrderByText, getFuturesAccount, getFuturesAccountBook, getFuturesContracts,
+  getMyFuturesTradesInRange,
   getFuturesOrder, getFuturesPositions, getOrderTrades, placeFuturesOrder, summarizeGateOrder,
 } from './gate.js';
 import {
   buildGateOrderText, buildIdempotencyKey, calculateDeltaOrder,
   calculateTargetPosition, deriveCopyState, detectManualOverride,
 } from './copy-engine.js';
+import { aggregateMemberPerformance, kstDayRange } from './performance.js';
 
 function safeError(error) { return error instanceof GateApiError ? error.code : 'WORKER_ERROR'; }
 function sourceHash(value) { return createHash('sha256').update(JSON.stringify(value)).digest('hex'); }
@@ -92,6 +94,7 @@ export class TradingRunner {
     this.contractsLoadedAt = 0;
     this.lastDryRunPlanHash = null;
     this.lastDryRunMasterHash = null;
+    this.performanceSyncedAt = new Map();
   }
   async rpc(name, parameters = {}) {
     const { data, error } = await this.supabase.rpc(name, parameters);
@@ -125,6 +128,37 @@ export class TradingRunner {
     const drawdownLimitHit = drawdownPct >= Number(account.max_drawdown_pct || 15);
     const riskHalted = dailyLimitHit || drawdownLimitHit;
     return { ...account, ...summary, positions, halted: Boolean(account.halted) || riskHalted, risk_halt_reason: dailyLimitHit ? 'DAILY_LOSS_LIMIT' : drawdownLimitHit ? 'MAX_DRAWDOWN_LIMIT' : null, daily_loss_pct: dailyLossPct, drawdown_pct: drawdownPct };
+  }
+  async syncMemberPerformance(member, contracts, observedAt) {
+    const last = this.performanceSyncedAt.get(member.user_id) || 0;
+    if (Date.now() - last < 300_000) return;
+    const range = kstDayRange(new Date(observedAt));
+    const auth = { ...credentials(member), baseUrl: this.baseUrl, fetchImpl: this.fetchImpl };
+    const [ledger, trades] = await Promise.all([
+      getFuturesAccountBook({ ...auth, from: range.from, to: range.to }),
+      getMyFuturesTradesInRange({ ...auth, from: range.from, to: range.to }),
+    ]);
+    const performance = aggregateMemberPerformance({ member, ledger, trades, contracts, observedAt });
+    await this.rpc('upsert_member_daily_performance', {
+      p_user_id: member.user_id, p_trading_date: range.tradingDate,
+      p_opening_equity: performance.daily.openingEquity, p_closing_equity: performance.daily.closingEquity,
+      p_deposits: performance.daily.deposits, p_withdrawals: performance.daily.withdrawals,
+      p_realised_pnl: performance.daily.realisedPnl, p_unrealised_pnl: performance.daily.unrealisedPnl,
+      p_fees: performance.daily.fees, p_funding_pnl: performance.daily.fundingPnl,
+      p_trading_volume: performance.daily.tradingVolume, p_trade_count: performance.daily.tradeCount,
+      p_winning_trade_count: performance.daily.wins, p_losing_trade_count: performance.daily.losses,
+      p_daily_return_pct: performance.daily.dailyReturnPct, p_source_snapshot_at: observedAt,
+      p_source_hash: performance.daily.sourceHash,
+    });
+    for (const row of performance.symbols) {
+      await this.rpc('upsert_member_symbol_daily_performance', {
+        p_user_id: member.user_id, p_trading_date: range.tradingDate, p_contract: row.contract,
+        p_realised_pnl: row.realisedPnl, p_fees: row.fees, p_funding_pnl: row.fundingPnl,
+        p_trade_count: row.tradeCount, p_winning_trade_count: row.wins, p_losing_trade_count: row.losses,
+        p_source_snapshot_at: observedAt, p_source_hash: row.sourceHash,
+      });
+    }
+    this.performanceSyncedAt.set(member.user_id, Date.now());
   }
   async syncOnce() {
     const context = await this.rpc('get_copy_worker_context');
@@ -185,6 +219,13 @@ export class TradingRunner {
         }
         member.planned_positions = suppressExecutableIntents(plannedPositions, this.mode);
         members.push(member);
+        if (this.mode === 'LIVE') {
+          try {
+            await this.syncMemberPerformance(member, contracts, observedAt);
+          } catch (performanceError) {
+            if (this.logger) this.logger('member_performance_sync_failed', { user_id: member.user_id, error_code: safeError(performanceError) });
+          }
+        }
       } catch (error) {
         members.push({ ...memberContext, error_code: safeError(error), positions: [], planned_positions: [] });
       }
