@@ -32,12 +32,16 @@ if (tradingMode === 'LIVE' && (!workerPublicIp || baseUrl !== 'https://api.gatei
 if (tradingMode === 'LIVE' && !alertsConfigured) throw new Error('LIVE mode requires a Telegram or webhook alert destination');
 
 const supabase = createClient(supabaseUrl, serviceRoleKey, { auth: { persistSession: false, autoRefreshToken: false } });
-const runner = new TradingRunner({ supabase, baseUrl, workerId, workerVersion, publicIp: workerPublicIp, channelId: gateChannelId, mode: tradingMode });
 const state = { verification: false, trading: false, stopping: false };
 
 function log(event, details = {}) {
   console.log(JSON.stringify({ at: new Date().toISOString(), worker_id: workerId, event, ...details }));
 }
+
+const runner = new TradingRunner({
+  supabase, baseUrl, workerId, workerVersion, publicIp: workerPublicIp,
+  channelId: gateChannelId, mode: tradingMode, logger: log,
+});
 
 function sendAlert(options) {
   return sendWorkerAlert({
