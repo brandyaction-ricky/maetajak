@@ -199,6 +199,12 @@ export class TradingRunner {
         p_source_snapshot_at: observedAt, p_source_hash: row.sourceHash,
       });
     }
+    await this.rpc('prune_member_symbol_daily_performance', {
+      p_user_id: member.user_id,
+      p_trading_date: range.tradingDate,
+      p_active_contracts: performance.symbols.map((row) => row.contract),
+      p_source_snapshot_at: observedAt,
+    });
     this.performanceSyncedAt.set(member.user_id, Date.now());
   }
   async syncOnce() {

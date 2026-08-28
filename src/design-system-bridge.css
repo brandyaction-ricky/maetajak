@@ -1,0 +1,150 @@
+/* Maps the portable MAETAJAK design system onto the existing application. */
+:root {
+  --panel: var(--ds-surface-1);
+  --panel2: var(--ds-surface-2);
+  --line: var(--ds-border);
+  --yellow: var(--ds-amber);
+}
+
+body { letter-spacing: -.015em; }
+
+.auth-side,
+.main { background: var(--ds-bg); }
+
+.hero {
+  border-color: var(--ds-border);
+  background: linear-gradient(145deg, var(--ds-surface-1), var(--ds-bg));
+}
+
+.flow div,
+.auth-card,
+.tabs,
+.field input,
+.field select,
+.member,
+.modal,
+.status,
+.notice,
+.alert {
+  border-color: var(--ds-border);
+  box-shadow: none;
+}
+
+.auth-card,
+.member,
+.modal { background: var(--ds-surface-1); }
+
+.tabs { background: var(--ds-input); }
+.tabs button { color: var(--ds-text-muted); }
+.tabs button.active { background: var(--ds-text-primary); color: var(--ds-bg); }
+
+.field label { color: var(--ds-text-muted); }
+.field input,
+.field select {
+  min-height: 42px;
+  border-radius: var(--ds-radius-sm);
+  outline: none;
+  background: var(--ds-input);
+  color: var(--ds-text-primary);
+}
+.field input:focus,
+.field select:focus {
+  border-color: var(--ds-green-border);
+  box-shadow: 0 0 0 2px rgba(67, 215, 178, .12);
+}
+
+.app { background: var(--ds-bg); }
+.sidebar {
+  border-color: var(--ds-border);
+  background: var(--ds-bg-sidebar);
+}
+.side-brand { border-color: var(--ds-border); }
+.nav-label { color: var(--ds-text-disabled); letter-spacing: .12em; }
+.nav-btn { color: var(--ds-text-secondary); }
+.nav-btn.active,
+.nav-btn:hover { background: var(--ds-text-primary); color: var(--ds-bg); }
+
+.top {
+  border-color: var(--ds-border);
+  background: rgba(10, 10, 10, .92);
+  backdrop-filter: blur(16px);
+}
+.top small,
+.section-head p,
+.section-head span,
+.kpi label,
+.kpi small,
+.metric span,
+.event small,
+.event time { color: var(--ds-text-muted); }
+
+.content { max-width: var(--ds-container); }
+.card {
+  border-color: var(--ds-border);
+  border-radius: var(--ds-radius-lg);
+  background: var(--ds-surface-1);
+}
+.card:hover { border-color: var(--ds-border-hover); }
+.kpi { min-height: 116px; }
+.kpi strong { font-variant-numeric: tabular-nums; }
+
+.btn {
+  min-height: 34px;
+  padding: 0 12px;
+  border-color: var(--ds-border);
+  border-radius: var(--ds-radius-sm);
+  background: var(--ds-surface-1);
+  color: var(--ds-text-secondary);
+}
+.btn:hover { border-color: var(--ds-border-hover); background: var(--ds-surface-hover); color: var(--ds-text-primary); }
+.btn:focus-visible { outline: 2px solid #43d7b2; outline-offset: 2px; }
+.btn.primary { border-color: #eee; background: #eee; color: #111; }
+.btn.green { border-color: #365c51; background: #17332c; color: #9af0d7; }
+.btn.red { border-color: #68404c; background: #321922; color: #ffdce4; }
+
+.status {
+  border-color: var(--ds-green-border);
+  border-radius: var(--ds-radius-lg);
+  background: var(--ds-green-bg);
+}
+.dot { background: var(--ds-green); box-shadow: 0 0 9px rgba(50, 213, 131, .62); }
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 26px;
+  padding: 0 9px;
+  border-color: #265246;
+  border-radius: var(--ds-radius-pill);
+  background: #0d1d19;
+  color: #87e8cd;
+  font-size: var(--ds-text-2xs);
+  font-weight: 800;
+}
+.chip.yellow { border-color: #4b4026; background: var(--ds-amber-bg); color: #f5c65e; }
+.chip.red { border-color: #56323b; background: #1a1014; color: #f495a3; }
+.chip.muted { border-color: var(--ds-border); background: var(--ds-surface-2); color: var(--ds-text-secondary); }
+
+.table { border: 1px solid var(--ds-border); border-radius: var(--ds-radius-lg); }
+table { background: var(--ds-surface-1); }
+th,
+td { border-color: var(--ds-border-soft); }
+th { color: var(--ds-text-muted); font-weight: 800; letter-spacing: .04em; }
+tbody tr:hover { background: var(--ds-surface-hover); }
+
+.metric,
+.event { border-color: var(--ds-border-soft); }
+.notice { background: var(--ds-surface-2); color: var(--ds-text-secondary); }
+.notice.error { border-color: var(--ds-red-border); background: var(--ds-red-bg); color: #ffdce4; }
+.notice.warn-box,
+.alert { border-color: var(--ds-amber-border); background: var(--ds-amber-bg); color: #f5c65e; }
+.modal-bg { background: rgba(0, 0, 0, .76); backdrop-filter: blur(6px); }
+.pos { color: var(--ds-green) !important; }
+.neg { color: var(--ds-red) !important; }
+.warn { color: var(--ds-amber) !important; }
+
+@media (max-width: 560px) {
+  .content { padding: var(--ds-space-6) var(--ds-space-4) var(--ds-space-10); }
+  .card,
+  .section { border-radius: var(--ds-radius-lg); }
+}

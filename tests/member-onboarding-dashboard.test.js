@@ -25,10 +25,24 @@ test('member dashboard reads real performance, margin usage, and open positions'
   assert.match(css, /\.member-open-position-grid/);
 });
 
+test('dashboard omits the mixed fill and settlement performance card', () => {
+  assert.doesNotMatch(main, /<h3>카피 거래 성과<\/h3>/);
+});
+
+test('open positions use a four-column desktop grid with symbol logos', () => {
+  assert.match(main, /positionLogo\(position\.contract\)/);
+  assert.match(css, /\.member-open-position-grid\s*\{[^}]*repeat\(4,/s);
+  assert.match(css, /\.position-symbol-logo/);
+});
+
 test('copy settings expose only worker-backed risk controls and future-only onboarding policy', () => {
   assert.match(main, /연결 이후만 카피/);
   assert.match(main, /dailyLossLimitInput/);
   assert.match(main, /maxDrawdownInput/);
+  assert.match(main, /copyRatioSelect" class="copy-range" type="range" min="50" max="200" step="10"/);
+  assert.match(main, /maxPositionRatioSelect" class="copy-range" type="range" min="20" max="50" step="10"/);
+  assert.match(main, /dailyLossLimitInput" type="number" min="3" max="10" step="1"/);
+  assert.match(main, /maxDrawdownInput" type="number" min="10" max="20" step="1"/);
   assert.match(main, /maxLeverageInput/);
   assert.match(migration, /new_daily_loss_limit_pct/);
   assert.doesNotMatch(main, /Take Profit Per Position/);
