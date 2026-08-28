@@ -27,7 +27,6 @@ const pages = {
   'admin-api': ['API 연결 현황', '회원별 Gate.io API 상태를 확인합니다.'],
   'admin-monitor': ['주문·포지션 모니터', '주문과 동기화 문제를 함께 확인합니다.'],
   'admin-events': ['Copy Events', 'Master 변경이 회원에게 미친 영향을 확인합니다.'],
-  'admin-risk': ['Risk / Emergency', '전체 Trading Control을 관리합니다.'],
   'admin-audit': ['Audit Log', '관리자와 시스템 작업 이력을 확인합니다.'],
   'admin-settings': ['시스템 설정', '환경 및 기본값을 관리합니다.'],
 };
@@ -38,6 +37,8 @@ let authBusy = false;
 let gateApiBusy = false;
 let gateStatusTimer = null;
 let memberDetailBusy = false;
+let adminMasterPositions = [];
+let adminMasterFilter = 'ALL';
 let adminGateApiBusy = false;
 let memberAnalysisBusy = false;
 let copySystemTimer = null;
@@ -122,6 +123,7 @@ function enhancePauseModal() {
 }
 
 function enhanceOperationsStatusUi() {
+  document.querySelector('[data-page="admin-risk"]')?.remove();
   const memberStatus = document.querySelector('#member-dashboard > .status');
   if (memberStatus) memberStatus.innerHTML = '<div><span id="memberSystemDot" class="dot"></span><b id="memberSystemTitle">운영 상태 확인 중</b><div><span id="memberSystemDetail">Worker와 주문 안전 상태를 불러오고 있습니다.</span></div></div><button class="btn red" onclick="openPause()">카피 관리</button>';
   const adminStatus = document.querySelector('#admin-dashboard > .status');
@@ -133,9 +135,11 @@ function enhanceOperationsStatusUi() {
         <div class="metric"><span>주문 실행</span><b id="opsExecution">-</b></div><div class="metric"><span>비상 중단</span><b id="opsHalt">-</b></div><div class="metric"><span>중단 사유</span><b id="opsReason">-</b></div><div class="metric"><span>최종 변경</span><b id="opsUpdated">-</b></div></div>
       <div class="card section"><div class="section-head"><h3>Trading Worker</h3><span id="opsWorkerChip" class="chip yellow">미연결</span></div>
         <div class="metric"><span>모드</span><b id="opsWorkerMode">OBSERVE</b></div><div class="metric"><span>고정 IP</span><b id="opsWorkerIp">미설정</b></div><div class="metric"><span>Broker Channel</span><b id="opsBrokerChannel">미설정</b></div><div class="metric"><span>Heartbeat</span><b id="opsHeartbeat">없음</b></div><div class="metric"><span>마지막 정상 Cycle</span><b id="opsLastSuccess">없음</b></div><div class="metric"><span>연속 실패</span><b id="opsFailures">0</b></div><div class="metric"><span>준비 테스트</span><b id="opsTest">미완료</b></div></div>
-    </div><div class="notice warn-box operations-note">브라우저에서는 실거래를 켤 수 없습니다. 고정 IP Worker, Master·회원 API 검증, 준비 테스트가 완료된 뒤 서버 배포 명령으로만 활성화됩니다.</div>`;
+    </div>
+    <div class="card section operations-emergency"><div class="section-head"><div><h3>Risk / Emergency Control</h3><p>긴급 중단은 신규 주문을 즉시 차단합니다. 미확정 주문은 계속 조회합니다.</p></div></div><div class="actions"><button id="adminEmergencyHalt" class="btn red" type="button">전체 카피 긴급 중단</button></div></div>
+    <div class="notice warn-box operations-note">브라우저에서는 실거래를 켤 수 없습니다. 고정 IP Worker, Master·회원 API 검증, 준비 테스트가 완료된 뒤 서버 배포 명령으로만 활성화됩니다.</div>`;
   const risk = byId('admin-risk');
-  if (risk) risk.innerHTML = `<div class="card section"><div class="section-head"><div><h3>Risk / Emergency Control</h3><p>긴급 중단은 신규 주문을 즉시 차단합니다. 미확정 주문은 계속 조회합니다.</p></div></div><div class="actions"><button id="adminEmergencyHalt" class="btn red" type="button">전체 카피 긴급 중단</button><button class="btn" type="button" onclick="openPage('admin-settings')">Worker 상태 확인</button></div></div>`;
+  if (risk) risk.remove();
 }
 
 function enhanceLiveDataUi() {
@@ -152,7 +156,18 @@ function enhanceLiveDataUi() {
   const trades = byId('member-trades');
   if (trades) trades.innerHTML = `<div class="card section"><div class="section-head"><div><h3>Copy Events</h3><p>실제 주문·체결·동기화 이벤트입니다.</p></div></div><div class="table"><table><thead><tr><th>시간</th><th>종목</th><th>이벤트</th><th>심각도</th><th>상태</th></tr></thead><tbody id="memberLiveEvents"><tr><td colspan="5" class="empty-cell">실제 이벤트를 불러오는 중입니다.</td></tr></tbody></table></div></div>`;
   const master = byId('admin-master');
-  if (master) master.innerHTML = `<div class="card section"><div class="section-head"><div><h3>Master Position Snapshot</h3><p>Gate.io에서 Worker가 마지막으로 확인한 실제 포지션입니다.</p></div></div><div class="table"><table><thead><tr><th>종목</th><th>수량</th><th>진입가</th><th>Mark</th><th>레버리지</th><th>확인 시각</th></tr></thead><tbody id="adminMasterPositions"><tr><td colspan="6" class="empty-cell">Master 포지션을 불러오는 중입니다.</td></tr></tbody></table></div></div>`;
+  if (master) master.innerHTML = `<div class="grid kpis master-kpis">
+      <div class="card kpi"><label>활성 포지션</label><strong id="masterPositionCount">0</strong><small id="masterDirectionCount">Long 0 · Short 0</small></div>
+      <div class="card kpi"><label>Long 포지션</label><strong id="masterLongCount" class="pos">0</strong><small>현재 보유 중인 Long</small></div>
+      <div class="card kpi"><label>Short 포지션</label><strong id="masterShortCount" class="neg">0</strong><small>현재 보유 중인 Short</small></div>
+      <div class="card kpi"><label>마지막 동기화</label><strong id="masterLastObserved">-</strong><small>Worker 포지션 Snapshot</small></div>
+    </div>
+    <div class="master-position-section">
+      <div class="master-position-head"><div><div class="master-position-title"><h3>현재 포지션</h3><span id="masterPositionBadge">0</span></div><p>Gate.io에서 Worker가 확인한 Master 무기한 선물 포지션입니다.</p></div>
+        <div class="master-filters" role="group" aria-label="포지션 방향 필터"><button class="active" type="button" data-master-filter="ALL">전체</button><button type="button" data-master-filter="LONG">Long</button><button type="button" data-master-filter="SHORT">Short</button></div>
+      </div>
+      <div id="adminMasterPositionCards" class="master-position-grid"><div class="master-position-empty">Master 포지션을 불러오는 중입니다.</div></div>
+    </div>`;
   const monitor = byId('admin-monitor');
   if (monitor) monitor.innerHTML = `<div class="tabs2"><button class="btn primary" onclick="monitorTab('orders',this)">주문 상태</button><button class="btn" onclick="monitorTab('sync',this)">포지션 동기화</button></div>
     <div id="orders" class="subpage active card section"><div class="section-head"><h3>실제 주문 모니터</h3></div><div class="table"><table><thead><tr><th>회원</th><th>종목</th><th>Delta</th><th>체결</th><th>상태</th><th>Gate 주문</th><th>최근 변경</th></tr></thead><tbody id="adminLiveOrders"><tr><td colspan="7" class="empty-cell">주문 데이터를 불러오는 중입니다.</td></tr></tbody></table></div></div>
@@ -197,8 +212,8 @@ function enhanceAdminApiPage() {
     </div>
     <div class="card section" style="margin-top:14px">
       <div class="section-head"><div><h3>회원 Gate.io API 연결 현황</h3><p>회원별 연결·권한·Worker 검증 상태입니다.</p></div></div>
-      <div class="table"><table><thead><tr><th>회원</th><th>UID</th><th>상태</th><th>Futures 권한</th><th>Worker IP</th><th>최근 확인</th></tr></thead>
-      <tbody id="adminGateConnections"><tr><td colspan="6" class="empty-cell">API 연결 현황을 불러오는 중입니다.</td></tr></tbody></table></div>
+      <div class="table"><table><thead><tr><th>회원</th><th>UID</th><th>상태</th><th>Futures 권한</th><th>Worker IP</th><th>최근 확인</th><th>관리</th></tr></thead>
+      <tbody id="adminGateConnections"><tr><td colspan="7" class="empty-cell">API 연결 현황을 불러오는 중입니다.</td></tr></tbody></table></div>
     </div>`;
 }
 
@@ -647,6 +662,49 @@ function stateChip(state) {
   return `<span class="${className}">${value}</span>`;
 }
 
+function formatMasterPrice(value) {
+  const number = Number(value || 0);
+  return number > 0 ? `$${number.toLocaleString(undefined, { maximumFractionDigits: number >= 100 ? 2 : 4 })}` : '-';
+}
+
+function renderAdminMasterPositions() {
+  const positions = adminMasterPositions;
+  const longCount = positions.filter((position) => Number(position.size) > 0).length;
+  const shortCount = positions.filter((position) => Number(position.size) < 0).length;
+  const latest = positions.reduce((value, position) => Math.max(value, new Date(position.observed_at || 0).getTime()), 0);
+  if (byId('masterPositionCount')) byId('masterPositionCount').textContent = String(positions.length);
+  if (byId('masterDirectionCount')) byId('masterDirectionCount').textContent = `Long ${longCount} · Short ${shortCount}`;
+  if (byId('masterLongCount')) byId('masterLongCount').textContent = String(longCount);
+  if (byId('masterShortCount')) byId('masterShortCount').textContent = String(shortCount);
+  if (byId('masterPositionBadge')) byId('masterPositionBadge').textContent = String(positions.length);
+  if (byId('masterLastObserved')) byId('masterLastObserved').textContent = latest ? new Date(latest).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' }) : '-';
+  const filtered = positions.filter((position) => adminMasterFilter === 'ALL' || (Number(position.size) > 0 ? 'LONG' : 'SHORT') === adminMasterFilter);
+  const container = byId('adminMasterPositionCards');
+  if (!container) return;
+  container.innerHTML = filtered.length ? filtered.map((position) => {
+    const size = Number(position.size || 0);
+    const entry = Number(position.entry_price || 0);
+    const mark = Number(position.mark_price || 0);
+    const leverage = Number(position.leverage || 0);
+    const side = size > 0 ? 'LONG' : 'SHORT';
+    const priceMove = entry > 0 ? ((mark - entry) / entry) * (size > 0 ? 1 : -1) * 100 : 0;
+    const estimatedRoe = priceMove * Math.max(leverage, 1);
+    const pnlClass = estimatedRoe >= 0 ? 'pos' : 'neg';
+    return `<article class="master-position-card">
+      <div class="master-position-card-head"><div class="master-symbol"><span>${escapeHtml(position.contract.slice(0, 2))}</span><div><b>${escapeHtml(position.contract)}</b><small>무기한 선물</small></div></div><div class="master-side"><span class="${side === 'LONG' ? 'long' : 'short'}">${side}</span><small>${leverage || '-'}x</small></div></div>
+      <div class="master-position-pnl"><small>예상 ROE</small><strong class="${pnlClass}">${estimatedRoe >= 0 ? '+' : ''}${estimatedRoe.toFixed(2)}%</strong></div>
+      <div class="master-position-metrics"><div><span>진입가</span><b>${formatMasterPrice(entry)}</b></div><div><span>현재가</span><b>${formatMasterPrice(mark)}</b></div><div><span>계약 수량</span><b>${Math.abs(size).toLocaleString()}</b></div><div><span>방향</span><b class="${side === 'LONG' ? 'pos' : 'neg'}">${side}</b></div></div>
+      <div class="master-position-sync"><span>마지막 확인</span><time>${position.observed_at ? new Date(position.observed_at).toLocaleString('ko-KR') : '-'}</time></div>
+    </article>`;
+  }).join('') : `<div class="master-position-empty">${positions.length ? `${adminMasterFilter} 포지션이 없습니다.` : '현재 열린 Master 포지션이 없습니다.'}</div>`;
+}
+
+window.setAdminMasterFilter = (filter, button) => {
+  adminMasterFilter = ['ALL', 'LONG', 'SHORT'].includes(filter) ? filter : 'ALL';
+  document.querySelectorAll('[data-master-filter]').forEach((item) => item.classList.toggle('active', item === button));
+  renderAdminMasterPositions();
+};
+
 async function loadMemberLiveData() {
   if (!supabase || currentProfile?.role !== 'MEMBER') return;
   const { data, error } = await supabase.rpc('get_my_live_trading_data');
@@ -681,7 +739,8 @@ async function loadAdminLiveData() {
   if (byId('adminLiveOverrideCount')) byId('adminLiveOverrideCount').textContent = String(overrides.length);
   if (byId('adminLiveActionCount')) byId('adminLiveActionCount').textContent = String(actions.length);
   if (byId('adminLiveActions')) byId('adminLiveActions').innerHTML = actions.length ? actions.map((action) => `<div class="alert"><h4>${escapeHtml(action.title)}</h4><p>${escapeHtml(action.detail)}</p></div>`).join('') : '<div class="notice">현재 조치가 필요한 실제 상태가 없습니다.</div>';
-  if (byId('adminMasterPositions')) byId('adminMasterPositions').innerHTML = master.length ? master.map((position) => `<tr><td>${escapeHtml(position.contract)}</td><td>${Number(position.size)}</td><td>${Number(position.entry_price || 0).toLocaleString()}</td><td>${Number(position.mark_price || 0).toLocaleString()}</td><td>${Number(position.leverage || 0)}x</td><td>${new Date(position.observed_at).toLocaleString('ko-KR')}</td></tr>`).join('') : '<tr><td colspan="6" class="empty-cell">검증된 Master API와 Worker snapshot이 아직 없습니다.</td></tr>';
+  adminMasterPositions = master;
+  renderAdminMasterPositions();
   if (byId('adminLiveStates')) byId('adminLiveStates').innerHTML = states.length ? states.map((state) => `<tr><td>${escapeHtml(state.name || state.email || '-')}</td><td>${escapeHtml(state.contract)}</td><td>${Number(state.target_size)}</td><td>${Number(state.actual_size)}</td><td>${Number(state.delta_size)}</td><td>${stateChip(state.state)}${state.pause_reason ? `<small>${escapeHtml(state.pause_reason)}</small>` : ''}</td><td>${state.observed_at ? new Date(state.observed_at).toLocaleString('ko-KR') : '-'}</td></tr>`).join('') : '<tr><td colspan="7" class="empty-cell">회원 포지션 snapshot이 아직 없습니다.</td></tr>';
   if (byId('adminLiveOrders')) byId('adminLiveOrders').innerHTML = orders.length ? orders.map((order) => `<tr><td>${escapeHtml(order.name || order.email || '-')}</td><td>${escapeHtml(order.contract)}</td><td>${Number(order.delta_size)}</td><td>${Number(order.filled_size)}</td><td>${stateChip(order.status)}${order.error_code ? `<small>${escapeHtml(order.error_code)}</small>` : ''}</td><td>${escapeHtml(order.gate_order_id || '-')}</td><td>${new Date(order.updated_at).toLocaleString('ko-KR')}</td></tr>`).join('') : '<tr><td colspan="7" class="empty-cell">실제 주문 내역이 아직 없습니다.</td></tr>';
 }
@@ -1209,8 +1268,10 @@ async function loadAdminGateConnections() {
   tableBody.innerHTML = connections.length ? connections.map((connection) => {
     const statusClass = connection.status === 'VERIFIED' ? 'chip' : connection.status === 'ERROR' ? 'chip red' : 'chip yellow';
     const statusLabel = { VERIFIED: 'CONNECTED', ERROR: 'ERROR', VERIFYING: 'VERIFYING', PENDING_VERIFICATION: 'PENDING', NOT_CONNECTED: 'NOT CONNECTED' }[connection.status] || connection.status;
-    return `<tr><td>${escapeHtml(connection.full_name || '-')}<small>${escapeHtml(connection.email || '')}</small></td><td>${escapeHtml(connection.gate_uid || '-')}</td><td><span class="${statusClass}">${escapeHtml(statusLabel)}</span></td><td>${connection.futures_read ? 'READ PASS' : connection.permissions_confirmed ? '사용자 확인' : '-'}</td><td>${connection.status === 'VERIFIED' ? 'Worker 접속 통과' : '-'}</td><td>${connection.last_checked_at ? new Date(connection.last_checked_at).toLocaleString('ko-KR') : '-'}</td></tr>`;
-  }).join('') : '<tr><td colspan="6" class="empty-cell">승인 회원의 API 연결 정보가 없습니다.</td></tr>';
+    const disconnect = connection.status !== 'NOT_CONNECTED' && connection.status !== 'DISABLED'
+      ? `<button class="btn red admin-api-disconnect" type="button" data-admin-disconnect-member="${connection.user_id}" data-member-name="${escapeHtml(connection.full_name || connection.email || '회원')}">연결 해지</button>` : '-';
+    return `<tr><td>${escapeHtml(connection.full_name || '-')}<small>${escapeHtml(connection.email || '')}</small></td><td>${escapeHtml(connection.gate_uid || '-')}</td><td><span class="${statusClass}">${escapeHtml(statusLabel)}</span></td><td>${connection.futures_read ? 'READ PASS' : connection.permissions_confirmed ? '사용자 확인' : '-'}</td><td>${connection.status === 'VERIFIED' ? 'Worker 접속 통과' : '-'}</td><td>${connection.last_checked_at ? new Date(connection.last_checked_at).toLocaleString('ko-KR') : '-'}</td><td>${disconnect}</td></tr>`;
+  }).join('') : '<tr><td colspan="7" class="empty-cell">승인 회원의 API 연결 정보가 없습니다.</td></tr>';
   const verifiedCount = connections.filter((item) => item.status === 'VERIFIED').length;
   const errorCount = connections.filter((item) => item.status === 'ERROR').length;
   const disconnectedCount = connections.filter((item) => item.status === 'NOT_CONNECTED').length;
@@ -1218,6 +1279,18 @@ async function loadAdminGateConnections() {
   byId('adminApiVerified').textContent = String(verifiedCount);
   byId('adminApiErrors').textContent = String(errorCount);
   byId('adminApiDisconnected').textContent = String(disconnectedCount);
+}
+
+async function disconnectAdminMemberGateApi(userId, memberName) {
+  if (!supabase || currentProfile?.role !== 'ADMIN') return;
+  if (!window.confirm(`${memberName} 회원의 Gate.io API 연결을 해지할까요? 해당 회원의 신규 카피 주문이 즉시 중단되고 저장된 API Key는 폐기됩니다.`)) return;
+  const { error } = await supabase.rpc('admin_disable_member_gate_api_connection', {
+    p_user_id: userId,
+    p_confirmation: 'ADMIN_DISCONNECT_MEMBER_GATE_API',
+  });
+  if (error) return window.toast('회원 API 연결을 해지하지 못했습니다.');
+  window.toast(`${memberName} 회원의 API 연결을 해지했습니다.`);
+  await Promise.all([loadAdminGateConnections(), loadAdminMembers()]);
 }
 
 document.addEventListener('click', async (event) => {
@@ -1240,6 +1313,10 @@ document.addEventListener('click', async (event) => {
   if (event.target.closest('#memberPasswordResetButton')) await requestMemberPasswordReset();
   if (event.target.closest('#copySettingsSave')) await saveCopySettings();
   if (event.target.closest('#adminAnalysisLoad')) await loadAdminMemberTradingAnalysis();
+  const masterFilter = event.target.closest('[data-master-filter]');
+  if (masterFilter) window.setAdminMasterFilter(masterFilter.dataset.masterFilter, masterFilter);
+  const disconnectMemberButton = event.target.closest('[data-admin-disconnect-member]');
+  if (disconnectMemberButton) await disconnectAdminMemberGateApi(disconnectMemberButton.dataset.adminDisconnectMember, disconnectMemberButton.dataset.memberName);
   const memberDetailButton = event.target.closest('[data-member-detail]');
   if (memberDetailButton) await openMemberDetail(memberDetailButton.dataset.memberDetail);
   const memberControlButton = event.target.closest('[data-member-control]');
