@@ -19,6 +19,34 @@ test('worker plans Master position to member target to delta order', () => {
   assert.match(position.intent.gate_order_text, /^t-mtj-/);
 });
 
+test('new member baseline blocks existing Master positions and follows only later increases', () => {
+  const [initial] = planMemberPositions({
+    ...base,
+    member: { ...base.member, master_baselines: [{ contract: 'BTC_USDT', size: 100 }] },
+  });
+  assert.equal(initial.target_size, 0);
+  assert.equal(initial.state, 'SYNCED');
+  assert.equal(Object.hasOwn(initial, 'intent'), false);
+
+  const [increased] = planMemberPositions({
+    ...base,
+    master: { ...base.master, positions: [{ contract: 'BTC_USDT', size: 120, markPrice: 50_000 }] },
+    member: { ...base.member, master_baselines: [{ contract: 'BTC_USDT', size: 100 }] },
+  });
+  assert.equal(increased.target_size, 10);
+  assert.equal(increased.intent.delta_size, 10);
+});
+
+test('Master close clears onboarding baseline so a later re-entry is copied', () => {
+  const [reentered] = planMemberPositions({
+    ...base,
+    master: { ...base.master, positions: [{ contract: 'BTC_USDT', size: 20, markPrice: 50_000 }] },
+    member: { ...base.member, master_baselines: [] },
+  });
+  assert.equal(reentered.target_size, 10);
+  assert.equal(reentered.intent.delta_size, 10);
+});
+
 test('synced LIVE position omits the executable intent key', () => {
   const positions = planMemberPositions({
     cycleId: 'cycle-synced', system: { emergency_halted: false },
@@ -118,6 +146,7 @@ test('DRY_RUN records target, actual, and delta without an intent key', async ()
       recordedPayload = parameters.p_payload;
       return 'cycle-1';
     }
+    if (name === 'get_or_initialize_member_copy_baseline') return { positions: [] };
     throw new Error(`unexpected rpc: ${name}`);
   };
   runner.loadContracts = async () => contracts;
@@ -194,6 +223,7 @@ test('worker refreshes cached contract metadata when Master opens an unknown con
       members: [{ user_id: 'member', api_key: 'key', secret_key: 'secret', copy_ratio: 100, max_position_ratio: 40 }],
     };
     if (name === 'record_copy_worker_cycle') return {};
+    if (name === 'get_or_initialize_member_copy_baseline') return { positions: [] };
     throw new Error(`unexpected rpc ${name}`);
   };
   runner.loadContracts = async () => {

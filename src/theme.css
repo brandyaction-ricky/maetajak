@@ -1281,6 +1281,85 @@ td,
   text-align: right;
 }
 
+.member-performance-card { margin-top: 14px; padding: 24px; }
+.member-period-tabs, .member-metric-toggle { display: flex; gap: 6px; }
+.member-period-tabs button, .member-metric-toggle button { border: 0; border-radius: 999px; background: transparent; color: #89929d; padding: 9px 16px; font-weight: 700; }
+.member-period-tabs button.active, .member-metric-toggle button.active { background: #292d33; color: #fff; }
+.member-performance-head { display: flex; justify-content: space-between; align-items: flex-end; gap: 16px; margin-top: 22px; }
+.member-performance-head small, .member-trading-data small { color: var(--muted); letter-spacing: .08em; }
+.member-performance-head h3, .member-trading-data h3 { margin: 6px 0 0; font-size: 24px; }
+.member-metric-toggle { background: #171b20; padding: 4px; border-radius: 999px; }
+.member-performance-value { display: block; font-size: clamp(30px, 5vw, 48px); margin: 28px 0 12px; }
+.member-performance-chart { min-height: 250px; display: grid; place-items: center; overflow: hidden; }
+.member-performance-chart svg { width: 100%; min-width: 600px; overflow: visible; }
+.member-chart-line { fill: none; stroke: #19c997; stroke-width: 5; stroke-linecap: round; stroke-linejoin: round; }
+.member-chart-axis { stroke: rgba(255,255,255,.12); stroke-width: 1; }
+.member-chart-point { fill: #19c997; stroke: #fff; stroke-width: 3; }
+.member-chart-empty { color: var(--muted); text-align: center; }
+.member-performance-foot { display: flex; justify-content: space-between; gap: 12px; color: var(--muted); font-size: 11px; border-top: 1px solid var(--line); padding-top: 12px; }
+.member-account-kpis { margin-top: 14px; }
+.member-margin-track, .member-win-track, .member-exposure > div { height: 7px; background: rgba(255,255,255,.08); border-radius: 999px; overflow: hidden; }
+.member-margin-track { margin-top: 12px; }
+.member-margin-track i, .member-exposure i { display: block; height: 100%; background: #19c997; border-radius: inherit; }
+.member-trading-data { margin-top: 14px; padding: 24px; }
+.member-win-summary, .member-win-labels { display: flex; justify-content: space-between; align-items: flex-end; }
+.member-win-summary span, .member-win-labels { color: var(--muted); }
+.member-win-summary b { display: block; font-size: 32px; margin-top: 5px; }
+.member-win-labels { margin: 18px 0 8px; }
+.member-win-track { display: flex; gap: 4px; }
+.member-win-track i:first-child { background: #19c997; }
+.member-win-track i:last-child { background: #ff315f; }
+.member-trading-grid { display: grid; grid-template-columns: 1fr auto; gap: 17px; margin-top: 24px; font-size: 14px; }
+.member-trading-grid span { color: var(--muted); }
+.member-trading-grid b { text-align: right; }
+.member-position-section { margin-top: 26px; }
+.member-position-head h3 { margin: 0; font-size: 20px; }
+.member-position-head h3 span { display: inline-grid; place-items: center; min-width: 24px; height: 24px; border-radius: 8px; background: #262b31; font-size: 12px; }
+.member-position-head p { color: var(--muted); margin: 7px 0 14px; }
+.member-open-position-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
+.member-open-position-card { border: 1px solid var(--line); border-radius: 16px; background: var(--panel); padding: 18px; }
+.member-position-card-head, .member-position-pnl { display: flex; justify-content: space-between; gap: 12px; }
+.member-position-card-head small, .member-position-pnl small { display: block; color: var(--muted); margin-top: 4px; }
+.member-position-card-head > span { align-self: flex-start; padding: 5px 8px; border-radius: 8px; font-size: 10px; }
+.member-position-card-head .long { color: #4ade80; background: rgba(34,197,94,.1); border: 1px solid rgba(34,197,94,.3); }
+.member-position-card-head .short { color: #fb7185; background: rgba(244,63,94,.1); border: 1px solid rgba(244,63,94,.3); }
+.member-position-pnl { align-items: flex-end; margin: 22px 0; }
+.member-position-pnl strong { font-size: 25px; }
+.member-position-metrics { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; border-top: 1px solid var(--line); padding-top: 16px; }
+.member-position-metrics span { display: block; color: var(--muted); font-size: 10px; margin-bottom: 4px; }
+.member-exposure { margin-top: 18px; }
+.member-exposure > span { display: flex; justify-content: space-between; color: var(--muted); font-size: 10px; margin-bottom: 8px; }
+.copy-settings-layout { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(300px, .75fr); gap: 14px; align-items: start; }
+.copy-control-card, .copy-risk-card, .copy-existing-policy { grid-column: 1; padding: 24px; }
+.copy-setting-summary { grid-column: 2; grid-row: 1 / span 4; position: sticky; top: 90px; padding: 24px; }
+.copy-control-card .section-head strong { font-size: 28px; }
+.copy-control-card h3, .copy-risk-card h3, .copy-existing-policy h3, .copy-setting-summary h3 { font-size: 20px; margin: 5px 0; }
+.copy-control-card p, .copy-risk-card p, .copy-existing-policy p { color: var(--muted); margin: 0; line-height: 1.6; }
+.copy-range { width: 100%; accent-color: #fff; margin: 25px 0 10px; }
+.copy-range-labels { display: flex; justify-content: space-between; color: var(--muted); font-size: 10px; }
+.copy-existing-policy { display: flex; justify-content: space-between; align-items: center; gap: 18px; }
+.copy-risk-inputs { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+.copy-risk-inputs label > span { display: block; color: var(--muted); font-size: 11px; margin-bottom: 8px; }
+.copy-risk-inputs label > div { display: flex; align-items: center; background: #11161c; border: 1px solid var(--line); border-radius: 12px; padding: 0 13px; }
+.copy-risk-inputs input { min-width: 0; width: 100%; border: 0; background: transparent; color: #fff; padding: 15px 0; font-size: 20px; outline: none; }
+.copy-setting-summary .notice { margin: 18px 0; }
+
+@media (max-width: 1050px) {
+  .member-open-position-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@media (max-width: 760px) {
+  .member-performance-card, .member-trading-data { padding: 18px 14px; }
+  .member-performance-head { align-items: flex-start; flex-direction: column; }
+  .member-performance-chart { overflow-x: auto; justify-content: start; }
+  .member-open-position-grid { grid-template-columns: 1fr; }
+  .copy-settings-layout { grid-template-columns: 1fr; }
+  .copy-control-card, .copy-risk-card, .copy-existing-policy, .copy-setting-summary { grid-column: 1; grid-row: auto; }
+  .copy-setting-summary { position: static; }
+  .copy-risk-inputs { grid-template-columns: 1fr; }
+  .copy-existing-policy { align-items: flex-start; flex-direction: column; }
+}
+
 @media (max-width: 560px) {
   .operations-grid .metric {
     align-items: flex-start;

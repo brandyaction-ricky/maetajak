@@ -6,7 +6,7 @@ import {
 } from './gate.js';
 import {
   buildGateOrderText, buildIdempotencyKey, calculateDeltaOrder,
-  calculateTargetPosition, deriveCopyState, detectManualOverride,
+  calculateCopyableMasterSize, calculateTargetPosition, deriveCopyState, detectManualOverride,
 } from './copy-engine.js';
 import { aggregateMemberPerformance, kstDayRange } from './performance.js';
 
@@ -24,12 +24,15 @@ export function planMemberPositions({ cycleId, system, master, member, contracts
   const masterPositions = positionMap(master.positions);
   const memberPositions = positionMap(member.positions);
   const previousStates = new Map((member.previous_states || []).map((state) => [state.contract, state]));
-  const symbols = new Set([...masterPositions.keys(), ...memberPositions.keys(), ...previousStates.keys()]);
+  const masterBaselines = new Map((member.master_baselines || []).map((position) => [position.contract, Number(position.size || 0)]));
+  const symbols = new Set([...masterPositions.keys(), ...memberPositions.keys(), ...previousStates.keys(), ...masterBaselines.keys()]);
   const planned = [];
   for (const contract of symbols) {
     const contractInfo = contracts.get(contract);
     if (!contractInfo || contractInfo.inDelisting) continue;
-    const masterPosition = masterPositions.get(contract) || { contract, size: 0, markPrice: memberPositions.get(contract)?.markPrice || 0 };
+    const observedMasterPosition = masterPositions.get(contract) || { contract, size: 0, markPrice: memberPositions.get(contract)?.markPrice || 0 };
+    const baseline = calculateCopyableMasterSize({ masterSize: observedMasterPosition.size, baselineSize: masterBaselines.get(contract) || 0 });
+    const masterPosition = { ...observedMasterPosition, size: baseline.copyableSize };
     const memberPosition = memberPositions.get(contract) || { contract, size: 0, markPrice: masterPosition.markPrice || 0 };
     const markPrice = masterPosition.markPrice || memberPosition.markPrice;
     if (!(markPrice > 0) || !(contractInfo.quantoMultiplier > 0)) continue;
@@ -77,6 +80,8 @@ export function planMemberPositions({ cycleId, system, master, member, contracts
       quanto_multiplier: contractInfo.quantoMultiplier, target_size: target.targetSize,
       state, delta_size: delta.deltaSize, previous_actual_size: previous?.actual_size ?? null,
       unexplained_delta: manual.unexplainedDelta,
+      master_baseline_size: masterBaselines.get(contract) || 0,
+      baseline_clear_requested: baseline.clearBaseline,
       pause_reason: manual.detected ? 'MEMBER_POSITION_CHANGED_OUTSIDE_PLATFORM' : member.risk_halt_reason || (leverageExceeded ? 'MAX_LEVERAGE_EXCEEDED' : member.copy_paused ? 'MEMBER_PAUSED' : null),
     };
     if (delta.shouldSubmit) {
@@ -197,7 +202,25 @@ export class TradingRunner {
     const dryRunPlans = [];
     for (const memberContext of memberContexts) {
       try {
-        const member = await this.readAccount(memberContext);
+        const baseline = await this.rpc('get_or_initialize_member_copy_baseline', {
+          p_trading_account_id: memberContext.trading_account_id,
+          p_master_positions: master.positions.map((position) => ({ contract: position.contract, size: position.size })),
+        });
+        const observedMasterPositions = positionMap(master.positions);
+        const baselinePositions = baseline?.positions || [];
+        const contractsToClear = baselinePositions.filter((position) => {
+          const currentSize = Number(observedMasterPositions.get(position.contract)?.size || 0);
+          const baselineSize = Number(position.size || 0);
+          return currentSize === 0 || (baselineSize !== 0 && Math.sign(currentSize) !== Math.sign(baselineSize));
+        }).map((position) => position.contract);
+        if (contractsToClear.length) {
+          await this.rpc('clear_member_copy_baselines', {
+            p_trading_account_id: memberContext.trading_account_id,
+            p_contracts: contractsToClear,
+          });
+        }
+        const activeBaselines = baselinePositions.filter((position) => !contractsToClear.includes(position.contract));
+        const member = await this.readAccount({ ...memberContext, master_baselines: activeBaselines });
         const plannedPositions = planMemberPositions({
           cycleId,
           system: context.system,

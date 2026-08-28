@@ -30,6 +30,18 @@ export function roundTowardZeroToStep(value, step = 1) {
   return Number((rounded * increment).toPrecision(15));
 }
 
+export function calculateCopyableMasterSize({ masterSize, baselineSize = 0 }) {
+  const current = finiteNumber(masterSize, 'masterSize');
+  const baseline = finiteNumber(baselineSize, 'baselineSize');
+  if (baseline === 0) return { copyableSize: current, clearBaseline: false };
+  if (current === 0 || Math.sign(current) !== Math.sign(baseline)) {
+    return { copyableSize: current, clearBaseline: true };
+  }
+  const delta = current - baseline;
+  const copyableSize = Math.sign(delta) === Math.sign(baseline) ? delta : 0;
+  return { copyableSize, clearBaseline: false };
+}
+
 export function calculateTargetPosition({
   masterSize,
   masterEquity,
