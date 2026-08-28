@@ -11,8 +11,8 @@ const deploymentFiles = [
   'deploy/set-worker-mode.sh',
   'deploy/lightsail-verify-deployment.sh',
   'deploy/lightsail-deploy-dry-run.sh',
-  'deploy/github-deploy-command.sh',
-  'deploy/install-github-deploy-key.sh',
+  'deploy/lightsail-auto-deploy.sh',
+  'deploy/install-auto-deploy.sh',
 ];
 
 test('Lightsail shell scripts have valid Bash syntax', () => {
@@ -21,25 +21,23 @@ test('Lightsail shell scripts have valid Bash syntax', () => {
   }
 });
 
-test('automated deployment fails closed in DRY_RUN and restricts SSH commands', () => {
+test('automated deployment fails closed in DRY_RUN and blocks database changes', () => {
   const deploy = readFileSync('deploy/lightsail-deploy-dry-run.sh', 'utf8');
   const verify = readFileSync('deploy/lightsail-verify-deployment.sh', 'utf8');
-  const forcedCommand = readFileSync('deploy/github-deploy-command.sh', 'utf8');
+  const autoDeploy = readFileSync('deploy/lightsail-auto-deploy.sh', 'utf8');
+  const timer = readFileSync('deploy/maetajak-auto-deploy.timer', 'utf8');
   const workflow = readFileSync('.github/workflows/deploy-production-worker.yml', 'utf8');
-  const promote = readFileSync('.github/workflows/promote-production-live.yml', 'utf8');
 
   assert.match(deploy, /systemctl stop maetajak-worker\.service/);
   assert.match(deploy, /worker:halt/);
   assert.match(deploy, /set-worker-mode\.sh" DRY_RUN/);
   assert.match(deploy, /lightsail-verify-deployment\.sh/);
   assert.match(verify, /member_sync_failed/);
-  assert.match(forcedCommand, /SSH_ORIGINAL_COMMAND/);
-  assert.match(forcedCommand, /Unsupported deployment command/);
-  assert.doesNotMatch(forcedCommand, /eval/);
-  assert.match(workflow, /supabase db push --db-url .* --dry-run/);
-  assert.match(workflow, /environment: production-dry-run/);
-  assert.match(promote, /environment: production-live/);
-  assert.match(promote, /ENABLE_LIVE_COPY_TRADING/);
+  assert.match(autoDeploy, /blocked_database_migration/);
+  assert.match(autoDeploy, /git merge-base --is-ancestor/);
+  assert.match(timer, /OnUnitActiveSec=3min/);
+  assert.match(workflow, /npm test/);
+  assert.doesNotMatch(workflow, /LIGHTSAIL_SSH_PRIVATE_KEY/);
 });
 
 test('Lightsail configuration keeps server secrets outside the Git checkout', () => {

@@ -1,4 +1,4 @@
-name: Deploy production worker safely
+name: Verify production worker changes
 
 on:
   push:
@@ -19,14 +19,13 @@ permissions:
   contents: read
 
 concurrency:
-  group: production-worker-deploy
+  group: production-worker-verification
   cancel-in-progress: false
 
 jobs:
-  deploy:
+  verify:
     runs-on: ubuntu-latest
-    timeout-minutes: 35
-    environment: production-dry-run
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -36,37 +35,3 @@ jobs:
       - run: npm ci
       - run: npm test
       - run: npm run build
-      - uses: supabase/setup-cli@v1
-        with:
-          version: latest
-      - name: Check pending migrations
-        env:
-          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
-        run: supabase db push --db-url "$SUPABASE_DB_URL" --dry-run
-      - name: Apply pending migrations
-        env:
-          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
-        run: supabase db push --db-url "$SUPABASE_DB_URL"
-      - name: Configure restricted SSH identity
-        shell: bash
-        env:
-          DEPLOY_KEY: ${{ secrets.LIGHTSAIL_SSH_PRIVATE_KEY }}
-          DEPLOY_KNOWN_HOSTS: ${{ secrets.LIGHTSAIL_KNOWN_HOSTS }}
-        run: |
-          set -Eeuo pipefail
-          install -m 700 -d "$RUNNER_TEMP/ssh"
-          printf '%s\n' "$DEPLOY_KEY" > "$RUNNER_TEMP/ssh/deploy_key"
-          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$RUNNER_TEMP/ssh/known_hosts"
-          chmod 600 "$RUNNER_TEMP/ssh/deploy_key" "$RUNNER_TEMP/ssh/known_hosts"
-      - name: Deploy halted DRY_RUN and verify
-        env:
-          DEPLOY_HOST: ${{ secrets.LIGHTSAIL_HOST }}
-          DEPLOY_USER: ${{ secrets.LIGHTSAIL_USER }}
-        run: >-
-          ssh -i "$RUNNER_TEMP/ssh/deploy_key"
-          -o BatchMode=yes
-          -o IdentitiesOnly=yes
-          -o StrictHostKeyChecking=yes
-          -o UserKnownHostsFile="$RUNNER_TEMP/ssh/known_hosts"
-          "$DEPLOY_USER@$DEPLOY_HOST"
-          deploy-dry-run

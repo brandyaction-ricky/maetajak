@@ -95,30 +95,22 @@ DB는 최근 Worker heartbeat, 운영 Gate URL, 고정 IP, 최근 준비 테스�
 
 `OBSERVE`와 `DRY_RUN`에서는 Target/Actual/Delta만 기록하고 실행 가능한 주문 의도는 저장하지 않습니다. 또한 LIVE 활성화 시각 이전에 생성된 모든 주문 의도는 DB에서 가져올 수 없으므로, 테스트 중 계산된 Delta가 나중에 실주문으로 바뀌지 않습니다. 준비 완료 시각은 Master 포지션에서 실제 Delta가 한 건 이상 계산된 DRY_RUN에만 기록됩니다.
 
-## GitHub Actions 운영 배포
+## 자동 운영 배포
 
-운영 자동화가 설정된 뒤에는 `main`의 Worker·배포·마이그레이션 관련 변경이 다음 순서로 처리됩니다.
+운영 자동화가 설정된 뒤에는 `main`의 Worker·배포 관련 변경이 다음 순서로 처리됩니다.
 
 1. 테스트와 프로덕션 빌드
-2. Supabase 미적용 마이그레이션 확인 및 적용
+2. Lightsail 타이머가 3분 이내 최신 `main` 확인
 3. 기존 Worker 정지와 DB 실행 잠금
 4. Lightsail 최신 `main` 반영
 5. `DRY_RUN` 고정, Preflight, Worker 재시작
 6. 정상 사이클과 회원 동기화 오류 부재 검증
 
-실패하면 Worker는 중지되고 DB 실행 잠금은 유지됩니다. 자동 배포는 LIVE를 켜지 않습니다. 실제 주문 승격은 GitHub Actions의 `Promote production worker to LIVE`를 수동 실행하고, `production-live` 환경 승인을 통과한 경우에만 가능합니다.
+실패하면 Worker는 중지되고 DB 실행 잠금은 유지됩니다. 자동 배포는 LIVE를 켜지 않습니다. 실제 주문 승격은 DRY_RUN 목표 수량 검토 후 `lightsail-enable-live.sh`의 별도 확인 절차로만 가능합니다.
 
-배포용 SSH 키는 `deploy/install-github-deploy-key.sh`로 한 번만 설치합니다. 키는 강제 명령과 `restrict` 옵션이 적용되어 대화형 셸이나 임의 명령을 실행할 수 없고, `deploy-dry-run`, `verify-dry-run`, `promote-live`, `status`만 허용됩니다.
+최초 한 번 `sudo /opt/maetajak/deploy/install-auto-deploy.sh`를 실행하면 systemd 타이머가 설치됩니다. 인바운드 SSH 키나 GitHub Secret은 필요하지 않습니다. 변경이 없을 때는 짧은 `git fetch`만 수행하고, Worker 관련 변경이 있을 때만 재빌드합니다. UI 전용 변경은 서버 체크아웃만 갱신하며 Worker를 재시작하지 않습니다.
 
-`production-dry-run` 환경에는 다음 Secrets가 필요합니다.
-
-- `SUPABASE_DB_URL`
-- `LIGHTSAIL_HOST`
-- `LIGHTSAIL_USER`
-- `LIGHTSAIL_SSH_PRIVATE_KEY`
-- `LIGHTSAIL_KNOWN_HOSTS`
-
-`production-live`에는 Lightsail 관련 네 Secrets만 복사하고 필수 승인자를 지정합니다. 기존 운영 DB가 SQL Editor로 수동 구축되었다면 최초 한 번 `supabase_migrations.schema_migrations`에 이미 반영된 버전을 등록한 뒤 자동 배포를 시작합니다. Supabase CLI는 이 이력에 없는 SQL만 순서대로 적용합니다.
+DB 마이그레이션이 포함된 커밋은 자동 배포가 차단됩니다. 운영 SQL을 먼저 적용하고 검증한 뒤 서버 체크아웃을 갱신해야 합니다. 기존 운영 DB의 `supabase_migrations.schema_migrations`에는 이미 적용된 버전을 등록해 이력을 일관되게 유지합니다.
 
 ## 긴급 중단
 
