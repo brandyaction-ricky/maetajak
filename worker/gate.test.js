@@ -328,7 +328,7 @@ test('same-side split positions still fail closed', () => {
   ]), (error) => error instanceof GateApiError && error.code === 'SPLIT_POSITION_UNSUPPORTED');
 });
 
-test('Master leverage is applied to the requested hedge leg before entry', async () => {
+test('Master leverage uses Gate classic hedge mode contract leverage before entry', async () => {
   let requestedUrl = '';
   await setFuturesLeverage({
     apiKey: 'key', secretKey: 'secret', channelId: 'maetajak', contract: 'BTC_USDT',
@@ -337,10 +337,23 @@ test('Master leverage is applied to the requested hedge leg before entry', async
       requestedUrl = url;
       assert.equal(options.method, 'POST');
       assert.match(options.headers.SIGN, /^[a-f0-9]{128}$/);
-      return new Response(JSON.stringify({ contract: 'BTC_USDT', mode: 'dual_short', lever: '7' }), { status: 200 });
+      return new Response(JSON.stringify([{ contract: 'BTC_USDT', mode: 'dual_short', cross_leverage_limit: '7' }]), { status: 200 });
     },
   });
-  assert.match(requestedUrl, /\/positions\/BTC_USDT\/set_leverage\?leverage=7&margin_mode=cross&dual_side=dual_short$/);
+  assert.match(requestedUrl, /\/dual_comp\/positions\/BTC_USDT\/leverage\?leverage=0&cross_leverage_limit=7$/);
+});
+
+test('isolated classic hedge mode sends Master leverage directly', async () => {
+  let requestedUrl = '';
+  await setFuturesLeverage({
+    apiKey: 'key', secretKey: 'secret', channelId: 'maetajak', contract: 'ETH_USDT',
+    leverage: 5, marginMode: 'isolated', positionSide: 'LONG',
+    fetchImpl: async (url) => {
+      requestedUrl = url;
+      return new Response(JSON.stringify([{ contract: 'ETH_USDT', mode: 'dual_long', leverage: '5' }]), { status: 200 });
+    },
+  });
+  assert.match(requestedUrl, /\/dual_comp\/positions\/ETH_USDT\/leverage\?leverage=5$/);
 });
 
 test('empty member accounts can be switched to Gate dual mode', async () => {

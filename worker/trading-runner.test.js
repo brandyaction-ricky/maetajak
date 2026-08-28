@@ -336,8 +336,8 @@ test('LIVE applies Master leverage to the correct hedge leg before submitting an
     workerVersion: 'test', publicIp: '3.37.231.51', channelId: 'maetajak', mode: 'LIVE',
     fetchImpl: async (url, options) => {
       requests.push({ url, options });
-      if (url.includes('/positions/BTC_USDT/set_leverage')) {
-        return new Response(JSON.stringify({ leverage: '7' }), { status: 200 });
+      if (url.includes('/dual_comp/positions/BTC_USDT/leverage')) {
+        return new Response(JSON.stringify([{ cross_leverage_limit: '7' }]), { status: 200 });
       }
       if (url.endsWith('/futures/usdt/orders')) {
         return new Response(JSON.stringify({
@@ -363,7 +363,7 @@ test('LIVE applies Master leverage to the correct hedge leg before submitting an
 
   assert.equal(await runner.submitOrders(), 1);
   assert.equal(requests.length, 2);
-  assert.match(requests[0].url, /set_leverage\?leverage=7&margin_mode=cross&dual_side=dual_long$/);
+  assert.match(requests[0].url, /dual_comp\/positions\/BTC_USDT\/leverage\?leverage=0&cross_leverage_limit=7$/);
   assert.match(requests[1].url, /\/futures\/usdt\/orders$/);
   assert.equal(JSON.parse(requests[1].options.body).reduce_only, false);
   assert.equal(completions[0].p_result_status, 'FILLED');

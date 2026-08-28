@@ -10,6 +10,7 @@ export const FUTURES_TRADES_PATH = '/api/v4/futures/usdt/my_trades';
 export const FUTURES_TRADES_TIME_RANGE_PATH = '/api/v4/futures/usdt/my_trades_timerange';
 export const FUTURES_ACCOUNT_BOOK_PATH = '/api/v4/futures/usdt/account_book';
 export const FUTURES_POSITION_MODE_PATH = '/api/v4/futures/usdt/set_position_mode';
+export const FUTURES_DUAL_POSITIONS_PATH = '/api/v4/futures/usdt/dual_comp/positions';
 export const ACCOUNT_DETAIL_PATH = '/api/v4/account/detail';
 export const ACCOUNT_MAIN_KEYS_PATH = '/api/v4/account/main_keys';
 export const GATE_CHANNEL_ID_PATTERN = /^[a-z0-9]{1,19}$/;
@@ -363,12 +364,27 @@ export async function setFuturesLeverage({ contract, leverage, marginMode = 'cro
   if (!['cross', 'isolated'].includes(marginMode)) {
     throw new GateApiError('마스터 증거금 모드를 확인할 수 없습니다.', { code: 'INVALID_MARGIN_MODE' });
   }
-  const dualSide = positionSide === 'LONG' ? 'dual_long' : positionSide === 'SHORT' ? 'dual_short' : '';
+  const isDual = positionSide === 'LONG' || positionSide === 'SHORT';
+  // Gate classic hedge mode exposes one contract-level leverage setting for
+  // both legs. Its legacy dual endpoint remains the compatible write path;
+  // cross margin is expressed as leverage=0 plus cross_leverage_limit.
+  if (isDual) {
+    const { payload } = await gateRequest({
+      ...options,
+      method: 'POST',
+      path: `${FUTURES_DUAL_POSITIONS_PATH}/${encodeURIComponent(contract)}/leverage`,
+      query: marginMode === 'cross'
+        ? { leverage: 0, cross_leverage_limit: normalizedLeverage }
+        : { leverage: normalizedLeverage },
+      expiresAtMs: Date.now() + 5_000,
+    });
+    return payload;
+  }
   const { payload } = await gateRequest({
     ...options,
     method: 'POST',
     path: `${FUTURES_POSITIONS_PATH}/${encodeURIComponent(contract)}/set_leverage`,
-    query: { leverage: normalizedLeverage, margin_mode: marginMode, dual_side: dualSide },
+    query: { leverage: normalizedLeverage, margin_mode: marginMode },
     expiresAtMs: Date.now() + 5_000,
   });
   return payload;
