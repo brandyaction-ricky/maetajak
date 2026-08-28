@@ -92,6 +92,7 @@ test('OBSERVE and DRY_RUN cannot persist executable order intents', () => {
 
 test('DRY_RUN records target, actual, and delta without an intent key', async () => {
   let recordedPayload = null;
+  const dryRunLogs = [];
   const runner = new TradingRunner({
     supabase: {},
     baseUrl: 'https://api.gateio.ws',
@@ -100,6 +101,7 @@ test('DRY_RUN records target, actual, and delta without an intent key', async ()
     publicIp: '3.37.231.51',
     channelId: 'maetajak',
     mode: 'DRY_RUN',
+    logger: (event, details) => dryRunLogs.push({ event, details }),
   });
   runner.rpc = async (name, parameters = {}) => {
     if (name === 'get_copy_worker_context') {
@@ -133,6 +135,10 @@ test('DRY_RUN records target, actual, and delta without an intent key', async ()
   assert.equal('intent' in position, false);
   assert.equal(JSON.stringify(recordedPayload).includes('gate_order_text'), false);
   assert.equal(JSON.stringify(recordedPayload).includes('idempotency_key'), false);
+  assert.deepEqual(dryRunLogs, [{
+    event: 'dry_run_plan',
+    details: { positions: [{ contract: 'BTC_USDT', target_size: 30, actual_size: 0, delta_size: 30, state: 'DRIFT', pause_reason: null }] },
+  }]);
 });
 
 test('worker snapshots a verified Master before any member API is connected', async () => {
