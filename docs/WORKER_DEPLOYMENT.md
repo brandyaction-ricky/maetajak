@@ -95,6 +95,31 @@ DB는 최근 Worker heartbeat, 운영 Gate URL, 고정 IP, 최근 준비 테스�
 
 `OBSERVE`와 `DRY_RUN`에서는 Target/Actual/Delta만 기록하고 실행 가능한 주문 의도는 저장하지 않습니다. 또한 LIVE 활성화 시각 이전에 생성된 모든 주문 의도는 DB에서 가져올 수 없으므로, 테스트 중 계산된 Delta가 나중에 실주문으로 바뀌지 않습니다. 준비 완료 시각은 Master 포지션에서 실제 Delta가 한 건 이상 계산된 DRY_RUN에만 기록됩니다.
 
+## GitHub Actions 운영 배포
+
+운영 자동화가 설정된 뒤에는 `main`의 Worker·배포·마이그레이션 관련 변경이 다음 순서로 처리됩니다.
+
+1. 테스트와 프로덕션 빌드
+2. Supabase 미적용 마이그레이션 확인 및 적용
+3. 기존 Worker 정지와 DB 실행 잠금
+4. Lightsail 최신 `main` 반영
+5. `DRY_RUN` 고정, Preflight, Worker 재시작
+6. 정상 사이클과 회원 동기화 오류 부재 검증
+
+실패하면 Worker는 중지되고 DB 실행 잠금은 유지됩니다. 자동 배포는 LIVE를 켜지 않습니다. 실제 주문 승격은 GitHub Actions의 `Promote production worker to LIVE`를 수동 실행하고, `production-live` 환경 승인을 통과한 경우에만 가능합니다.
+
+배포용 SSH 키는 `deploy/install-github-deploy-key.sh`로 한 번만 설치합니다. 키는 강제 명령과 `restrict` 옵션이 적용되어 대화형 셸이나 임의 명령을 실행할 수 없고, `deploy-dry-run`, `verify-dry-run`, `promote-live`, `status`만 허용됩니다.
+
+`production-dry-run` 환경에는 다음 Secrets가 필요합니다.
+
+- `SUPABASE_DB_URL`
+- `LIGHTSAIL_HOST`
+- `LIGHTSAIL_USER`
+- `LIGHTSAIL_SSH_PRIVATE_KEY`
+- `LIGHTSAIL_KNOWN_HOSTS`
+
+`production-live`에는 Lightsail 관련 네 Secrets만 복사하고 필수 승인자를 지정합니다. 기존 운영 DB가 SQL Editor로 수동 구축되었다면 최초 한 번 `supabase migration list`로 이력을 대조하고 이미 반영된 버전은 `supabase migration repair --status applied <version>`으로 맞춘 뒤 자동 배포를 시작합니다.
+
 ## 긴급 중단
 
 ```bash
