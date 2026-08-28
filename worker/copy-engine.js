@@ -153,10 +153,11 @@ export function calculateDeltaOrder({ state, targetSize, actualSize, sizeStep = 
     return { shouldSubmit: false, deltaSize: 0, reduceOnly: false, reason: state };
   }
 
+  const resultingSize = actual + deltaSize;
+  const reducesExposure = Math.abs(resultingSize) < Math.abs(actual)
+    && (resultingSize === 0 || Math.sign(resultingSize) === Math.sign(actual));
+
   if (state === 'REDUCE_ONLY') {
-    const resultingSize = actual + deltaSize;
-    const reducesExposure = Math.abs(resultingSize) < Math.abs(actual)
-      && (resultingSize === 0 || Math.sign(resultingSize) === Math.sign(actual));
     if (!reducesExposure) {
       return { shouldSubmit: false, deltaSize: 0, reduceOnly: true, reason: 'REDUCE_ONLY_BLOCKED' };
     }
@@ -165,13 +166,16 @@ export function calculateDeltaOrder({ state, targetSize, actualSize, sizeStep = 
   return {
     shouldSubmit: true,
     deltaSize,
-    reduceOnly: state === 'REDUCE_ONLY',
+    // In Gate hedge mode, an opposite-signed order without reduce_only opens
+    // the other leg instead of reducing the current one. Mark every exposure
+    // reduction explicitly, not only account-level REDUCE_ONLY states.
+    reduceOnly: reducesExposure,
     reason: 'DELTA_REQUIRED',
   };
 }
 
-export function buildIdempotencyKey({ cycleId, userId, contract, targetSize, actualSize }) {
-  const source = [cycleId, userId, contract, targetSize, actualSize].map(String).join('|');
+export function buildIdempotencyKey({ cycleId, userId, contract, positionSide = '', targetSize, actualSize }) {
+  const source = [cycleId, userId, contract, positionSide, targetSize, actualSize].map(String).join('|');
   return createHash('sha256').update(source).digest('hex');
 }
 

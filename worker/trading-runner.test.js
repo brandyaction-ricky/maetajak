@@ -19,6 +19,48 @@ test('worker plans Master position to member target to delta order', () => {
   assert.match(position.intent.gate_order_text, /^t-mtj-/);
 });
 
+test('worker plans simultaneous LONG and SHORT legs independently', () => {
+  const positions = planMemberPositions({
+    ...base,
+    master: {
+      total: 10_000,
+      positions: [
+        { contract: 'BTC_USDT', positionSide: 'LONG', mode: 'dual_long', size: 20, markPrice: 50_000, leverage: 7, posMarginMode: 'cross' },
+        { contract: 'BTC_USDT', positionSide: 'SHORT', mode: 'dual_short', size: -10, markPrice: 50_000, leverage: 4, posMarginMode: 'cross' },
+      ],
+    },
+    member: { ...base.member, positionMode: 'dual', positions: [] },
+  });
+  assert.deepEqual(positions.map(({ position_side, target_size, target_leverage }) => ({ position_side, target_size, target_leverage })), [
+    { position_side: 'LONG', target_size: 10, target_leverage: 7 },
+    { position_side: 'SHORT', target_size: -5, target_leverage: 4 },
+  ]);
+  assert.equal(positions[0].intent.reduce_only, false);
+  assert.equal(positions[1].intent.reduce_only, false);
+});
+
+test('normal drift reductions are reduce-only so hedge legs cannot cross', () => {
+  const [position] = planMemberPositions({
+    ...base,
+    master: { total: 10_000, positions: [{ contract: 'BTC_USDT', positionSide: 'LONG', mode: 'dual_long', size: 10, markPrice: 50_000, leverage: 5 }] },
+    member: { ...base.member, total: 10_000, positionMode: 'dual', positions: [{ contract: 'BTC_USDT', positionSide: 'LONG', mode: 'dual_long', size: 20, markPrice: 50_000, leverage: 2 }] },
+  });
+  assert.equal(position.intent.delta_size, -10);
+  assert.equal(position.intent.reduce_only, true);
+});
+
+test('member leverage limit no longer blocks entry and Master leverage wins', () => {
+  const [position] = planMemberPositions({
+    ...base,
+    master: { total: 10_000, positions: [{ contract: 'BTC_USDT', size: 100, markPrice: 50_000, leverage: 6, posMarginMode: 'isolated' }] },
+    member: { ...base.member, max_leverage: 2, positions: [] },
+  });
+  assert.equal(position.state, 'DRIFT');
+  assert.equal(position.pause_reason, null);
+  assert.equal(position.intent.target_leverage, 6);
+  assert.equal(position.intent.margin_mode, 'isolated');
+});
+
 test('new member baseline blocks existing Master positions and follows only later increases', () => {
   const [initial] = planMemberPositions({
     ...base,
@@ -166,10 +208,10 @@ test('DRY_RUN records target, actual, and delta without an intent key', async ()
   assert.equal(JSON.stringify(recordedPayload).includes('idempotency_key'), false);
   assert.deepEqual(dryRunLogs, [{
     event: 'dry_run_master_snapshot',
-    details: { total_equity: 10_000, available_equity: 9_000, positions: [{ contract: 'BTC_USDT', size: 100, mark_price: 50_000, leverage: null }] },
+    details: { total_equity: 10_000, available_equity: 9_000, positions: [{ contract: 'BTC_USDT', position_side: 'LONG', size: 100, mark_price: 50_000, leverage: null, margin_mode: null }] },
   }, {
     event: 'dry_run_plan',
-    details: { positions: [{ contract: 'BTC_USDT', target_size: 30, actual_size: 0, delta_size: 30, state: 'DRIFT', pause_reason: null }] },
+    details: { positions: [{ contract: 'BTC_USDT', position_side: 'LONG', target_size: 30, actual_size: 0, delta_size: 30, target_leverage: null, state: 'DRIFT', pause_reason: null }] },
   }]);
 });
 
@@ -284,4 +326,45 @@ test('member failures expose a safe stage without leaking upstream messages', as
     },
   });
   assert.equal(JSON.stringify(logs).includes('private SQL error'), false);
+});
+
+test('LIVE applies Master leverage to the correct hedge leg before submitting an entry order', async () => {
+  const requests = [];
+  const completions = [];
+  const runner = new TradingRunner({
+    supabase: {}, baseUrl: 'https://api.gateio.ws', workerId: 'worker-test',
+    workerVersion: 'test', publicIp: '3.37.231.51', channelId: 'maetajak', mode: 'LIVE',
+    fetchImpl: async (url, options) => {
+      requests.push({ url, options });
+      if (url.includes('/positions/BTC_USDT/set_leverage')) {
+        return new Response(JSON.stringify({ leverage: '7' }), { status: 200 });
+      }
+      if (url.endsWith('/futures/usdt/orders')) {
+        return new Response(JSON.stringify({
+          id: '9223372036854775807', size: 3, left: 0, status: 'finished', finish_as: 'filled',
+        }), { status: 201 });
+      }
+      throw new Error(`unexpected URL: ${url}`);
+    },
+  });
+  runner.rpc = async (name, parameters = {}) => {
+    if (name === 'claim_copy_order_intents') return [{
+      intent_id: 'intent-1', api_key: 'key', secret_key: 'secret', contract: 'BTC_USDT',
+      position_side: 'LONG', position_mode: 'dual', delta_size: 3, reduce_only: false,
+      target_leverage: 7, margin_mode: 'cross', gate_order_text: 't-mtj-12345678901234567890',
+      slippage_ratio: 0.005,
+    }];
+    if (name === 'complete_copy_order_attempt') {
+      completions.push(parameters);
+      return null;
+    }
+    throw new Error(`unexpected rpc: ${name}`);
+  };
+
+  assert.equal(await runner.submitOrders(), 1);
+  assert.equal(requests.length, 2);
+  assert.match(requests[0].url, /set_leverage\?leverage=7&margin_mode=cross&dual_side=dual_long$/);
+  assert.match(requests[1].url, /\/futures\/usdt\/orders$/);
+  assert.equal(JSON.parse(requests[1].options.body).reduce_only, false);
+  assert.equal(completions[0].p_result_status, 'FILLED');
 });

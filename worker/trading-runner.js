@@ -2,7 +2,8 @@ import { createHash, randomUUID } from 'node:crypto';
 import {
   GateApiError, findFuturesOrderByText, getFuturesAccount, getFuturesAccountBook, getFuturesContracts,
   getMyFuturesTradesInRange,
-  getFuturesOrder, getFuturesPositions, getOrderTrades, placeFuturesOrder, summarizeGateOrder,
+  getFuturesOrder, getFuturesPositions, getOrderTrades, placeFuturesOrder, setFuturesLeverage,
+  setFuturesPositionMode, summarizeGateOrder,
 } from './gate.js';
 import {
   buildGateOrderText, buildIdempotencyKey, calculateDeltaOrder,
@@ -21,7 +22,21 @@ export function safeError(error, stage = 'WORKER') {
   return `${safeStage}_${safeDetail}`.slice(0, 80);
 }
 function sourceHash(value) { return createHash('sha256').update(JSON.stringify(value)).digest('hex'); }
-function positionMap(positions) { return new Map(positions.map((position) => [position.contract, position])); }
+function normalizePositionSide(position) {
+  if (position?.positionSide === 'LONG' || position?.position_side === 'LONG') return 'LONG';
+  if (position?.positionSide === 'SHORT' || position?.position_side === 'SHORT') return 'SHORT';
+  return Number(position?.size ?? position?.actual_size ?? 0) < 0 ? 'SHORT' : 'LONG';
+}
+function positionKey(position) { return `${position.contract}:${normalizePositionSide(position)}`; }
+function positionMap(positions) { return new Map(positions.map((position) => [positionKey(position), position])); }
+function parsePositionKey(key) {
+  const separator = key.lastIndexOf(':');
+  return { contract: key.slice(0, separator), positionSide: key.slice(separator + 1) };
+}
+function accountSupportsDual(account) {
+  return String(account?.positionMode || '').startsWith('dual')
+    || (account?.positions || []).some((position) => String(position.mode || '').startsWith('dual_'));
+}
 function credentials(account) { return { apiKey: account.api_key, secretKey: account.secret_key }; }
 
 export function suppressExecutableIntents(positions, mode) {
@@ -32,17 +47,20 @@ export function suppressExecutableIntents(positions, mode) {
 export function planMemberPositions({ cycleId, system, master, member, contracts, simulateSystemHalt = false }) {
   const masterPositions = positionMap(master.positions);
   const memberPositions = positionMap(member.positions);
-  const previousStates = new Map((member.previous_states || []).map((state) => [state.contract, state]));
-  const masterBaselines = new Map((member.master_baselines || []).map((position) => [position.contract, Number(position.size || 0)]));
+  const previousStates = new Map((member.previous_states || []).map((state) => [positionKey(state), state]));
+  const masterBaselines = new Map((member.master_baselines || []).map((position) => [positionKey(position), Number(position.size || 0)]));
   const symbols = new Set([...masterPositions.keys(), ...memberPositions.keys(), ...previousStates.keys(), ...masterBaselines.keys()]);
   const planned = [];
-  for (const contract of symbols) {
+  for (const symbol of symbols) {
+    const { contract, positionSide } = parsePositionKey(symbol);
     const contractInfo = contracts.get(contract);
     if (!contractInfo || contractInfo.inDelisting) continue;
-    const observedMasterPosition = masterPositions.get(contract) || { contract, size: 0, markPrice: memberPositions.get(contract)?.markPrice || 0 };
-    const baseline = calculateCopyableMasterSize({ masterSize: observedMasterPosition.size, baselineSize: masterBaselines.get(contract) || 0 });
+    const observedMasterPosition = masterPositions.get(symbol) || {
+      contract, positionSide, size: 0, markPrice: memberPositions.get(symbol)?.markPrice || 0,
+    };
+    const baseline = calculateCopyableMasterSize({ masterSize: observedMasterPosition.size, baselineSize: masterBaselines.get(symbol) || 0 });
     const masterPosition = { ...observedMasterPosition, size: baseline.copyableSize };
-    const memberPosition = memberPositions.get(contract) || { contract, size: 0, markPrice: masterPosition.markPrice || 0 };
+    const memberPosition = memberPositions.get(symbol) || { contract, positionSide, size: 0, markPrice: masterPosition.markPrice || 0 };
     const markPrice = masterPosition.markPrice || memberPosition.markPrice;
     if (!(markPrice > 0) || !(contractInfo.quantoMultiplier > 0)) continue;
     const target = calculateTargetPosition({
@@ -51,7 +69,7 @@ export function planMemberPositions({ cycleId, system, master, member, contracts
       memberMarkPrice: memberPosition.markPrice || markPrice, memberQuantoMultiplier: contractInfo.quantoMultiplier,
       copyRatio: member.copy_ratio, maxPositionRatio: member.max_position_ratio, sizeStep: contractInfo.sizeStep,
     });
-    const previous = previousStates.get(contract);
+    const previous = previousStates.get(symbol);
     if (member.close_positions_requested) {
       target.targetSize = 0;
       target.targetNotional = 0;
@@ -62,8 +80,7 @@ export function planMemberPositions({ cycleId, system, master, member, contracts
       hasUnresolvedPlatformOrder: Boolean(previous?.has_unresolved_order),
       hasBaseline: Boolean(previous) && !['HALTED', 'PAUSED'].includes(previous.state),
     });
-    const leverageExceeded = Number(memberPosition.leverage || 0) > Number(member.max_leverage || 10);
-    const reduceOnly = leverageExceeded || Boolean(member.reduce_only) || Boolean(member.close_positions_requested);
+    const reduceOnly = Boolean(member.reduce_only) || Boolean(member.close_positions_requested);
     const state = deriveCopyState({
       systemHalted: Boolean(system.emergency_halted) && !simulateSystemHalt, memberHalted: Boolean(member.halted),
       symbolPaused: Boolean(member.copy_paused) && !member.close_positions_requested,
@@ -82,19 +99,29 @@ export function planMemberPositions({ cycleId, system, master, member, contracts
       delta.deltaSize = 0;
       delta.reason = 'BELOW_MINIMUM_ORDER_SIZE';
     }
-    const idempotencyKey = delta.shouldSubmit ? buildIdempotencyKey({ cycleId, userId: member.user_id, contract, targetSize: target.targetSize, actualSize: memberPosition.size }) : null;
+    const idempotencyKey = delta.shouldSubmit ? buildIdempotencyKey({ cycleId, userId: member.user_id, contract, positionSide, targetSize: target.targetSize, actualSize: memberPosition.size }) : null;
+    const targetLeverage = Number(observedMasterPosition.leverage || previous?.target_leverage || memberPosition.leverage || 0);
+    const marginMode = String(observedMasterPosition.posMarginMode || previous?.margin_mode || memberPosition.posMarginMode || 'cross');
     const plannedPosition = {
-      contract, size: memberPosition.size, mark_price: memberPosition.markPrice || markPrice,
+      contract, position_side: positionSide, position_mode: member.positionMode || 'single',
+      size: memberPosition.size, mark_price: memberPosition.markPrice || markPrice,
       entry_price: memberPosition.entryPrice || null, leverage: memberPosition.leverage || null,
+      target_leverage: targetLeverage || null, margin_mode: marginMode,
       quanto_multiplier: contractInfo.quantoMultiplier, target_size: target.targetSize,
       state, delta_size: delta.deltaSize, previous_actual_size: previous?.actual_size ?? null,
       unexplained_delta: manual.unexplainedDelta,
-      master_baseline_size: masterBaselines.get(contract) || 0,
+      master_baseline_size: masterBaselines.get(symbol) || 0,
       baseline_clear_requested: baseline.clearBaseline,
-      pause_reason: manual.detected ? 'MEMBER_POSITION_CHANGED_OUTSIDE_PLATFORM' : member.risk_halt_reason || (leverageExceeded ? 'MAX_LEVERAGE_EXCEEDED' : member.copy_paused ? 'MEMBER_PAUSED' : null),
+      pause_reason: manual.detected ? 'MEMBER_POSITION_CHANGED_OUTSIDE_PLATFORM' : member.risk_halt_reason || (member.copy_paused ? 'MEMBER_PAUSED' : null),
     };
     if (delta.shouldSubmit) {
-      plannedPosition.intent = { delta_size: delta.deltaSize, reduce_only: delta.reduceOnly, idempotency_key: idempotencyKey, gate_order_text: buildGateOrderText(idempotencyKey) };
+      plannedPosition.intent = {
+        delta_size: delta.deltaSize, reduce_only: delta.reduceOnly,
+        position_side: positionSide, position_mode: member.positionMode || 'single',
+        target_leverage: targetLeverage || null, margin_mode: marginMode,
+        pid: memberPosition.pid || null,
+        idempotency_key: idempotencyKey, gate_order_text: buildGateOrderText(idempotencyKey),
+      };
     }
     planned.push(plannedPosition);
   }
@@ -195,9 +222,11 @@ export class TradingRunner {
         available_equity: master.available,
         positions: master.positions.map((position) => ({
           contract: position.contract,
+          position_side: normalizePositionSide(position),
           size: position.size,
           mark_price: position.markPrice,
           leverage: position.leverage || null,
+          margin_mode: position.posMarginMode || null,
         })),
       };
       const masterHash = sourceHash(masterSnapshot);
@@ -214,25 +243,44 @@ export class TradingRunner {
       try {
         const baseline = await this.rpc('get_or_initialize_member_copy_baseline', {
           p_trading_account_id: memberContext.trading_account_id,
-          p_master_positions: master.positions.map((position) => ({ contract: position.contract, size: position.size })),
+          p_master_positions: master.positions.map((position) => ({
+            contract: position.contract, position_side: normalizePositionSide(position), size: position.size,
+          })),
         });
         const observedMasterPositions = positionMap(master.positions);
         const baselinePositions = baseline?.positions || [];
         const contractsToClear = baselinePositions.filter((position) => {
-          const currentSize = Number(observedMasterPositions.get(position.contract)?.size || 0);
+          const currentSize = Number(observedMasterPositions.get(positionKey(position))?.size || 0);
           const baselineSize = Number(position.size || 0);
           return currentSize === 0 || (baselineSize !== 0 && Math.sign(currentSize) !== Math.sign(baselineSize));
-        }).map((position) => position.contract);
+        }).map((position) => ({ contract: position.contract, position_side: normalizePositionSide(position) }));
         if (contractsToClear.length) {
           memberStage = 'BASELINE_CLEAR';
-          await this.rpc('clear_member_copy_baselines', {
+          await this.rpc('clear_member_copy_baseline_legs', {
             p_trading_account_id: memberContext.trading_account_id,
-            p_contracts: contractsToClear,
+            p_positions: contractsToClear,
           });
         }
-        const activeBaselines = baselinePositions.filter((position) => !contractsToClear.includes(position.contract));
+        const clearedKeys = new Set(contractsToClear.map(positionKey));
+        const activeBaselines = baselinePositions.filter((position) => !clearedKeys.has(positionKey(position)));
         memberStage = 'MEMBER_ACCOUNT_READ';
-        const member = await this.readAccount({ ...memberContext, master_baselines: activeBaselines });
+        let member = await this.readAccount({ ...memberContext, master_baselines: activeBaselines });
+        const masterUsesDualMode = master.positions.some((position) => String(position.mode || '').startsWith('dual_'));
+        if (accountSupportsDual(member)) member.positionMode = 'dual';
+        if (masterUsesDualMode && !accountSupportsDual(member)) {
+          if (this.mode !== 'LIVE' || member.positions.length) {
+            throw new GateApiError('회원 계정을 양방향 모드로 전환해야 합니다.', { code: 'DUAL_MODE_REQUIRED' });
+          }
+          memberStage = 'MEMBER_POSITION_MODE';
+          await setFuturesPositionMode({
+            ...credentials(memberContext), channelId: this.channelId, baseUrl: this.baseUrl,
+            fetchImpl: this.fetchImpl, positionMode: 'dual',
+          });
+          member = await this.readAccount({ ...memberContext, master_baselines: activeBaselines });
+          if (!accountSupportsDual(member)) {
+            throw new GateApiError('회원 계정 양방향 모드 전환을 확인하지 못했습니다.', { code: 'DUAL_MODE_REQUIRED' });
+          }
+        }
         memberStage = 'MEMBER_PLAN';
         const plannedPositions = planMemberPositions({
           cycleId,
@@ -246,9 +294,11 @@ export class TradingRunner {
         if (this.mode === 'DRY_RUN') {
           dryRunPlans.push(...plannedPositions.map((position) => ({
             contract: position.contract,
+            position_side: position.position_side,
             target_size: position.target_size,
             actual_size: position.size,
             delta_size: position.delta_size,
+            target_leverage: position.target_leverage,
             state: position.state,
             pause_reason: position.pause_reason,
           })));
@@ -282,7 +332,15 @@ export class TradingRunner {
     const jobs = await this.rpc('claim_copy_order_intents', { p_limit: limit });
     for (const job of jobs || []) {
       try {
-        const response = await placeFuturesOrder({ apiKey: job.api_key, secretKey: job.secret_key, channelId: this.channelId, baseUrl: this.baseUrl, fetchImpl: this.fetchImpl, contract: job.contract, size: job.delta_size, reduceOnly: job.reduce_only, text: job.gate_order_text, slippageRatio: job.slippage_ratio });
+        const auth = { apiKey: job.api_key, secretKey: job.secret_key, channelId: this.channelId, baseUrl: this.baseUrl, fetchImpl: this.fetchImpl };
+        if (!job.reduce_only && Number(job.target_leverage) > 0) {
+          await setFuturesLeverage({
+            ...auth, contract: job.contract, leverage: job.target_leverage,
+            marginMode: job.margin_mode || 'cross',
+            positionSide: String(job.position_mode || '').startsWith('dual') ? job.position_side : undefined,
+          });
+        }
+        const response = await placeFuturesOrder({ ...auth, contract: job.contract, size: job.delta_size, reduceOnly: job.reduce_only, pid: job.pid, text: job.gate_order_text, slippageRatio: job.slippage_ratio });
         const summary = summarizeGateOrder(response.payload);
         await this.rpc('complete_copy_order_attempt', { p_intent_id: job.intent_id, p_result_status: summary.finalStatus, p_gate_order_id: summary.gateOrderId, p_filled_size: summary.filledSize, p_average_fill_price: summary.averageFillPrice, p_http_status: response.status, p_gate_label: summary.finishAs, p_error_code: null, p_safe_response: { finish_as: summary.finishAs, left: summary.left } });
       } catch (error) {

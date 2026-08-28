@@ -196,8 +196,8 @@ function enhanceCopySettingsUi() {
     <section class="card section copy-control-card"><div class="section-head"><div><small>COPY EXPOSURE</small><h3>카피 비율</h3><p>Master의 포지션 변화를 내 자산 기준으로 복제할 비율입니다.</p></div><strong id="copyRatioValue">100%</strong></div><input id="copyRatioSelect" class="copy-range" type="range" min="50" max="200" step="50" value="100"><div class="copy-range-labels"><span>50%</span><span>100%</span><span>150%</span><span>200%</span></div></section>
     <section class="card section copy-control-card"><div class="section-head"><div><small>POSITION CAP</small><h3>종목당 최대 포지션 비중</h3><p>한 종목이 내 총자산에서 차지할 수 있는 상한입니다.</p></div><strong id="maxPositionRatioValue">30%</strong></div><input id="maxPositionRatioSelect" class="copy-range" type="range" min="20" max="40" step="10" value="30"><div class="copy-range-labels"><span>20% 안전</span><span>30% 균형</span><span>40% 적극</span></div></section>
     <section class="card section copy-existing-policy"><div><small>EXISTING POSITION MODE</small><h3>기존 포지션 처리</h3><p>API 연결 시점에 Master가 이미 보유한 포지션은 진입하지 않고, 이후 추가·감소 및 신규 진입부터 카피합니다.</p></div><span class="chip">연결 이후만 카피</span></section>
-    <section class="card section copy-risk-card"><div class="section-head"><div><small>RISK LIMITS</small><h3>계정 리스크 한도</h3><p>한도 도달 시 Worker가 신규 주문을 자동 차단합니다.</p></div></div><div class="copy-risk-inputs"><label><span>일일 최대 손실</span><div><input id="dailyLossLimitInput" type="number" min="1" max="10" step="0.5" value="5"><b>%</b></div></label><label><span>최대 Drawdown</span><div><input id="maxDrawdownInput" type="number" min="5" max="30" step="1" value="15"><b>%</b></div></label><label><span>최대 레버리지</span><div><input id="maxLeverageInput" type="number" min="1" max="20" step="1" value="10"><b>x</b></div></label></div></section>
-    <aside class="card section copy-setting-summary"><small>SETTING PREVIEW</small><h3>현재 설정 요약</h3><div class="metric"><span>카피 비율</span><b id="copyPreviewRatio">100%</b></div><div class="metric"><span>종목당 최대 비중</span><b id="copyPreviewCap">30%</b></div><div class="metric"><span>기존 포지션</span><b>진입 안 함</b></div><div class="metric"><span>리스크 차단</span><b id="copyPreviewRisk">-5% · -15% · 10x</b></div><div class="notice">설정 변경은 다음 Worker 주기부터 적용됩니다. 기존 포지션을 임의로 확대하지 않습니다.</div><button id="copySettingsSave" class="btn primary full" type="button">설정 저장</button></aside>
+    <section class="card section copy-risk-card"><div class="section-head"><div><small>RISK LIMITS</small><h3>계정 리스크 한도</h3><p>한도 도달 시 Worker가 신규 주문을 자동 차단합니다.</p></div></div><div class="copy-risk-inputs"><label><span>일일 최대 손실</span><div><input id="dailyLossLimitInput" type="number" min="1" max="10" step="0.5" value="5"><b>%</b></div></label><label><span>최대 Drawdown</span><div><input id="maxDrawdownInput" type="number" min="5" max="30" step="1" value="15"><b>%</b></div></label><label><span>레버리지 정책</span><div><b>Master 자동 추종</b></div></label></div><div class="notice">LONG·SHORT 각 포지션은 Master가 사용한 레버리지와 증거금 모드로 진입합니다.</div></section>
+    <aside class="card section copy-setting-summary"><small>SETTING PREVIEW</small><h3>현재 설정 요약</h3><div class="metric"><span>카피 비율</span><b id="copyPreviewRatio">100%</b></div><div class="metric"><span>종목당 최대 비중</span><b id="copyPreviewCap">30%</b></div><div class="metric"><span>포지션 모드</span><b>LONG·SHORT 양방향</b></div><div class="metric"><span>레버리지</span><b>Master 자동 추종</b></div><div class="metric"><span>리스크 차단</span><b id="copyPreviewRisk">-5% · -15%</b></div><div class="notice">설정 변경은 다음 Worker 주기부터 적용됩니다. 기존 포지션을 임의로 확대하지 않습니다.</div><button id="copySettingsSave" class="btn primary full" type="button">설정 저장</button></aside>
   </div>`;
 }
 
@@ -206,12 +206,11 @@ function refreshCopySettingPreview() {
   const cap = Number(byId('maxPositionRatioSelect')?.value || 30);
   const daily = Number(byId('dailyLossLimitInput')?.value || 5);
   const drawdown = Number(byId('maxDrawdownInput')?.value || 15);
-  const leverage = Number(byId('maxLeverageInput')?.value || 10);
   if (byId('copyRatioValue')) byId('copyRatioValue').textContent = `${ratio}%`;
   if (byId('maxPositionRatioValue')) byId('maxPositionRatioValue').textContent = `${cap}%`;
   if (byId('copyPreviewRatio')) byId('copyPreviewRatio').textContent = `${ratio}%`;
   if (byId('copyPreviewCap')) byId('copyPreviewCap').textContent = `${cap}%`;
-  if (byId('copyPreviewRisk')) byId('copyPreviewRisk').textContent = `-${daily}% · -${drawdown}% · ${leverage}x`;
+  if (byId('copyPreviewRisk')) byId('copyPreviewRisk').textContent = `-${daily}% · -${drawdown}%`;
 }
 
 function enhanceAdminApiPage() {
@@ -423,7 +422,6 @@ function showApp(profile) {
   if (byId('maxPositionRatioSelect')) byId('maxPositionRatioSelect').value = String(Number(profile.max_position_ratio ?? 30));
   if (byId('dailyLossLimitInput')) byId('dailyLossLimitInput').value = String(Number(profile.daily_loss_limit_pct ?? 5));
   if (byId('maxDrawdownInput')) byId('maxDrawdownInput').value = String(Number(profile.max_drawdown_pct ?? 15));
-  if (byId('maxLeverageInput')) byId('maxLeverageInput').value = String(Number(profile.max_leverage ?? 10));
   refreshCopySettingPreview();
   openPage(role === 'admin' ? 'admin-dashboard' : 'member-dashboard');
   loadCopySystemStatus();
@@ -1171,7 +1169,9 @@ async function saveCopySettings() {
   const maxPositionRatio = Number(byId('maxPositionRatioSelect').value);
   const dailyLossLimit = Number(byId('dailyLossLimitInput').value);
   const maxDrawdown = Number(byId('maxDrawdownInput').value);
-  const maxLeverage = Number(byId('maxLeverageInput').value);
+  // Kept for RPC backwards compatibility only. Worker entries always inherit
+  // the Master's leverage and no longer enforce a member-side leverage cap.
+  const maxLeverage = Number(currentProfile.max_leverage ?? 10);
   const saveButton = byId('copySettingsSave');
   saveButton.disabled = true;
   const { data, error } = await supabase.rpc('update_my_copy_settings', {
