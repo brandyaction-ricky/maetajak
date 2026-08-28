@@ -3,7 +3,7 @@ import {
   GateApiError, findFuturesOrderByText, getFuturesAccount, getFuturesAccountBook, getFuturesContracts,
   getMyFuturesTradesInRange,
   getFuturesOrder, getFuturesPositions, getOrderTrades, placeFuturesOrder, setFuturesLeverage,
-  setFuturesPositionMode, summarizeGateOrder,
+  safeGateErrorLabel, setFuturesPositionMode, summarizeGateOrder,
 } from './gate.js';
 import {
   buildGateOrderText, buildIdempotencyKey, calculateDeltaOrder,
@@ -345,7 +345,7 @@ export class TradingRunner {
         await this.rpc('complete_copy_order_attempt', { p_intent_id: job.intent_id, p_result_status: summary.finalStatus, p_gate_order_id: summary.gateOrderId, p_filled_size: summary.filledSize, p_average_fill_price: summary.averageFillPrice, p_http_status: response.status, p_gate_label: summary.finishAs, p_error_code: null, p_safe_response: { finish_as: summary.finishAs, left: summary.left } });
       } catch (error) {
         const unknown = error instanceof GateApiError && error.outcomeUnknown;
-        await this.rpc('complete_copy_order_attempt', { p_intent_id: job.intent_id, p_result_status: unknown ? 'UNKNOWN' : 'REJECTED', p_gate_order_id: null, p_filled_size: 0, p_average_fill_price: null, p_http_status: error instanceof GateApiError ? error.status : 0, p_gate_label: null, p_error_code: safeError(error), p_safe_response: {} });
+        await this.rpc('complete_copy_order_attempt', { p_intent_id: job.intent_id, p_result_status: unknown ? 'UNKNOWN' : 'REJECTED', p_gate_order_id: null, p_filled_size: 0, p_average_fill_price: null, p_http_status: error instanceof GateApiError ? error.status : 0, p_gate_label: safeGateErrorLabel(error), p_error_code: safeError(error), p_safe_response: {} });
       }
     }
     return jobs?.length || 0;
