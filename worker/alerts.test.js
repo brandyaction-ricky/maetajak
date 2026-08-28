@@ -5,9 +5,7 @@ import { sendWorkerAlert, shouldSendFailureAlert } from './alerts.js';
 test('continuous worker failures alert only once before and once at auto-halt', () => {
   assert.equal(shouldSendFailureAlert(1), true);
   assert.equal(shouldSendFailureAlert(3), true);
-  for (const failures of [2, 4, 10, 20, 60, 77, 100]) {
-    assert.equal(shouldSendFailureAlert(failures), false);
-  }
+  for (const failures of [2, 4, 10, 20, 60, 77, 100]) assert.equal(shouldSendFailureAlert(failures), false);
 });
 
 test('worker alert is disabled safely without a destination', async () => {
@@ -34,18 +32,20 @@ test('worker alert sends Telegram messages without leaking the bot token into th
   let request;
   const botToken = '123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcdef';
   const result = await sendWorkerAlert({
-    telegramBotToken: botToken,
-    telegramChatId: '-1001234567890',
-    event: 'COPY_SYSTEM_AUTO_HALTED',
-    severity: 'CRITICAL',
+    telegramBotToken: botToken, telegramChatId: '-1001234567890', event: 'COPY_SYSTEM_AUTO_HALTED', severity: 'CRITICAL',
     details: { failures: 3, error_code: 'GATE_TIMEOUT\nretry stopped' },
     fetchImpl: async (url, options) => { request = { url, options }; return { ok: true, status: 200 }; },
   });
-  assert.deepEqual(result, { sent: trvÛÞm¢G§²ÚîÆ­yØÛRY\Ù\’YÛÛ˜XÝ\™Ù]Ú^™KXÝX[Ú^™WK›X\
-Ýš[™ÊKš›Ú[Š	ß	ÊNÂˆ™]\›ˆÜ™X]R\Ú
-	ÜÚLM‰ÊK\]JÛÝ\˜ÙJK™YÙ\Ý
-	Ú^	ÊNÂŸB‚™^Ü[˜Ý[ÛˆZ[Ø]SÜ™\•^
-Y[\Ý[˜ÞRÙ^JHÂˆÛÛœÝ›Ü›X[^™YHÝš[™ÊY[\Ý[˜ÞRÙ^JKœ™\XÙJÖ×˜K^KVŒNWKÙË	ÉÊKÓÝÙ\Ø\ÙJ
-NÂˆYˆ
-›Ü›X[^™Y›[™ÝLŠH›ÝÈ™]È˜[™ÙQ\œ›ÜŠ	ÚY[\Ý[˜ÞRÙ^H\ÈÛÈÚÜ	ÊNÂˆ™]\›ˆ[]‹IÛ›Ü›X[^™YœÛXÙJŒ
-_XÂŸB
+  assert.deepEqual(result, { sent: true, provider: 'telegram' });
+  assert.equal(request.url, `https://api.telegram.org/bot${botToken}/sendMessage`);
+  const body = JSON.parse(request.options.body);
+  assert.equal(body.chat_id, '-1001234567890');
+  assert.match(body.text, /\[CRITICAL\] maetajak copy worker/);
+  assert.match(body.text, /GATE_TIMEOUT retry stopped/);
+  assert.doesNotMatch(request.options.body, new RegExp(botToken.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+});
+
+test('worker alert fails closed for incomplete or invalid Telegram configuration', async () => {
+  assert.deepEqual(await sendWorkerAlert({ telegramBotToken: '123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcdef', event: 'TEST' }), { sent: false, provider: 'telegram', reason: 'TELEGRAM_CONFIGURATION_INCOMPLETE' });
+  assert.deepEqual(await sendWorkerAlert({ telegramBotToken: 'bad-token', telegramChatId: '123', event: 'TEST' }), { sent: false, provider: 'telegram', reason: 'TELEGRAM_CONFIGURATION_INVALID' });
+});
