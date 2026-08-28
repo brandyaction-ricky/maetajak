@@ -36,8 +36,7 @@ test('automated deployment fails closed in DRY_RUN and restricts SSH commands', 
   assert.match(forcedCommand, /SSH_ORIGINAL_COMMAND/);
   assert.match(forcedCommand, /Unsupported deployment command/);
   assert.doesNotMatch(forcedCommand, /eval/);
-  assert.match(workflow, /apply-supabase-migrations\.js --dry-run/);
-  assert.match(workflow, /secrets\.SUPABASE_ACCESS_TOKEN/);
+  assert.match(workflow, /supabase db push --db-url .* --dry-run/);
   assert.match(workflow, /environment: production-dry-run/);
   assert.match(promote, /environment: production-live/);
   assert.match(promote, /ENABLE_LIVE_COPY_TRADING/);

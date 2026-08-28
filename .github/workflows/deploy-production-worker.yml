@@ -36,16 +36,17 @@ jobs:
       - run: npm ci
       - run: npm test
       - run: npm run build
+      - uses: supabase/setup-cli@v1
+        with:
+          version: latest
       - name: Check pending migrations
         env:
-          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
-          SUPABASE_PROJECT_REF: dhknhaluirumgqfwoibx
-        run: node scripts/apply-supabase-migrations.js --dry-run
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: supabase db push --db-url "$SUPABASE_DB_URL" --dry-run
       - name: Apply pending migrations
         env:
-          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
-          SUPABASE_PROJECT_REF: dhknhaluirumgqfwoibx
-        run: node scripts/apply-supabase-migrations.js
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: supabase db push --db-url "$SUPABASE_DB_URL"
       - name: Configure restricted SSH identity
         shell: bash
         env:
