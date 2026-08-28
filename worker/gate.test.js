@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  BTC_FUTURES_POSITION_PATH, buildGateHeaders, FUTURES_ACCOUNT_PATH, GateApiError, gateRequest, getFuturesAccount, getFuturesContracts, getFuturesPositions,
+  buildGateHeaders, FUTURES_ACCOUNT_PATH, GateApiError, gateRequest, getFuturesAccount, getFuturesContracts, getFuturesPositions,
   mapGateError, matchingKeyInfo, normalizeGatePermissions, normalizeGatePositions, parseGateJson, placeFuturesOrder, summarizeGateOrder,
   validateGateChannelId, verifyGateAccount,
 } from './gate.js';
@@ -280,16 +280,24 @@ test('futures position lookup explicitly requests real open positions', async ()
     apiKey: 'key', secretKey: 'secret',
     fetchImpl: async (url) => {
       requestedUrls.push(url);
-      const body = url.endsWith(BTC_FUTURES_POSITION_PATH)
-        ? { contract: 'BTC_USDT', size: '-12', mark_price: '80000', leverage: '2' }
-        : [];
+      const body = url.includes('/my_trades')
+        ? [{ contract: 'ETH_USDT' }, { contract: 'BTC_USDT' }, { contract: 'ETH_USDT' }]
+        : url.endsWith('/ETH_USDT')
+          ? { contract: 'ETH_USDT', size: '4', mark_price: '4000', leverage: '2' }
+          : url.endsWith('/BTC_USDT')
+            ? { contract: 'BTC_USDT', size: '-12', mark_price: '80000', leverage: '2' }
+            : [];
       return { ok: true, status: 200, text: async () => JSON.stringify(body) };
     },
   });
-  assert.equal(positions[0].contract, 'BTC_USDT');
-  assert.equal(positions[0].size, -12);
+  assert.deepEqual(positions.map(({ contract, size }) => ({ contract, size })), [
+    { contract: 'ETH_USDT', size: 4 },
+    { contract: 'BTC_USDT', size: -12 },
+  ]);
   assert.match(requestedUrls[0], /\/api\/v4\/futures\/usdt\/positions\?holding=true&limit=100&offset=0$/);
-  assert.match(requestedUrls[1], /\/api\/v4\/futures\/usdt\/positions\/BTC_USDT$/);
+  assert.match(requestedUrls[1], /\/api\/v4\/futures\/usdt\/my_trades\?limit=100&offset=0$/);
+  assert.match(requestedUrls[2], /\/api\/v4\/futures\/usdt\/positions\/ETH_USDT$/);
+  assert.match(requestedUrls[3], /\/api\/v4\/futures\/usdt\/positions\/BTC_USDT$/);
 });
 
 test('simultaneous long and short positions fail closed instead of being netted', () => {
