@@ -91,6 +91,7 @@ export class TradingRunner {
     this.contracts = null;
     this.contractsLoadedAt = 0;
     this.lastDryRunPlanHash = null;
+    this.lastDryRunMasterHash = null;
   }
   async rpc(name, parameters = {}) {
     const { data, error } = await this.supabase.rpc(name, parameters);
@@ -133,6 +134,23 @@ export class TradingRunner {
     const cycleId = randomUUID();
     const observedAt = new Date().toISOString();
     const master = await this.readAccount(context.master);
+    if (this.mode === 'DRY_RUN' && this.logger) {
+      const masterSnapshot = {
+        total_equity: master.total,
+        available_equity: master.available,
+        positions: master.positions.map((position) => ({
+          contract: position.contract,
+          size: position.size,
+          mark_price: position.markPrice,
+          leverage: position.leverage || null,
+        })),
+      };
+      const masterHash = sourceHash(masterSnapshot);
+      if (masterHash !== this.lastDryRunMasterHash) {
+        this.lastDryRunMasterHash = masterHash;
+        this.logger('dry_run_master_snapshot', masterSnapshot);
+      }
+    }
     const members = [];
     let simulatedIntents = 0;
     const dryRunPlans = [];
