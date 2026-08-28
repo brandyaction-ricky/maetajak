@@ -7,6 +7,8 @@ export const FUTURES_POSITIONS_PATH = '/api/v4/futures/usdt/positions';
 export const FUTURES_CONTRACTS_PATH = '/api/v4/futures/usdt/contracts';
 export const FUTURES_ORDERS_PATH = '/api/v4/futures/usdt/orders';
 export const FUTURES_TRADES_PATH = '/api/v4/futures/usdt/my_trades';
+export const FUTURES_TRADES_TIME_RANGE_PATH = '/api/v4/futures/usdt/my_trades_timerange';
+export const FUTURES_ACCOUNT_BOOK_PATH = '/api/v4/futures/usdt/account_book';
 export const ACCOUNT_DETAIL_PATH = '/api/v4/account/detail';
 export const ACCOUNT_MAIN_KEYS_PATH = '/api/v4/account/main_keys';
 export const GATE_CHANNEL_ID_PATTERN = /^[a-z0-9]{1,19}$/;
@@ -362,6 +364,22 @@ export async function findFuturesOrderByText({ text, contract, ...options }) {
 
 export async function getOrderTrades({ orderId, contract, ...options }) {
   const { payload } = await gateRequest({ ...options, path: FUTURES_TRADES_PATH, query: { order: orderId, contract, limit: 100 } });
+  return Array.isArray(payload) ? payload : [];
+}
+
+export async function getFuturesAccountBook({ from, to, limit = 1000, offset = 0, ...options }) {
+  const { payload } = await gateRequest({
+    ...options, path: FUTURES_ACCOUNT_BOOK_PATH,
+    query: { from, to, limit: Math.min(Math.max(Number(limit) || 100, 1), 1000), offset },
+  });
+  return Array.isArray(payload) ? payload : [];
+}
+
+export async function getMyFuturesTradesInRange({ from, to, limit = 1000, offset = 0, ...options }) {
+  const { payload } = await gateRequest({
+    ...options, path: FUTURES_TRADES_TIME_RANGE_PATH,
+    query: { from, to, limit: Math.min(Math.max(Number(limit) || 100, 1), 1000), offset },
+  });
   return Array.isArray(payload) ? payload : [];
 }
 
