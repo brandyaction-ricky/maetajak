@@ -8,9 +8,11 @@ const css = fs.readFileSync(new URL('../src/theme.css', import.meta.url), 'utf8'
 
 test('new members persist a Master onboarding baseline while existing members keep prior behavior', () => {
   assert.match(migration, /member_copy_onboarding_baselines/);
+  assert.match(migration, /alter table private\.member_copy_onboarding_baselines enable row level security/);
   assert.match(migration, /select id, '\[\]'::jsonb[\s\S]*account_role = 'MEMBER' and status = 'ACTIVE'/);
   assert.match(migration, /get_or_initialize_member_copy_baseline/);
   assert.match(migration, /clear_member_copy_baselines/);
+  assert.match(migration, /create or replace function public\.update_my_copy_settings\(/);
 });
 
 test('member dashboard reads real performance, margin usage, and open positions', () => {

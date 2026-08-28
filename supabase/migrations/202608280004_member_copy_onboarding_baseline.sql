@@ -5,6 +5,7 @@ create table if not exists private.member_copy_onboarding_baselines (
   updated_at timestamptz not null default now(),
   check (jsonb_typeof(positions) = 'array')
 );
+alter table private.member_copy_onboarding_baselines enable row level security;
 
 -- Preserve current behavior for accounts that were already copying before this
 -- migration. Only accounts connected afterwards receive a non-zero onboarding
@@ -193,7 +194,7 @@ grant execute on function public.get_my_live_trading_data() to authenticated;
 -- Keep the legacy overload for rollback compatibility, but prevent clients from
 -- calling it after the expanded risk settings API is introduced.
 revoke all on function public.update_my_copy_settings(numeric, numeric) from public, anon, authenticated;
-create function public.update_my_copy_settings(
+create or replace function public.update_my_copy_settings(
   new_copy_ratio numeric,
   new_max_position_ratio numeric,
   new_daily_loss_limit_pct numeric,
