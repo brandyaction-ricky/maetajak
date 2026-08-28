@@ -9,6 +9,7 @@ export const FUTURES_ORDERS_PATH = '/api/v4/futures/usdt/orders';
 export const FUTURES_TRADES_PATH = '/api/v4/futures/usdt/my_trades';
 export const FUTURES_TRADES_TIME_RANGE_PATH = '/api/v4/futures/usdt/my_trades_timerange';
 export const FUTURES_ACCOUNT_BOOK_PATH = '/api/v4/futures/usdt/account_book';
+export const FUTURES_POSITION_MODE_PATH = '/api/v4/futures/usdt/set_position_mode';
 export const ACCOUNT_DETAIL_PATH = '/api/v4/account/detail';
 export const ACCOUNT_MAIN_KEYS_PATH = '/api/v4/account/main_keys';
 export const GATE_CHANNEL_ID_PATTERN = /^[a-z0-9]{1,19}$/;
@@ -261,6 +262,7 @@ export async function getFuturesAccount(options) {
     total,
     available,
     unrealisedPnl: Number(payload?.unrealised_pnl ?? payload?.unrealized_pnl ?? payload?.cross_unrealised_pnl ?? 0),
+    positionMode: String(payload?.position_mode || (payload?.in_dual_mode ? 'dual' : 'single')),
   };
 }
 
@@ -270,16 +272,21 @@ export function normalizeGatePositions(payload) {
     size: Number(position.size || 0),
     markPrice: Number(position.mark_price || 0),
     entryPrice: Number(position.entry_price || 0),
-    leverage: Number(position.lever ?? position.leverage ?? position.cross_leverage_limit ?? 0),
+    leverage: Number(position.lever ?? (Number(position.leverage || 0) > 0 ? position.leverage : position.cross_leverage_limit) ?? 0),
     mode: String(position.mode || 'single'),
-    posMarginMode: String(position.pos_margin_mode || ''),
+    positionSide: String(position.mode || '').toLowerCase() === 'dual_long' ? 'LONG'
+      : String(position.mode || '').toLowerCase() === 'dual_short' ? 'SHORT'
+        : Number(position.size || 0) < 0 ? 'SHORT' : 'LONG',
+    posMarginMode: String(position.pos_margin_mode || (Number(position.leverage || 0) > 0 ? 'isolated' : 'cross')),
+    pid: position.pid == null ? null : String(position.pid),
   })).filter((position) => position.contract && Number.isFinite(position.size) && position.size !== 0);
-  const contracts = new Set();
+  const legs = new Set();
   for (const position of positions) {
-    if (contracts.has(position.contract)) {
-      throw new GateApiError('동일 종목의 롱·숏 동시 포지션은 아직 안전하게 복사할 수 없습니다.', { code: 'HEDGED_POSITION_UNSUPPORTED' });
+    const leg = `${position.contract}:${position.positionSide}`;
+    if (legs.has(leg)) {
+      throw new GateApiError('같은 방향의 분할 포지션은 아직 안전하게 복사할 수 없습니다.', { code: 'SPLIT_POSITION_UNSUPPORTED' });
     }
-    contracts.add(position.contract);
+    legs.add(leg);
   }
   return positions;
 }
@@ -311,7 +318,8 @@ export async function getFuturesPositions(options) {
   for (const contract of candidates) {
     try {
       const single = await gateRequest({ ...options, path: `${FUTURES_POSITIONS_PATH}/${encodeURIComponent(contract)}` });
-      if (single.payload) singles.push(single.payload);
+      if (Array.isArray(single.payload)) singles.push(...single.payload);
+      else if (single.payload) singles.push(single.payload);
     } catch (error) {
       const notFound = error instanceof GateApiError
         && (error.status === 404 || String(error.payload?.label || '').toUpperCase() === 'POSITION_NOT_FOUND');
@@ -319,6 +327,39 @@ export async function getFuturesPositions(options) {
     }
   }
   return normalizeGatePositions(singles);
+}
+
+export async function setFuturesPositionMode({ positionMode = 'dual', ...options }) {
+  if (!['single', 'dual'].includes(positionMode)) {
+    throw new GateApiError('지원하지 않는 Gate 포지션 모드입니다.', { code: 'INVALID_POSITION_MODE' });
+  }
+  const { payload } = await gateRequest({
+    ...options,
+    method: 'POST',
+    path: FUTURES_POSITION_MODE_PATH,
+    query: { position_mode: positionMode },
+    expiresAtMs: Date.now() + 5_000,
+  });
+  return payload;
+}
+
+export async function setFuturesLeverage({ contract, leverage, marginMode = 'cross', positionSide, ...options }) {
+  const normalizedLeverage = Number(leverage);
+  if (!contract || !Number.isFinite(normalizedLeverage) || normalizedLeverage < 1 || normalizedLeverage > 100) {
+    throw new GateApiError('마스터 레버리지 값이 올바르지 않습니다.', { code: 'INVALID_MASTER_LEVERAGE' });
+  }
+  if (!['cross', 'isolated'].includes(marginMode)) {
+    throw new GateApiError('마스터 증거금 모드를 확인할 수 없습니다.', { code: 'INVALID_MARGIN_MODE' });
+  }
+  const dualSide = positionSide === 'LONG' ? 'dual_long' : positionSide === 'SHORT' ? 'dual_short' : '';
+  const { payload } = await gateRequest({
+    ...options,
+    method: 'POST',
+    path: `${FUTURES_POSITIONS_PATH}/${encodeURIComponent(contract)}/set_leverage`,
+    query: { leverage: normalizedLeverage, margin_mode: marginMode, dual_side: dualSide },
+    expiresAtMs: Date.now() + 5_000,
+  });
+  return payload;
 }
 
 export async function getFuturesContracts({ fetchImpl = fetch, baseUrl = GATE_API_BASE_URL } = {}) {
@@ -337,8 +378,9 @@ export async function getFuturesContracts({ fetchImpl = fetch, baseUrl = GATE_AP
   }));
 }
 
-export async function placeFuturesOrder({ contract, size, reduceOnly = false, text, slippageRatio = 0.005, ...options }) {
+export async function placeFuturesOrder({ contract, size, reduceOnly = false, text, slippageRatio = 0.005, pid = null, ...options }) {
   const requestBody = { contract, size: String(size), price: '0', tif: 'ioc', reduce_only: Boolean(reduceOnly), text, market_order_slip_ratio: String(slippageRatio) };
+  if (pid != null && pid !== '') requestBody.pid = String(pid);
   const { payload, status } = await gateRequest({ ...options, method: 'POST', path: FUTURES_ORDERS_PATH, body: requestBody, expiresAtMs: Date.now() + 5_000 });
   return { payload, status, requestBody };
 }

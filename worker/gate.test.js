@@ -2,7 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   buildGateHeaders, FUTURES_ACCOUNT_PATH, GateApiError, gateRequest, getFuturesAccount, getFuturesContracts, getFuturesPositions,
-  mapGateError, matchingKeyInfo, normalizeGatePermissions, normalizeGatePositions, parseGateJson, placeFuturesOrder, summarizeGateOrder,
+  mapGateError, matchingKeyInfo, normalizeGatePermissions, normalizeGatePositions, parseGateJson, placeFuturesOrder,
+  setFuturesLeverage, setFuturesPositionMode, summarizeGateOrder,
   validateGateChannelId, verifyGateAccount,
 } from './gate.js';
 
@@ -264,13 +265,13 @@ test('decimal futures contracts use their minimum quantity as the lot step', asy
   });
 });
 
-test('dual position responses keep only the open side for a contract', () => {
+test('dual position responses preserve the open leg identity', () => {
   assert.deepEqual(normalizeGatePositions([
     { contract: 'BTC_USDT', size: '2', mark_price: '60000', entry_price: '58000', lever: '3', mode: 'dual_long' },
     { contract: 'BTC_USDT', size: '0', mark_price: '60000', entry_price: '0', lever: '3', mode: 'dual_short' },
   ]), [{
     contract: 'BTC_USDT', size: 2, markPrice: 60000, entryPrice: 58000,
-    leverage: 3, mode: 'dual_long', posMarginMode: '',
+    leverage: 3, mode: 'dual_long', positionSide: 'LONG', posMarginMode: 'cross', pid: null,
   }]);
 });
 
@@ -300,9 +301,47 @@ test('futures position lookup explicitly requests real open positions', async ()
   assert.match(requestedUrls[3], /\/api\/v4\/futures\/usdt\/positions\/BTC_USDT$/);
 });
 
-test('simultaneous long and short positions fail closed instead of being netted', () => {
-  assert.throws(() => normalizeGatePositions([
+test('simultaneous long and short positions remain independent hedge legs', () => {
+  assert.deepEqual(normalizeGatePositions([
     { contract: 'BTC_USDT', size: '2', mark_price: '60000', mode: 'dual_long' },
     { contract: 'BTC_USDT', size: '-1', mark_price: '60000', mode: 'dual_short' },
-  ]), (error) => error instanceof GateApiError && error.code === 'HEDGED_POSITION_UNSUPPORTED');
+  ]).map(({ contract, size, positionSide }) => ({ contract, size, positionSide })), [
+    { contract: 'BTC_USDT', size: 2, positionSide: 'LONG' },
+    { contract: 'BTC_USDT', size: -1, positionSide: 'SHORT' },
+  ]);
+});
+
+test('same-side split positions still fail closed', () => {
+  assert.throws(() => normalizeGatePositions([
+    { contract: 'BTC_USDT', size: '2', mark_price: '60000', mode: 'dual_long', pid: 1 },
+    { contract: 'BTC_USDT', size: '1', mark_price: '60000', mode: 'dual_long', pid: 2 },
+  ]), (error) => error instanceof GateApiError && error.code === 'SPLIT_POSITION_UNSUPPORTED');
+});
+
+test('Master leverage is applied to the requested hedge leg before entry', async () => {
+  let requestedUrl = '';
+  await setFuturesLeverage({
+    apiKey: 'key', secretKey: 'secret', channelId: 'maetajak', contract: 'BTC_USDT',
+    leverage: 7, marginMode: 'cross', positionSide: 'SHORT',
+    fetchImpl: async (url, options) => {
+      requestedUrl = url;
+      assert.equal(options.method, 'POST');
+      assert.match(options.headers.SIGN, /^[a-f0-9]{128}$/);
+      return new Response(JSON.stringify({ contract: 'BTC_USDT', mode: 'dual_short', lever: '7' }), { status: 200 });
+    },
+  });
+  assert.match(requestedUrl, /\/positions\/BTC_USDT\/set_leverage\?leverage=7&margin_mode=cross&dual_side=dual_short$/);
+});
+
+test('empty member accounts can be switched to Gate dual mode', async () => {
+  let requestedUrl = '';
+  await setFuturesPositionMode({
+    apiKey: 'key', secretKey: 'secret', channelId: 'maetajak', positionMode: 'dual',
+    fetchImpl: async (url, options) => {
+      requestedUrl = url;
+      assert.equal(options.method, 'POST');
+      return new Response(JSON.stringify({ position_mode: 'dual' }), { status: 200 });
+    },
+  });
+  assert.match(requestedUrl, /\/set_position_mode\?position_mode=dual$/);
 });
