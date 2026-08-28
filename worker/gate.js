@@ -4,6 +4,7 @@ export const GATE_API_BASE_URL = 'https://api.gateio.ws';
 export const FUTURES_ACCOUNT_PATH = '/api/v4/futures/usdt/accounts';
 export const UNIFIED_ACCOUNT_PATH = '/api/v4/unified/accounts';
 export const FUTURES_POSITIONS_PATH = '/api/v4/futures/usdt/positions';
+export const BTC_FUTURES_POSITION_PATH = `${FUTURES_POSITIONS_PATH}/BTC_USDT`;
 export const FUTURES_CONTRACTS_PATH = '/api/v4/futures/usdt/contracts';
 export const FUTURES_ORDERS_PATH = '/api/v4/futures/usdt/orders';
 export const FUTURES_TRADES_PATH = '/api/v4/futures/usdt/my_trades';
@@ -291,7 +292,20 @@ export async function getFuturesPositions(options) {
     path: FUTURES_POSITIONS_PATH,
     query: { holding: true, limit: 100, offset: 0 },
   });
-  return normalizeGatePositions(payload);
+  const positions = normalizeGatePositions(payload);
+  if (positions.length) return positions;
+
+  // Gate exposes a separate authoritative single-contract endpoint. Use it
+  // for BTC when the list endpoint unexpectedly returns no open positions;
+  // this both protects the primary copy market and distinguishes list API
+  // omissions from a genuinely empty account.
+  try {
+    const single = await gateRequest({ ...options, path: BTC_FUTURES_POSITION_PATH });
+    return normalizeGatePositions(single.payload ? [single.payload] : []);
+  } catch (error) {
+    if (error instanceof GateApiError && (error.status === 404 || String(error.payload?.label || '').toUpperCase() === 'POSITION_NOT_FOUND')) return [];
+    throw error;
+  }
 }
 
 export async function getFuturesContracts({ fetchImpl = fetch, baseUrl = GATE_API_BASE_URL } = {}) {
