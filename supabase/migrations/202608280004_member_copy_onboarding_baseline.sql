@@ -190,7 +190,9 @@ $$;
 revoke all on function public.get_my_live_trading_data() from public;
 grant execute on function public.get_my_live_trading_data() to authenticated;
 
-drop function if exists public.update_my_copy_settings(numeric, numeric);
+-- Keep the legacy overload for rollback compatibility, but prevent clients from
+-- calling it after the expanded risk settings API is introduced.
+revoke all on function public.update_my_copy_settings(numeric, numeric) from public, anon, authenticated;
 create function public.update_my_copy_settings(
   new_copy_ratio numeric,
   new_max_position_ratio numeric,
