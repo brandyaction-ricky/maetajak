@@ -180,3 +180,35 @@ test('worker snapshots a verified Master before any member API is connected', as
   assert.equal(recordedPayload.master.positions[0].contract, 'BTC_USDT');
   assert.deepEqual(recordedPayload.members, []);
 });
+
+test('worker refreshes cached contract metadata when Master opens an unknown contract', async () => {
+  const runner = new TradingRunner({
+    supabase: {}, baseUrl: 'https://api.gateio.ws', workerId: 'worker-test',
+    workerVersion: 'test', publicIp: '3.37.231.51', channelId: 'maetajak', mode: 'DRY_RUN',
+  });
+  let loads = 0;
+  runner.rpc = async (name) => {
+    if (name === 'get_copy_worker_context') return {
+      system: { emergency_halted: true },
+      master: { user_id: 'master', api_key: 'key', secret_key: 'secret' },
+      members: [{ user_id: 'member', api_key: 'key', secret_key: 'secret', copy_ratio: 100, max_position_ratio: 40 }],
+    };
+    if (name === 'record_copy_worker_cycle') return {};
+    throw new Error(`unexpected rpc ${name}`);
+  };
+  runner.loadContracts = async () => {
+    loads += 1;
+    return loads === 1
+      ? new Map([['BTC_USDT', contracts.get('BTC_USDT')]])
+      : new Map([['BTC_USDT', contracts.get('BTC_USDT')], ['DELL_USDT', contracts.get('BTC_USDT')]]);
+  };
+  let reads = 0;
+  runner.readAccount = async (account) => {
+    reads += 1;
+    return reads === 1
+      ? { ...account, total: 10_000, available: 9_000, positions: [{ contract: 'DELL_USDT', size: 10, markPrice: 100 }] }
+      : { ...account, total: 10_000, available: 9_000, positions: [] };
+  };
+  await runner.syncOnce();
+  assert.equal(loads, 2);
+});
