@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  buildGateHeaders, FUTURES_ACCOUNT_PATH, GateApiError, gateRequest, getFuturesAccount, getFuturesContracts, getFuturesPositions,
+  BTC_FUTURES_POSITION_PATH, buildGateHeaders, FUTURES_ACCOUNT_PATH, GateApiError, gateRequest, getFuturesAccount, getFuturesContracts, getFuturesPositions,
   mapGateError, matchingKeyInfo, normalizeGatePermissions, normalizeGatePositions, parseGateJson, placeFuturesOrder, summarizeGateOrder,
   validateGateChannelId, verifyGateAccount,
 } from './gate.js';
@@ -275,16 +275,21 @@ test('dual position responses keep only the open side for a contract', () => {
 });
 
 test('futures position lookup explicitly requests real open positions', async () => {
-  let requestedUrl = '';
+  const requestedUrls = [];
   const positions = await getFuturesPositions({
     apiKey: 'key', secretKey: 'secret',
     fetchImpl: async (url) => {
-      requestedUrl = url;
-      return { ok: true, status: 200, text: async () => '[]' };
+      requestedUrls.push(url);
+      const body = url.endsWith(BTC_FUTURES_POSITION_PATH)
+        ? { contract: 'BTC_USDT', size: '-12', mark_price: '80000', leverage: '2' }
+        : [];
+      return { ok: true, status: 200, text: async () => JSON.stringify(body) };
     },
   });
-  assert.deepEqual(positions, []);
-  assert.match(requestedUrl, /\/api\/v4\/futures\/usdt\/positions\?holding=true&limit=100&offset=0$/);
+  assert.equal(positions[0].contract, 'BTC_USDT');
+  assert.equal(positions[0].size, -12);
+  assert.match(requestedUrls[0], /\/api\/v4\/futures\/usdt\/positions\?holding=true&limit=100&offset=0$/);
+  assert.match(requestedUrls[1], /\/api\/v4\/futures\/usdt\/positions\/BTC_USDT$/);
 });
 
 test('simultaneous long and short positions fail closed instead of being netted', () => {
