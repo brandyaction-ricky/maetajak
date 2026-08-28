@@ -1,0 +1,12 @@
+[Unit]
+Description=Poll maetajak main for reviewed Worker changes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=3min
+RandomizedDelaySec=20s
+Persistent=true
+Unit=maetajak-auto-deploy.service
+
+[Install]
+WantedBy=timers.target

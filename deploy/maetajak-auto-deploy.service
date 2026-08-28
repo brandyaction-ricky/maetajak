@@ -1,0 +1,8 @@
+[Unit]
+Description=Check maetajak main for a safe Worker deployment
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/maetajak/deploy/lightsail-auto-deploy.sh
