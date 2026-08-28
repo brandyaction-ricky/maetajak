@@ -51,7 +51,19 @@ export function mapGateError(status, payload, path = '') {
     return { code: 'UNIFIED_READ_REQUIRED', message: '통합계정 자산 조회를 위해 Unified Read 권한을 확인해 주세요.' };
   }
   if (status === 403 || label.includes('FORBIDDEN') || label.includes('PERMISSION')) return { code: 'FUTURES_READ_REQUIRED', message: 'Perpetual Futures Read 권한을 확인해 주세요.' };
+  // Gate labels are stable machine-readable identifiers. Preserve only a
+  // tightly constrained label so production diagnostics remain useful without
+  // storing response messages or any credential-bearing request data.
+  if (/^[A-Z0-9_]{1,60}$/.test(label)) {
+    return { code: `GATE_${label}`, message: 'Gate.io API 요청이 거절되었습니다.' };
+  }
   return { code: 'GATE_API_ERROR', message: 'Gate.io API 응답을 확인하지 못했습니다.' };
+}
+
+export function safeGateErrorLabel(error) {
+  if (!(error instanceof GateApiError)) return null;
+  const label = String(error.payload?.label || '').toUpperCase();
+  return /^[A-Z0-9_]{1,60}$/.test(label) ? label : null;
 }
 
 function encodeQuery(query = {}) {

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   buildGateHeaders, FUTURES_ACCOUNT_PATH, GateApiError, gateRequest, getFuturesAccount, getFuturesContracts, getFuturesPositions,
   mapGateError, matchingKeyInfo, normalizeGatePermissions, normalizeGatePositions, parseGateJson, placeFuturesOrder,
+  safeGateErrorLabel,
   setFuturesLeverage, setFuturesPositionMode, summarizeGateOrder,
   validateGateChannelId, verifyGateAccount,
 } from './gate.js';
@@ -65,6 +66,15 @@ test('Unified account permission failures are not mislabeled as Futures read fai
     code: 'UNIFIED_READ_REQUIRED',
     message: '통합계정 자산 조회를 위해 Unified Read 권한을 확인해 주세요.',
   });
+});
+
+test('Gate diagnostics retain only safe machine-readable error labels', () => {
+  assert.deepEqual(mapGateError(400, { label: 'INVALID_PARAM_VALUE', message: 'sensitive detail' }), {
+    code: 'GATE_INVALID_PARAM_VALUE',
+    message: 'Gate.io API 요청이 거절되었습니다.',
+  });
+  assert.equal(safeGateErrorLabel(new GateApiError('failed', { payload: { label: 'INVALID_PARAM_VALUE' } })), 'INVALID_PARAM_VALUE');
+  assert.equal(safeGateErrorLabel(new GateApiError('failed', { payload: { label: 'bad label' } })), null);
 });
 
 test('Gate API v4 signature matches the official authentication example', () => {
