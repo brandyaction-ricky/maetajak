@@ -184,6 +184,10 @@ body {
   color: #888;
 }
 
+.top-leading { display: flex; align-items: center; min-width: 0; gap: 12px; }
+.top-copy { min-width: 0; }
+.top-copy h2, .top-copy small { display: block; }
+
 .content {
   max-width: 1440px;
   padding: 38px 34px 56px;
@@ -810,15 +814,23 @@ td,
 .analysis-symbol > small { color: #747e83; font-size: 9px; }
 .analysis-footnote { margin-top: 12px; }
 
-.admin-analysis-selector {
-  display: grid;
-  grid-template-columns: minmax(260px, 520px) 88px;
-  align-items: end;
-  gap: 12px;
-  margin-bottom: 12px;
-}
-
-.admin-analysis-selector .btn { width: 88px; min-height: 44px; padding-inline: 14px; }
+.admin-analysis-selector { margin-bottom: 12px; display: grid; gap: 20px; }
+.admin-analysis-label { display: block; margin-bottom: 10px; color: #8a8a8a; font-size: 11px; }
+.admin-analysis-members { display: flex; flex-wrap: wrap; gap: 8px; }
+.admin-analysis-members button { min-width: 150px; padding: 11px 14px; border: 1px solid #303030; border-radius: 9px; background: #111; color: #aaa; text-align: left; }
+.admin-analysis-members button b, .admin-analysis-members button small { display: block; }
+.admin-analysis-members button b { color: #eee; font-size: 12px; }
+.admin-analysis-members button small { margin-top: 3px; color: #777; font-size: 9px; }
+.admin-analysis-members button:hover, .admin-analysis-members button.active { border-color: #eee; background: #eee; }
+.admin-analysis-members button:hover b, .admin-analysis-members button.active b { color: #111; }
+.admin-analysis-members button:hover small, .admin-analysis-members button.active small { color: #555; }
+.admin-analysis-range { display: flex; align-items: end; justify-content: space-between; gap: 16px; padding-top: 18px; border-top: 1px solid #2b2b2b; }
+.admin-analysis-presets { display: flex; gap: 6px; }
+.admin-analysis-presets button { border: 1px solid transparent; border-radius: 999px; background: #202020; color: #999; padding: 9px 15px; font-weight: 700; }
+.admin-analysis-presets button:hover, .admin-analysis-presets button.active { background: #eee; color: #111; }
+.admin-analysis-dates { display: flex; align-items: end; gap: 8px; }
+.admin-analysis-dates label { display: grid; gap: 6px; color: #888; font-size: 10px; }
+.admin-analysis-dates input { min-height: 38px; padding: 0 10px; border: 1px solid #343434; border-radius: 8px; background: #111; color: #eee; color-scheme: dark; }
 .admin-api-disconnect { min-width: 72px; padding: 7px 10px; font-size: 10px; white-space: nowrap; }
 .operations-emergency { margin-top: 14px; }
 
@@ -835,20 +847,22 @@ td,
 .master-position-card { min-width: 0; padding: 16px; border: 1px solid #2d2d2d; border-radius: 12px; background: #151515; }
 .master-position-card-head, .master-position-pnl, .master-position-sync { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .master-symbol { display: flex; align-items: center; min-width: 0; gap: 9px; }
-.master-symbol > span { display: grid; width: 34px; height: 34px; flex: 0 0 auto; place-items: center; border-radius: 50%; background: #202b32; color: #f4f4f4; font-size: 10px; font-weight: 800; }
+.master-symbol > span { display: grid; width: 34px; height: 34px; flex: 0 0 auto; place-items: center; border-radius: 50%; background: hsl(var(--symbol-hue, 205) 24% 16%); color: #f4f4f4; font-size: 10px; font-weight: 800; }
 .master-symbol b, .master-symbol small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .master-symbol b { font-size: 12px; }.master-symbol small { margin-top: 3px; color: #777; font-size: 9px; }
 .master-side { display: flex; align-items: center; gap: 7px; }.master-side span { padding: 5px 7px; border: 1px solid; border-radius: 999px; font-size: 8px; font-weight: 800; }
 .master-side span.long { border-color: #18543b; color: #38d996; }.master-side span.short { border-color: #663038; color: #ff6678; }.master-side small { color: #888; font-size: 9px; }
 .master-position-pnl { align-items: flex-end; margin: 18px 0; padding-bottom: 15px; border-bottom: 1px solid #292929; }
-.master-position-pnl small { color: #7d7d7d; font-size: 9px; }.master-position-pnl strong { font-size: 21px; }
+.master-position-pnl > div small, .master-position-pnl > div strong { display: block; }
+.master-position-pnl small { color: #7d7d7d; font-size: 9px; }.master-position-pnl strong { margin-top: 4px; font-size: 21px; }.master-position-pnl > b { font-size: 13px; }
 .master-position-metrics { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 10px; }
 .master-position-metrics span, .master-position-metrics b { display: block; }.master-position-metrics span { margin-bottom: 4px; color: #747474; font-size: 9px; }.master-position-metrics b { font-size: 11px; }
 .master-position-sync { margin-top: 16px; padding-top: 10px; border-top: 1px solid #242424; color: #777; font-size: 8px; }
 .master-position-empty { grid-column: 1 / -1; padding: 46px 20px; border: 1px dashed #303030; border-radius: 12px; color: #888; text-align: center; }
 
 @media (max-width: 1180px) { .master-position-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-@media (max-width: 560px) { .master-position-head { align-items: flex-start; flex-direction: column; }.master-position-grid { grid-template-columns: 1fr; }.master-filters { width: 100%; }.master-filters button { flex: 1; }.admin-analysis-selector { grid-template-columns: 1fr 76px; }.admin-analysis-selector .btn { width: 76px; } }
+@media (max-width: 760px) { .admin-analysis-range, .admin-analysis-dates { align-items: stretch; flex-direction: column; }.admin-analysis-dates > span { display: none; }.admin-analysis-dates .btn { width: 100%; }.admin-analysis-presets { display: grid; grid-template-columns: repeat(4, 1fr); }.admin-analysis-presets button { padding-inline: 8px; } }
+@media (max-width: 560px) { .master-position-head { align-items: flex-start; flex-direction: column; }.master-position-grid { grid-template-columns: 1fr; }.master-filters { width: 100%; }.master-filters button { flex: 1; }.admin-analysis-members { display: grid; grid-template-columns: 1fr 1fr; }.admin-analysis-members button { min-width: 0; } }
 
 #adminGateConnections td:first-child small {
   display: block;
@@ -951,6 +965,8 @@ td,
     gap: 12px;
   }
 
+  .top-copy { overflow: hidden; }
+
   .top h2 {
     overflow: hidden;
     margin: 0;
@@ -985,7 +1001,8 @@ td,
   }
 
   .top {
-    height: 64px;
+    height: 72px;
+    min-height: 72px;
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto;
     gap: 10px;

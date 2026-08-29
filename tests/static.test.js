@@ -44,7 +44,7 @@ test('admin member list shows live copy trading progress', () => {
   assert.match(script, /function getMemberCopyProgress/);
   assert.match(script, /get_admin_gate_api_connections/);
   assert.match(script, /get_admin_live_trading_data/);
-  for (const status of ['진행 중', '동기화 대기', '미시작', '일시중지', '수동 변경', '오류', '중단']) assert.match(script, new RegExp(status));
+  for (const status of ['카피 진행 중', '연결 완료', '미시작', '카피 일시중지', '일부 종목 카피 정지', 'API 연결 오류', '카피 중단']) assert.match(script, new RegExp(status));
   assert.match(script, /<small>카피 상태<\/small>/);
   assert.match(theme, /\.member-copy-progress/);
   assert.match(theme, /repeat\(6, minmax\(76px, 0\.7fr\)\)/);

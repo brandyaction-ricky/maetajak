@@ -5,14 +5,25 @@ import { readFileSync } from 'node:fs';
 const main = readFileSync(new URL('../src/main.js', import.meta.url), 'utf8');
 const theme = readFileSync(new URL('../src/theme.css', import.meta.url), 'utf8');
 const migration = readFileSync(new URL('../supabase/migrations/202608210005_member_trading_analysis.sql', import.meta.url), 'utf8');
+const rangeMigration = readFileSync(new URL('../supabase/migrations/202608290005_admin_profit_range_and_master_pnl.sql', import.meta.url), 'utf8');
 
 test('members and admins have dedicated trading analysis pages', () => {
   assert.match(main, /data-page="member-analysis">수익 분석/);
-  assert.match(main, /data-page="admin-member-analysis">회원 수익 관리/);
+  assert.match(main, /data-page="admin-member-analysis">수익 관리/);
   assert.match(main, /get_my_trading_analysis/);
   assert.match(main, /get_admin_member_trading_analysis/);
   assert.match(main, /일별 손익 캘린더/);
   assert.match(main, /종목별 실현손익/);
+});
+
+test('admin profit management supports direct member and date-range selection', () => {
+  assert.match(main, /data-analysis-member/);
+  assert.match(main, /data-analysis-range="30"/);
+  assert.match(main, /adminAnalysisStartDate/);
+  assert.match(main, /get_admin_member_trading_analysis_range/);
+  assert.match(rangeMigration, /trading_date between range_start and range_end/);
+  assert.match(rangeMigration, /realised_pnl - performance\.fees \+ performance\.funding_pnl/);
+  assert.match(rangeMigration, /DATE_RANGE_TOO_LARGE/);
 });
 
 test('analysis starts at the copy start date and uses net realised pnl', () => {

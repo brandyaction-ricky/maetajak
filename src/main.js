@@ -22,9 +22,9 @@ const pages = {
   'member-copy': ['카피트레이딩 설정', '카피 비율과 리스크 한도를 관리합니다.'],
   'member-account': ['계정 설정', 'API 연결·보안·알림·계정을 관리합니다.'],
   'admin-dashboard': ['대시보드', 'Master와 전체 회원의 운영 상태를 확인합니다.'],
-  'admin-master': ['Master 계정', 'Master 포지션 상태를 확인합니다.'],
+  'admin-master': ['현재 포지션', 'Master 계정의 실제 포지션과 수익을 확인합니다.'],
   'admin-members': ['회원 관리', '가입 승인과 회원 리스트를 관리합니다.'],
-  'admin-member-analysis': ['회원 수익 관리', '회원별 카피 시작일 이후 Futures 성과를 조회합니다.'],
+  'admin-member-analysis': ['수익 관리', '회원별·기간별 카피트레이딩 수익을 조회합니다.'],
   'admin-api': ['API 연결 현황', '회원별 Gate.io API 상태를 확인합니다.'],
   'admin-monitor': ['주문·포지션 모니터', '주문과 동기화 문제를 함께 확인합니다.'],
   'admin-events': ['Copy Events', 'Master 변경이 회원에게 미친 영향을 확인합니다.'],
@@ -42,6 +42,8 @@ let adminMasterPositions = [];
 let adminMasterFilter = 'ALL';
 let adminGateApiBusy = false;
 let memberAnalysisBusy = false;
+let adminAnalysisSelectedUserId = '';
+let adminAnalysisRangeDays = 30;
 let copySystemTimer = null;
 let selectedMemberId = null;
 let passwordBusy = false;
@@ -124,6 +126,21 @@ function enhancePauseModal() {
     <button class="btn" type="button" data-copy-pause="HOLD">신규 카피만 중지 · 현재 포지션 유지</button>
     <button class="btn red" type="button" data-copy-pause="CLOSE">카피 중지 + 현재 포지션 정리</button>
     <button class="btn green" type="button" data-copy-pause="RESUME">카피 재개</button>`;
+}
+
+function enhanceNavigationAndHeader() {
+  const masterButton = document.querySelector('[data-page="admin-master"]');
+  if (masterButton) masterButton.textContent = '현재 포지션';
+  const leading = document.querySelector('.top > div:first-child');
+  if (!leading || leading.classList.contains('top-leading')) return;
+  const title = byId('title');
+  const subtitle = byId('subtitle');
+  if (!title || !subtitle) return;
+  const copy = document.createElement('div');
+  copy.className = 'top-copy';
+  leading.classList.add('top-leading');
+  copy.append(title, subtitle);
+  leading.append(copy);
 }
 
 function enhanceOperationsStatusUi() {
@@ -227,7 +244,6 @@ function enhanceAdminApiPage() {
           <label class="permission-check"><input id="adminGatePermissionConfirmed" type="checkbox" required><span>Trading Account · Perpetual Futures Read Only만 허용했으며 출금 권한은 비활성화했습니다.</span></label>
           <div class="admin-api-submit-row"><div class="credential-actions"><button id="adminGateApiConnect" class="btn primary" type="submit">암호화 저장 및 검증 요청</button><button id="adminGateApiDisconnect" class="btn red" type="button">Master API 연결 해제</button></div><p id="adminGateCredentialHelp">Secret Key는 브라우저에 저장하지 않습니다.</p></div>
         </form>
-        <details class="api-guide"><summary>Gate.io Master API 설정 안내</summary><ol><li>API 유형은 Trading Account를 선택합니다.</li><li>Perpetual Futures의 Read Only만 활성화합니다.</li><li>Master API에는 주문·출금 등 다른 쓰기 권한을 절대 활성화하지 않습니다.</li><li>${workerPublicIp ? `IP Whitelist에 Worker 고정 IP <code>${workerPublicIp}</code>를 등록합니다.` : 'Worker 고정 IP 준비 전에는 암호화 저장까지만 가능하며 실제 검증·거래는 시작되지 않습니다.'}</li><li>API Broker Channel ID <code>maetajak</code>는 회원 주문 요청에 Worker가 자동 적용합니다.</li></ol></details>
       </div>
       <div class="card section admin-master-security">
         <div class="section-head"><div><h3>Master 연결 보안 상태</h3><p id="adminGateVerificationDetail">실제 연결 검증 전입니다.</p></div></div>
@@ -347,7 +363,7 @@ function enhanceAdminMemberAnalysisPage() {
   const adminNav = byId('adminNav')?.querySelector('.nav-group');
   const apiButton = adminNav?.querySelector('[data-page="admin-api"]');
   if (adminNav && apiButton && !adminNav.querySelector('[data-page="admin-member-analysis"]')) {
-    apiButton.insertAdjacentHTML('beforebegin', '<button class="nav-btn" data-page="admin-member-analysis">회원 수익 관리</button>');
+    apiButton.insertAdjacentHTML('beforebegin', '<button class="nav-btn" data-page="admin-member-analysis">수익 관리</button>');
   }
   if (byId('admin-member-analysis')) return;
   const source = byId('member-analysis');
@@ -359,9 +375,15 @@ function enhanceAdminMemberAnalysisPage() {
   page.querySelectorAll('[id^="analysis"]').forEach((element) => {
     element.id = `admin${element.id.charAt(0).toUpperCase()}${element.id.slice(1)}`;
   });
-  page.querySelector('.analysis-hero h2').textContent = 'Member Futures Assets Analysis';
-  page.querySelector('.analysis-hero p').textContent = '선택한 회원의 카피 시작일부터 실제 Futures 원장으로 집계한 성과입니다.';
-  page.insertAdjacentHTML('afterbegin', '<div class="card section admin-analysis-selector"><div class="field"><label for="adminAnalysisMember">회원 선택</label><select id="adminAnalysisMember"><option value="">회원을 선택해 주세요</option></select></div><button id="adminAnalysisLoad" class="btn primary" type="button">조회</button></div>');
+  page.querySelector('.analysis-hero h2').textContent = '회원별 카피 수익 분석';
+  page.querySelector('.analysis-hero p').textContent = 'Worker가 수집한 실제 체결 원장을 회원과 기간별로 조회합니다.';
+  page.insertAdjacentHTML('afterbegin', `<div class="card section admin-analysis-selector">
+    <div><span class="admin-analysis-label">회원 선택</span><div id="adminAnalysisMemberList" class="admin-analysis-members"><span class="notice">회원 목록을 불러오는 중입니다.</span></div></div>
+    <div class="admin-analysis-range">
+      <div class="admin-analysis-presets" aria-label="조회 기간"><button type="button" data-analysis-range="7">7일</button><button type="button" class="active" data-analysis-range="30">30일</button><button type="button" data-analysis-range="90">90일</button><button type="button" data-analysis-range="180">180일</button></div>
+      <form id="adminAnalysisDateForm" class="admin-analysis-dates"><label>시작일<input id="adminAnalysisStartDate" type="date" required></label><span>—</span><label>종료일<input id="adminAnalysisEndDate" type="date" required></label><button class="btn" type="submit">조회</button></form>
+    </div>
+  </div>`);
   anchor.insertAdjacentElement('beforebegin', page);
 }
 
@@ -741,10 +763,11 @@ function renderAdminMasterPositions() {
     const side = size > 0 ? 'LONG' : 'SHORT';
     const priceMove = entry > 0 ? ((mark - entry) / entry) * (size > 0 ? 1 : -1) * 100 : 0;
     const estimatedRoe = priceMove * Math.max(leverage, 1);
-    const pnlClass = estimatedRoe >= 0 ? 'pos' : 'neg';
+    const unrealisedPnl = Number(position.unrealised_pnl ?? ((mark - entry) * size * Number(position.quanto_multiplier || 0)));
+    const pnlClass = unrealisedPnl >= 0 ? 'pos' : 'neg';
     return `<article class="master-position-card">
-      <div class="master-position-card-head"><div class="master-symbol"><span>${escapeHtml(position.contract.slice(0, 2))}</span><div><b>${escapeHtml(position.contract)}</b><small>무기한 선물</small></div></div><div class="master-side"><span class="${side === 'LONG' ? 'long' : 'short'}">${side}</span><small>${leverage || '-'}x</small></div></div>
-      <div class="master-position-pnl"><small>예상 ROE</small><strong class="${pnlClass}">${estimatedRoe >= 0 ? '+' : ''}${estimatedRoe.toFixed(2)}%</strong></div>
+      <div class="master-position-card-head"><div class="master-symbol">${positionLogo(position.contract)}<div><b>${escapeHtml(position.contract)}</b><small>무기한 선물</small></div></div><div class="master-side"><span class="${side === 'LONG' ? 'long' : 'short'}">${side}</span><small>${leverage || '-'}x</small></div></div>
+      <div class="master-position-pnl"><div><small>미실현 수익금</small><strong class="${pnlClass}">${formatUsd(unrealisedPnl)}</strong></div><b class="${estimatedRoe >= 0 ? 'pos' : 'neg'}">${estimatedRoe >= 0 ? '+' : ''}${estimatedRoe.toFixed(2)}%</b></div>
       <div class="master-position-metrics"><div><span>진입가</span><b>${formatMasterPrice(entry)}</b></div><div><span>현재가</span><b>${formatMasterPrice(mark)}</b></div><div><span>계약 수량</span><b>${Math.abs(size).toLocaleString()}</b></div><div><span>방향</span><b class="${side === 'LONG' ? 'pos' : 'neg'}">${side}</b></div></div>
       <div class="master-position-sync"><span>마지막 확인</span><time>${position.observed_at ? new Date(position.observed_at).toLocaleString('ko-KR') : '-'}</time></div>
     </article>`;
@@ -1327,19 +1350,45 @@ async function loadTradingAnalysis() {
 
 async function loadAdminAnalysisMembers() {
   if (!supabase || currentProfile?.role !== 'ADMIN') return;
-  const select = byId('adminAnalysisMember');
-  if (!select || select.options.length > 1) return;
+  const list = byId('adminAnalysisMemberList');
+  if (!list || list.dataset.loaded === 'true') return;
   const { data, error } = await supabase.from('profiles').select('id,full_name,email').eq('role', 'MEMBER').eq('approval_status', 'APPROVED').order('full_name');
   if (error) return window.toast('수익 조회 회원을 불러오지 못했습니다.');
-  select.insertAdjacentHTML('beforeend', (data || []).map((member) => `<option value="${member.id}">${escapeHtml(member.full_name || '-')} · ${escapeHtml(member.email || '-')}</option>`).join(''));
+  list.dataset.loaded = 'true';
+  list.innerHTML = (data || []).length ? data.map((member) => `<button type="button" data-analysis-member="${member.id}"><b>${escapeHtml(member.full_name || '-')}</b><small>${escapeHtml(member.email || '-')}</small></button>`).join('') : '<span class="notice">조회할 승인 회원이 없습니다.</span>';
+  if (!adminAnalysisSelectedUserId && data?.[0]?.id) await loadAdminMemberTradingAnalysis(data[0].id);
 }
 
-async function loadAdminMemberTradingAnalysis() {
+function toDateInputValue(date) {
+  const offset = date.getTimezoneOffset() * 60000;
+  return new Date(date.getTime() - offset).toISOString().slice(0, 10);
+}
+
+function setAdminAnalysisDateRange(days = adminAnalysisRangeDays) {
+  adminAnalysisRangeDays = Number(days);
+  const end = new Date();
+  const start = new Date(end);
+  start.setDate(end.getDate() - Math.max(0, adminAnalysisRangeDays - 1));
+  if (byId('adminAnalysisStartDate')) byId('adminAnalysisStartDate').value = toDateInputValue(start);
+  if (byId('adminAnalysisEndDate')) byId('adminAnalysisEndDate').value = toDateInputValue(end);
+  document.querySelectorAll('[data-analysis-range]').forEach((button) => button.classList.toggle('active', Number(button.dataset.analysisRange) === adminAnalysisRangeDays));
+}
+
+async function loadAdminMemberTradingAnalysis(userId = adminAnalysisSelectedUserId, useCurrentDates = false) {
   if (!supabase || currentProfile?.role !== 'ADMIN' || memberAnalysisBusy) return;
-  const userId = byId('adminAnalysisMember')?.value;
   if (!userId) return window.toast('조회할 회원을 선택해 주세요.');
+  adminAnalysisSelectedUserId = userId;
+  if (!useCurrentDates || !byId('adminAnalysisStartDate')?.value) setAdminAnalysisDateRange(adminAnalysisRangeDays);
+  const startDate = byId('adminAnalysisStartDate')?.value;
+  const endDate = byId('adminAnalysisEndDate')?.value;
+  if (!startDate || !endDate || startDate > endDate) return window.toast('조회 기간을 확인해 주세요.');
+  document.querySelectorAll('[data-analysis-member]').forEach((button) => button.classList.toggle('active', button.dataset.analysisMember === userId));
   memberAnalysisBusy = true;
-  const { data, error } = await supabase.rpc('get_admin_member_trading_analysis', { p_user_id: userId });
+  const { data, error } = await supabase.rpc('get_admin_member_trading_analysis_range', {
+    p_user_id: userId,
+    p_start_date: startDate,
+    p_end_date: endDate,
+  });
   memberAnalysisBusy = false;
   if (error) return window.toast('회원 수익 분석을 불러오지 못했습니다.');
   renderTradingAnalysis(data, 'adminAnalysis');
@@ -1399,24 +1448,24 @@ async function openMemberDetail(userId) {
 function getMemberCopyProgress(profile, connection, positionStates = []) {
   if (profile.role !== 'MEMBER') return { label: '해당 없음', detail: 'ADMIN', className: 'chip muted' };
   if (profile.approval_status !== 'APPROVED') return { label: '미시작', detail: '승인 필요', className: 'chip muted' };
-  if (profile.member_halted) return { label: '중단', detail: 'HALTED', className: 'chip red' };
-  if (profile.copy_paused) return { label: '일시중지', detail: 'PAUSED', className: 'chip yellow' };
-  if (profile.reduce_only) return { label: '축소 전용', detail: 'REDUCE ONLY', className: 'chip yellow' };
+  if (connection?.status !== 'VERIFIED') return { label: connection?.status === 'ERROR' ? 'API 연결 오류' : 'API 연결 필요', detail: '카피 주문 불가', className: connection?.status === 'ERROR' ? 'chip red' : 'chip muted' };
+  if (profile.member_halted) return { label: '카피 중단', detail: 'API 연결 정상 · 주문 중단', className: 'chip red' };
+  if (profile.copy_paused) return { label: '카피 일시중지', detail: 'API 연결 정상 · 포지션 유지', className: 'chip yellow' };
+  if (profile.reduce_only) return { label: '포지션 축소만 가능', detail: 'API 연결 정상 · 신규 진입 차단', className: 'chip yellow' };
 
   const priority = ['HALTED', 'ERROR', 'MANUAL_OVERRIDE', 'PAUSED', 'REDUCE_ONLY', 'DRIFT'];
   const currentState = priority.find((state) => positionStates.some((position) => position.state === state));
   const stateLabels = {
     HALTED: ['중단', 'chip red'],
     ERROR: ['오류', 'chip red'],
-    MANUAL_OVERRIDE: ['수동 변경', 'chip yellow'],
+    MANUAL_OVERRIDE: ['일부 종목 카피 정지', 'chip yellow'],
     PAUSED: ['일시중지', 'chip yellow'],
     REDUCE_ONLY: ['축소 전용', 'chip yellow'],
     DRIFT: ['동기화 중', 'chip yellow'],
   };
-  if (currentState) return { label: stateLabels[currentState][0], detail: currentState.replace('_', ' '), className: stateLabels[currentState][1] };
-  if (connection?.status !== 'VERIFIED') return { label: '미시작', detail: connection?.status === 'ERROR' ? 'API 연결 오류' : 'API 연결 필요', className: connection?.status === 'ERROR' ? 'chip red' : 'chip muted' };
-  if (!positionStates.length) return { label: '동기화 대기', detail: 'Worker 확인 대기', className: 'chip yellow' };
-  return { label: '진행 중', detail: 'SYNCED', className: 'chip' };
+  if (currentState) return { label: stateLabels[currentState][0], detail: currentState === 'MANUAL_OVERRIDE' ? 'API 연결 정상 · 종목별 확인 필요' : `API 연결 정상 · ${currentState.replace('_', ' ')}`, className: stateLabels[currentState][1] };
+  if (!positionStates.length) return { label: '연결 완료', detail: 'API 연결 정상 · Worker 확인 대기', className: 'chip yellow' };
+  return { label: '카피 진행 중', detail: 'API 연결 정상 · 포지션 동기화', className: 'chip' };
 }
 
 async function loadAdminMembers() {
@@ -1514,7 +1563,13 @@ document.addEventListener('click', async (event) => {
     document.querySelectorAll('[data-dashboard-metric]').forEach((button) => button.classList.toggle('active', button === dashboardMetric));
     renderMemberPerformance();
   }
-  if (event.target.closest('#adminAnalysisLoad')) await loadAdminMemberTradingAnalysis();
+  const analysisMember = event.target.closest('[data-analysis-member]');
+  if (analysisMember) await loadAdminMemberTradingAnalysis(analysisMember.dataset.analysisMember);
+  const analysisRange = event.target.closest('[data-analysis-range]');
+  if (analysisRange) {
+    setAdminAnalysisDateRange(analysisRange.dataset.analysisRange);
+    if (adminAnalysisSelectedUserId) await loadAdminMemberTradingAnalysis(adminAnalysisSelectedUserId, true);
+  }
   const masterFilter = event.target.closest('[data-master-filter]');
   if (masterFilter) window.setAdminMasterFilter(masterFilter.dataset.masterFilter, masterFilter);
   const disconnectMemberButton = event.target.closest('[data-admin-disconnect-member]');
@@ -1550,6 +1605,11 @@ document.addEventListener('keydown', (event) => {
 });
 
 document.addEventListener('submit', async (event) => {
+  if (event.target.id === 'adminAnalysisDateForm') {
+    event.preventDefault();
+    document.querySelectorAll('[data-analysis-range]').forEach((button) => button.classList.remove('active'));
+    await loadAdminMemberTradingAnalysis(adminAnalysisSelectedUserId, true);
+  }
   if (event.target.id === 'gateApiForm') {
     event.preventDefault();
     await saveGateApiCredentials();
@@ -1578,6 +1638,7 @@ document.addEventListener('submit', async (event) => {
 
 async function boot() {
   extendCopySettingOptions();
+  enhanceNavigationAndHeader();
   enhanceGateApiForm();
   enhancePauseModal();
   enhanceOperationsStatusUi();
