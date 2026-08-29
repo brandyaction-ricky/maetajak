@@ -1333,6 +1333,15 @@ td,
 .member-chart-empty { color: var(--muted); text-align: center; }
 .member-performance-foot { display: flex; justify-content: space-between; gap: 12px; color: var(--muted); font-size: 11px; border-top: 1px solid var(--line); padding-top: 12px; }
 .member-account-kpis { margin-top: 14px; }
+.admin-overview-card { min-height: 370px; }
+.admin-sync-overview { margin-top: auto; padding: 30px 0 18px; }
+.admin-sync-track { height: 10px; overflow: hidden; border-radius: 999px; background: #20252a; }
+.admin-sync-track i { display: block; width: 0; height: 100%; border-radius: inherit; background: var(--green); transition: width .3s ease; }
+.admin-sync-labels { display: flex; justify-content: space-between; gap: 16px; margin-top: 12px; color: var(--muted); font-size: 12px; }
+.admin-sync-labels b { color: var(--text); font-family: var(--mono); }
+.admin-action-section { margin-top: 26px; }
+.admin-action-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 14px; }
+.admin-action-grid .alert, .admin-action-grid .notice { min-height: 96px; border-radius: 12px; }
 .member-margin-track, .member-win-track, .member-exposure > div { height: 7px; background: rgba(255,255,255,.08); border-radius: 999px; overflow: hidden; }
 .member-margin-track { margin-top: 12px; }
 .member-margin-track i, .member-exposure i { display: block; height: 100%; background: #19c997; border-radius: inherit; }

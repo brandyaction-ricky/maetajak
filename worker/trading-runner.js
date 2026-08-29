@@ -324,7 +324,14 @@ export class TradingRunner {
         members.push({ ...memberContext, error_code: errorCode, positions: [], planned_positions: [] });
       }
     }
-    await this.rpc('record_copy_worker_cycle', { p_payload: { cycle_id: cycleId, source_version: sourceHash({ observedAt, master: master.positions }), observed_at: observedAt, master, members } });
+    const recordedMaster = {
+      ...master,
+      positions: master.positions.map((position) => ({
+        ...position,
+        quanto_multiplier: contracts.get(position.contract)?.quantoMultiplier || null,
+      })),
+    };
+    await this.rpc('record_copy_worker_cycle', { p_payload: { cycle_id: cycleId, source_version: sourceHash({ observedAt, master: master.positions }), observed_at: observedAt, master: recordedMaster, members } });
     if (this.mode === 'DRY_RUN' && this.logger && dryRunPlans.length) {
       const planHash = sourceHash(dryRunPlans);
       if (planHash !== this.lastDryRunPlanHash) {
