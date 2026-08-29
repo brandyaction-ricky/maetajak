@@ -160,8 +160,8 @@ function enhanceLiveDataUi() {
     <section class="member-position-section"><div class="member-position-head"><div><h3>현재 포지션 <span id="memberPositionBadge">0</span></h3><p>Gate.io Worker가 확인한 실제 무기한 선물 포지션입니다.</p></div></div><div id="memberOpenPositionCards" class="member-open-position-grid"><div class="master-position-empty">현재 포지션을 불러오는 중입니다.</div></div></section>`;
   const adminDashboard = byId('admin-dashboard');
   if (adminDashboard) adminDashboard.innerHTML = `<div class="status"><div><span id="adminSystemDot" class="dot"></span><b id="adminSystemTitle">운영 상태 확인 중</b><div><span id="adminSystemDetail">Worker heartbeat를 확인하고 있습니다.</span></div></div></div>
-    <div class="grid kpis"><div class="card kpi"><label>Master 포지션</label><strong id="adminLiveMasterCount">0</strong></div><div class="card kpi"><label>회원 동기화 종목</label><strong id="adminLiveStateCount">0</strong></div><div class="card kpi"><label>미확정 주문</label><strong id="adminLiveUnknownCount" class="warn">0</strong></div><div class="card kpi"><label>Manual Override</label><strong id="adminLiveOverrideCount" class="warn">0</strong></div></div>
-    <div class="card section" style="margin-top:14px"><div class="section-head"><div><h3>Action Required</h3><p>실제 ERROR·HALTED·UNKNOWN·MANUAL_OVERRIDE 상태입니다.</p></div><span id="adminLiveActionCount" class="chip yellow">0</span></div><div id="adminLiveActions" class="grid half"><div class="notice">조치가 필요한 실제 상태를 불러오는 중입니다.</div></div></div>`;
+    <div class="grid kpis"><div class="card kpi"><label>Master 포지션</label><strong id="adminLiveMasterCount">0</strong></div><div class="card kpi"><label>회원 동기화 종목</label><strong id="adminLiveStateCount">0</strong></div><div class="card kpi"><label>미확정 주문</label><strong id="adminLiveUnknownCount" class="warn">0</strong></div><div class="card kpi"><label>수동 거래로 정지</label><strong id="adminLiveOverrideCount" class="warn">0</strong></div></div>
+    <div class="card section" style="margin-top:14px"><div class="section-head"><div><h3>확인이 필요한 항목</h3><p>자동 카피가 중단됐거나 주문 확인이 필요한 항목입니다.</p></div><span id="adminLiveActionCount" class="chip yellow">0</span></div><div id="adminLiveActions" class="grid half"><div class="notice">확인이 필요한 상태를 불러오는 중입니다.</div></div></div>`;
   const trades = byId('member-trades');
   if (trades) trades.innerHTML = `<div class="card section"><div class="section-head"><div><h3>Copy Events</h3><p>실제 주문·체결·동기화 이벤트입니다.</p></div></div><div class="table"><table><thead><tr><th>시간</th><th>종목</th><th>이벤트</th><th>심각도</th><th>상태</th></tr></thead><tbody id="memberLiveEvents"><tr><td colspan="5" class="empty-cell">실제 이벤트를 불러오는 중입니다.</td></tr></tbody></table></div></div>`;
   const master = byId('admin-master');
@@ -873,7 +873,33 @@ async function loadAdminLiveData() {
   const unknownOrders = orders.filter((order) => ['UNKNOWN', 'SUBMITTING', 'ACKNOWLEDGED', 'PARTIALLY_FILLED'].includes(order.status));
   const overrides = states.filter((state) => state.state === 'MANUAL_OVERRIDE');
   const actionStates = states.filter((state) => ['MANUAL_OVERRIDE', 'ERROR', 'HALTED'].includes(state.state));
-  const actions = [...actionStates.map((state) => ({ title: `${state.name || state.email || '-'} · ${state.contract} ${state.state}`, detail: state.pause_reason || `Target ${state.target_size} / Actual ${state.actual_size}` })), ...unknownOrders.map((order) => ({ title: `${order.name || order.email || '-'} · ${order.contract} ${order.status}`, detail: order.error_code || `Delta ${order.delta_size} / Filled ${order.filled_size}` }))];
+  const stateGuides = {
+    MANUAL_OVERRIDE: { label: '수동 거래로 카피 정지', guide: '회원 계정에서 직접 포지션을 변경해 해당 종목의 자동 카피가 정지됐습니다.' },
+    HALTED: { label: '주문 정지', guide: '안전장치가 작동해 해당 종목의 신규 주문이 차단됐습니다.' },
+    ERROR: { label: '처리 오류', guide: '주문 또는 포지션 처리 중 오류가 발생했습니다.' },
+  };
+  const orderGuides = {
+    PARTIALLY_FILLED: { label: '일부만 체결', guide: '요청 수량 중 일부만 체결되어 남은 수량을 확인해야 합니다.' },
+    UNKNOWN: { label: '주문 결과 확인 필요', guide: '거래소 주문 결과가 확정되지 않아 상태 확인이 필요합니다.' },
+    SUBMITTING: { label: '주문 전송 중', guide: '거래소로 주문을 전송하고 있습니다.' },
+    ACKNOWLEDGED: { label: '거래소 접수 완료', guide: '거래소가 주문을 접수했으며 체결 결과를 기다리고 있습니다.' },
+  };
+  const actions = [
+    ...actionStates.map((state) => {
+      const guide = stateGuides[state.state] || { label: '상태 확인 필요', guide: '현재 상태를 확인해야 합니다.' };
+      return {
+        title: `${state.name || state.email || '-'} · ${state.contract} · ${guide.label}`,
+        detail: `${guide.guide} 목표 수량 ${Number(state.target_size)} / 실제 수량 ${Number(state.actual_size)}`,
+      };
+    }),
+    ...unknownOrders.map((order) => {
+      const guide = orderGuides[order.status] || { label: '주문 확인 필요', guide: '주문 상태를 확인해야 합니다.' };
+      return {
+        title: `${order.name || order.email || '-'} · ${order.contract} · ${guide.label}`,
+        detail: `${guide.guide} 주문 수량 ${Number(order.delta_size)} / 체결 수량 ${Number(order.filled_size)}`,
+      };
+    }),
+  ];
   if (byId('adminLiveMasterCount')) byId('adminLiveMasterCount').textContent = String(master.length);
   if (byId('adminLiveStateCount')) byId('adminLiveStateCount').textContent = String(states.length);
   if (byId('adminLiveUnknownCount')) byId('adminLiveUnknownCount').textContent = String(unknownOrders.length);
