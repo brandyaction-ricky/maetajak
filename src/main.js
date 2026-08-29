@@ -176,9 +176,15 @@ function enhanceLiveDataUi() {
     <div class="grid kpis member-account-kpis"><div class="card kpi"><label>총 자산</label><strong id="memberLiveEquity">-</strong><small id="memberUsedMargin">사용 증거금 -</small></div><div class="card kpi"><label>사용 가능 증거금</label><strong id="memberLiveAvailable">-</strong><div class="member-margin-track"><i id="memberMarginBar"></i></div><small id="memberMarginUsage">사용률 -</small></div><div class="card kpi"><label>활성 포지션</label><strong id="memberOpenPositionCount">0</strong><small id="memberPositionDirections">Long 0 · Short 0</small></div><div class="card kpi"><label>미실현 손익</label><strong id="memberLiveUnrealised">-</strong><small id="memberLiveObserved">마지막 확인 -</small></div></div>
     <section class="member-position-section"><div class="member-position-head"><div><h3>현재 포지션 <span id="memberPositionBadge">0</span></h3><p>Gate.io Worker가 확인한 실제 무기한 선물 포지션입니다.</p></div></div><div id="memberOpenPositionCards" class="member-open-position-grid"><div class="master-position-empty">현재 포지션을 불러오는 중입니다.</div></div></section>`;
   const adminDashboard = byId('admin-dashboard');
-  if (adminDashboard) adminDashboard.innerHTML = `<div class="status"><div><span id="adminSystemDot" class="dot"></span><b id="adminSystemTitle">운영 상태 확인 중</b><div><span id="adminSystemDetail">Worker heartbeat를 확인하고 있습니다.</span></div></div></div>
-    <div class="grid kpis"><div class="card kpi"><label>Master 포지션</label><strong id="adminLiveMasterCount">0</strong></div><div class="card kpi"><label>회원 동기화 종목</label><strong id="adminLiveStateCount">0</strong></div><div class="card kpi"><label>미확정 주문</label><strong id="adminLiveUnknownCount" class="warn">0</strong></div><div class="card kpi"><label>수동 거래로 정지</label><strong id="adminLiveOverrideCount" class="warn">0</strong></div></div>
-    <div class="card section" style="margin-top:14px"><div class="section-head"><div><h3>확인이 필요한 항목</h3><p>자동 카피가 중단됐거나 주문 확인이 필요한 항목입니다.</p></div><span id="adminLiveActionCount" class="chip yellow">0</span></div><div id="adminLiveActions" class="grid half"><div class="notice">확인이 필요한 상태를 불러오는 중입니다.</div></div></div>`;
+  if (adminDashboard) adminDashboard.innerHTML = `<div class="status"><div><span id="adminSystemDot" class="dot"></span><b id="adminSystemTitle">운영 상태 확인 중</b><div><span id="adminSystemDetail">Worker heartbeat를 확인하고 있습니다.</span></div></div><button class="btn" type="button" onclick="openPage('admin-monitor')">주문·포지션 확인</button></div>
+    <section class="card section member-performance-card admin-overview-card">
+      <div class="member-performance-head"><div><small>MASTER → MEMBER COPY STATUS</small><h3>실시간 카피 운영 현황</h3></div><span id="adminOverviewChip" class="chip yellow">확인 중</span></div>
+      <strong id="adminSyncRate" class="member-performance-value">0.00%</strong>
+      <div class="admin-sync-overview"><div class="admin-sync-track"><i id="adminSyncBar"></i></div><div class="admin-sync-labels"><span>정상 동기화 <b id="adminSyncedCount">0</b></span><span>확인 필요 <b id="adminAttentionCount">0</b></span></div></div>
+      <div class="member-performance-foot"><span id="adminOverviewObserved">실시간 운영 데이터 확인 중</span><span>실제 Worker Snapshot 기준</span></div>
+    </section>
+    <div class="grid kpis member-account-kpis"><div class="card kpi"><label>Master 포지션</label><strong id="adminLiveMasterCount">0</strong><small>현재 열린 포지션</small></div><div class="card kpi"><label>회원 동기화 종목</label><strong id="adminLiveStateCount">0</strong><small>Worker 관리 대상</small></div><div class="card kpi"><label>미확정 주문</label><strong id="adminLiveUnknownCount" class="warn">0</strong><small>체결 결과 확인 필요</small></div><div class="card kpi"><label>카피 정지 종목</label><strong id="adminLiveOverrideCount" class="warn">0</strong><small>수동 변경·안전 정지</small></div></div>
+    <section class="admin-action-section"><div class="member-position-head"><div><h3>확인이 필요한 항목 <span id="adminLiveActionCount">0</span></h3><p>자동 카피가 중단됐거나 주문 확인이 필요한 항목입니다.</p></div></div><div id="adminLiveActions" class="admin-action-grid"><div class="master-position-empty">확인이 필요한 상태를 불러오는 중입니다.</div></div></section>`;
   const trades = byId('member-trades');
   if (trades) trades.innerHTML = `<div class="card section"><div class="section-head"><div><h3>Copy Events</h3><p>실제 주문·체결·동기화 이벤트입니다.</p></div></div><div class="table"><table><thead><tr><th>시간</th><th>종목</th><th>이벤트</th><th>심각도</th><th>상태</th></tr></thead><tbody id="memberLiveEvents"><tr><td colspan="5" class="empty-cell">실제 이벤트를 불러오는 중입니다.</td></tr></tbody></table></div></div>`;
   const master = byId('admin-master');
@@ -929,6 +935,21 @@ async function loadAdminLiveData() {
   if (byId('adminLiveOverrideCount')) byId('adminLiveOverrideCount').textContent = String(overrides.length);
   if (byId('adminLiveActionCount')) byId('adminLiveActionCount').textContent = String(actions.length);
   if (byId('adminLiveActions')) byId('adminLiveActions').innerHTML = actions.length ? actions.map((action) => `<div class="alert"><h4>${escapeHtml(action.title)}</h4><p>${escapeHtml(action.detail)}</p></div>`).join('') : '<div class="notice">현재 조치가 필요한 실제 상태가 없습니다.</div>';
+  const syncedCount = states.filter((state) => state.state === 'SYNCED').length;
+  const syncRate = states.length ? syncedCount * 100 / states.length : 100;
+  if (byId('adminSyncRate')) {
+    byId('adminSyncRate').textContent = `${syncRate.toFixed(2)}%`;
+    byId('adminSyncRate').className = `member-performance-value ${actions.length ? 'warn' : 'pos'}`;
+  }
+  if (byId('adminSyncBar')) byId('adminSyncBar').style.width = `${Math.max(0, Math.min(100, syncRate))}%`;
+  if (byId('adminSyncedCount')) byId('adminSyncedCount').textContent = String(syncedCount);
+  if (byId('adminAttentionCount')) byId('adminAttentionCount').textContent = String(actions.length);
+  if (byId('adminOverviewChip')) {
+    byId('adminOverviewChip').textContent = actions.length ? '확인 필요' : '정상 운영';
+    byId('adminOverviewChip').className = actions.length ? 'chip yellow' : 'chip';
+  }
+  const latestObserved = master.reduce((latest, position) => Math.max(latest, new Date(position.observed_at || 0).getTime()), 0);
+  if (byId('adminOverviewObserved')) byId('adminOverviewObserved').textContent = latestObserved ? `마지막 동기화 ${new Date(latestObserved).toLocaleString('ko-KR')}` : '동기화 기록 없음';
   adminMasterPositions = master;
   renderAdminMasterPositions();
   if (byId('adminLiveStates')) byId('adminLiveStates').innerHTML = states.length ? states.map((state) => `<tr><td>${escapeHtml(state.name || state.email || '-')}</td><td>${escapeHtml(state.contract)}</td><td>${Number(state.target_size)}</td><td>${Number(state.actual_size)}</td><td>${state.actual_notional == null ? '-' : formatUsd(Math.abs(Number(state.actual_notional)))}</td><td>${Number(state.delta_size)}</td><td>${stateChip(state.state)}${state.pause_reason ? `<small>${escapeHtml(state.pause_reason)}</small>` : ''}</td><td>${state.observed_at ? new Date(state.observed_at).toLocaleString('ko-KR') : '-'}</td></tr>`).join('') : '<tr><td colspan="8" class="empty-cell">회원 포지션 snapshot이 아직 없습니다.</td></tr>';
