@@ -22,6 +22,14 @@ test('prototype tokens and application components use the uploaded visual langua
   }
 });
 
+test('member copy settings keep aligned cards and styled numeric controls', () => {
+  assert.match(theme, /\.copy-settings-primary \{ grid-template-rows:/);
+  assert.match(theme, /\.copy-settings-secondary \{ grid-template-rows:/);
+  assert.match(theme, /\.copy-risk-inputs input\[type="number"\]/);
+  assert.match(theme, /color-scheme: dark/);
+  assert.match(theme, /\.copy-existing-policy \{[^}]*align-items: flex-start/s);
+});
+
 test('redundant member positions page is removed while dashboard positions remain', () => {
   assert.doesNotMatch(index, /data-page="member-positions"/);
   assert.doesNotMatch(index, /id="member-positions"/);
