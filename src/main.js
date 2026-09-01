@@ -1104,7 +1104,7 @@ function renderAdminOperationsMetrics(data) {
   if (byId('adminBrokerFees')) byId('adminBrokerFees').textContent = formatUsd(totals.fees);
   if (byId('adminBrokerUsers')) byId('adminBrokerUsers').textContent = Number(totals.active_users || 0).toLocaleString();
   if (byId('adminCopyDonut')) {
-    byId('adminCopyDonut').style.setProperty('--copy-rate', rate.toFixed(2));
+    byId('adminCopyDonut').style.setProperty('--copy-rate', `${rate.toFixed(2)}%`);
     byId('adminCopyDonut').querySelector('strong').textContent = `${Math.round(rate)}%`;
   }
   if (byId('adminSyncedCount')) byId('adminSyncedCount').textContent = String(copying);
