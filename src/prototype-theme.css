@@ -188,20 +188,42 @@ tbody tr:hover { background: #141416; }
 .trade-symbol, .member-position-identity { display: flex; align-items: center; gap: 9px; }
 .position-symbol-logo { width: 30px; height: 30px; display: grid; flex: 0 0 auto; place-items: center; border-radius: 50%; background: #202024; font-size: 10px; font-weight: 800; }
 
-.copy-settings-layout { --copy-top-card-height: 176px; display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(300px, .8fr); gap: 12px; }
-.copy-settings-primary, .copy-settings-secondary { display: grid; gap: 12px; align-content: start; }
-.copy-control-card, .copy-risk-card, .copy-existing-policy, .copy-setting-summary { padding: 16px; }
+.copy-settings-layout { --copy-top-card-height: 176px; display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(300px, .8fr); gap: 12px; align-items: stretch; }
+.copy-settings-primary, .copy-settings-secondary { display: grid; gap: 12px; min-width: 0; }
+.copy-settings-primary { grid-template-rows: var(--copy-top-card-height) var(--copy-top-card-height) minmax(0, 1fr); }
+.copy-settings-secondary { grid-template-rows: var(--copy-top-card-height) minmax(0, 1fr); }
+.copy-control-card, .copy-risk-card, .copy-existing-policy, .copy-setting-summary { min-width: 0; padding: 18px; }
 .copy-settings-primary > .copy-control-card:first-child,
 .copy-settings-secondary > .copy-existing-policy { height: var(--copy-top-card-height); }
 .copy-control-card h3, .copy-risk-card h3, .copy-existing-policy h3, .copy-setting-summary h3 { margin: 0; font-size: 12px; }
-.copy-control-card p, .copy-risk-card p, .copy-existing-policy p, .copy-setting-summary p { color: var(--muted); font-size: 9px; line-height: 1.55; }
+.copy-control-card p, .copy-risk-card p, .copy-existing-policy p, .copy-setting-summary p { margin: 4px 0 0; color: var(--muted); font-size: 10px; line-height: 1.6; }
 .copy-range { width: 100%; accent-color: #d4d4d8; }
 .copy-range-labels { display: flex; justify-content: space-between; color: #66666f; font-size: 8px; }
-.copy-risk-inputs { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
-.copy-existing-policy { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
-.copy-existing-policy > div { min-width: 0; flex: 1 1 auto; }
+.copy-risk-inputs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin: 4px 0 14px; }
+.copy-risk-inputs label { display: grid; align-content: start; gap: 8px; min-width: 0; }
+.copy-risk-inputs label > span { color: #d8d8dc; font-size: 11px; font-weight: 700; }
+.copy-risk-inputs label > div { display: flex; align-items: center; min-height: 42px; overflow: hidden; border: 1px solid var(--line-strong); border-radius: 9px; background: var(--panel-2); transition: border-color .18s, box-shadow .18s; }
+.copy-risk-inputs label > div:focus-within { border-color: #666671; box-shadow: 0 0 0 3px rgba(244, 244, 245, .06); }
+.copy-risk-inputs input[type="number"] { width: 100%; min-width: 0; height: 40px; padding: 0 4px 0 12px; border: 0; outline: 0; background: transparent; color: var(--text); color-scheme: dark; font-size: 14px; font-weight: 750; appearance: textfield; }
+.copy-risk-inputs input[type="number"]::-webkit-outer-spin-button,
+.copy-risk-inputs input[type="number"]::-webkit-inner-spin-button { margin: 0; appearance: none; }
+.copy-risk-inputs label > div > b { flex: 0 0 auto; padding: 0 12px 0 6px; color: var(--text); font-size: 13px; }
+.copy-risk-inputs label:last-child > div { padding: 0 12px; }
+.copy-risk-inputs label:last-child > div > b { padding: 0; }
+.copy-risk-card { display: flex; flex-direction: column; }
+.copy-risk-card .notice { margin-top: auto; }
+.copy-existing-policy { display: flex; flex-direction: column; align-items: flex-start; justify-content: center; gap: 12px; }
+.copy-existing-policy > div { min-width: 0; }
 .copy-existing-policy .chip { flex: 0 0 auto; white-space: nowrap; }
+.copy-setting-summary { display: flex; min-height: 0; flex-direction: column; }
 .copy-setting-summary .metric { min-height: 48px; }
+.copy-setting-summary .notice { margin-top: auto; }
+.copy-setting-summary .btn { margin-top: 0; }
+
+#member-account > .grid { align-items: stretch; gap: 12px; }
+#member-account > .grid > .card { min-width: 0; padding: 18px; }
+#member-account > .grid > .card:last-child { grid-column: 1 / -1; }
+#member-account .field input { width: 100%; }
 
 .admin-api-setup { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .admin-master-api-card, .admin-master-security { padding: 16px; }
@@ -326,8 +348,10 @@ tbody tr:hover { background: #141416; }
   .admin-analysis-range, .admin-analysis-dates { align-items: stretch; flex-direction: column; }
   .analysis-metrics { grid-template-columns: repeat(2, 1fr); }
   .copy-settings-layout, .admin-api-setup { grid-template-columns: 1fr; }
+  .copy-settings-primary, .copy-settings-secondary { grid-template-rows: none; }
   .copy-settings-primary > .copy-control-card:first-child,
   .copy-settings-secondary > .copy-existing-policy { height: auto; min-height: 0; }
+  #member-account > .grid > .card:last-child { grid-column: auto; }
   .member-detail-summary { grid-template-columns: repeat(2, 1fr); }
   .member-detail-tabs { width: 100%; overflow-x: auto; }
   .auth { grid-template-columns: 1fr; }
