@@ -51,6 +51,9 @@ export function mapGateError(status, payload, path = '') {
   if ((status === 403 || label.includes('FORBIDDEN') || label.includes('PERMISSION')) && path.startsWith('/api/v4/unified/')) {
     return { code: 'UNIFIED_READ_REQUIRED', message: '통합계정 자산 조회를 위해 Unified Read 권한을 확인해 주세요.' };
   }
+  if ((status === 403 || label.includes('FORBIDDEN') || label.includes('PERMISSION')) && path.startsWith('/api/v4/rebate/broker/')) {
+    return { code: 'BROKER_API_ACCESS_REQUIRED', message: 'Gate Broker 계정의 조회용 API Key 권한을 확인해 주세요.' };
+  }
   if (status === 403 || label.includes('FORBIDDEN') || label.includes('PERMISSION')) return { code: 'FUTURES_READ_REQUIRED', message: 'Perpetual Futures Read 권한을 확인해 주세요.' };
   // Gate labels are stable machine-readable identifiers. Preserve only a
   // tightly constrained label so production diagnostics remain useful without

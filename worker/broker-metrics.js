@@ -1,6 +1,7 @@
 import { GATE_API_BASE_URL, gateRequest } from './gate.js';
 
 export const BROKER_COMMISSION_HISTORY_PATH = '/api/v4/rebate/broker/commission_history';
+export const BROKER_TRANSACTION_HISTORY_PATH = '/api/v4/rebate/broker/transaction_history';
 
 function number(value) {
   const parsed = Number(value || 0);
@@ -15,24 +16,34 @@ function utcDateFromSeconds(value) {
   return Number.isNaN(date.getTime()) ? null : date.toISOString().slice(0, 10);
 }
 
-export async function getBrokerCommissionHistory({
-  apiKey, secretKey, from, to, fetchImpl = fetch, baseUrl = GATE_API_BASE_URL,
+async function getBrokerHistory({
+  apiKey, secretKey, from, to, path, fetchImpl = fetch, baseUrl = GATE_API_BASE_URL,
 }) {
   const records = [];
   const limit = 100;
   for (let offset = 0; ; offset += limit) {
     const { payload } = await gateRequest({
-      apiKey, secretKey, path: BROKER_COMMISSION_HISTORY_PATH,
+      apiKey, secretKey, path,
       query: { from, to, limit, offset }, fetchImpl, baseUrl,
     });
-    const page = Array.isArray(payload) ? payload : [];
+    const page = Array.isArray(payload) ? payload : (Array.isArray(payload?.list) ? payload.list : []);
+    const total = Number(payload?.total);
     records.push(...page);
+    if (Number.isFinite(total) && records.length >= total) break;
     if (page.length < limit) break;
   }
   return records;
 }
 
-export function aggregateBrokerCommissionHistory(records, { startDate, endDate }) {
+export function getBrokerCommissionHistory(options) {
+  return getBrokerHistory({ ...options, path: BROKER_COMMISSION_HISTORY_PATH });
+}
+
+export function getBrokerTransactionHistory(options) {
+  return getBrokerHistory({ ...options, path: BROKER_TRANSACTION_HISTORY_PATH });
+}
+
+export function aggregateGateBrokerMetrics({ transactions, commissions }, { startDate, endDate }) {
   const rows = new Map();
   const cursor = new Date(`${startDate}T00:00:00.000Z`);
   const end = new Date(`${endDate}T00:00:00.000Z`);
@@ -42,13 +53,19 @@ export function aggregateBrokerCommissionHistory(records, { startDate, endDate }
     cursor.setUTCDate(cursor.getUTCDate() + 1);
   }
   const usersByDate = new Map([...rows.keys()].map((date) => [date, new Set()]));
-  for (const record of records || []) {
-    const date = utcDateFromSeconds(record?.commission_time);
+  for (const record of transactions || []) {
+    const date = utcDateFromSeconds(record?.transaction_time);
     const row = date ? rows.get(date) : null;
     if (!row) continue;
     row.trading_volume += Math.abs(number(record?.amount));
-    row.commission += number(record?.rebate_fee);
     row.record_count += 1;
+    if (record?.user_id != null) usersByDate.get(date).add(String(record.user_id));
+  }
+  for (const record of commissions || []) {
+    const date = utcDateFromSeconds(record?.commission_time);
+    const row = date ? rows.get(date) : null;
+    if (!row) continue;
+    row.commission += number(record?.rebate_fee);
     if (record?.user_id != null) usersByDate.get(date).add(String(record.user_id));
   }
   return [...rows.values()].map((row) => ({
@@ -69,12 +86,17 @@ export async function syncGateBrokerMetrics({
   const startDate = start.toISOString().slice(0, 10);
   const from = Math.floor(start.getTime() / 1_000);
   const to = Math.floor(now.getTime() / 1_000);
-  const records = await getBrokerCommissionHistory({ apiKey, secretKey, from, to, fetchImpl, baseUrl });
-  const rows = aggregateBrokerCommissionHistory(records, { startDate, endDate });
+  const [transactions, commissions] = await Promise.all([
+    getBrokerTransactionHistory({ apiKey, secretKey, from, to, fetchImpl, baseUrl }),
+    getBrokerCommissionHistory({ apiKey, secretKey, from, to, fetchImpl, baseUrl }),
+  ]);
+  const rows = aggregateGateBrokerMetrics({ transactions, commissions }, { startDate, endDate });
   const { error } = await supabase.rpc('upsert_gate_broker_metrics', {
     p_rows: rows,
     p_observed_at: now.toISOString(),
   });
   if (error) throw new Error(`upsert_gate_broker_metrics: ${error.message}`);
-  return { startDate, endDate, records: records.length, rows: rows.length };
+  return {
+    startDate, endDate, transactions: transactions.length, commissions: commissions.length, rows: rows.length,
+  };
 }
