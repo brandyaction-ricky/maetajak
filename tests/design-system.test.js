@@ -30,6 +30,27 @@ test('member copy settings keep aligned cards and styled numeric controls', () =
   assert.match(theme, /\.copy-existing-policy \{[^}]*align-items: flex-start/s);
 });
 
+test('member dashboard positions use the prototype card layout', () => {
+  assert.match(theme, /\.member-open-position-grid \{[^}]*repeat\(4,/s);
+  for (const selector of ['.member-position-card-head', '.member-position-pnl', '.member-position-metrics', '.member-exposure']) {
+    assert.match(theme, new RegExp(selector.replace('.', '\\.')));
+  }
+});
+
+test('profit analysis omits settlement count labels', () => {
+  assert.doesNotMatch(main, /이익 정산/);
+  assert.doesNotMatch(main, /손실 정산/);
+  assert.doesNotMatch(main, /analysisWinCount|analysisLossCount/);
+});
+
+test('member analysis calendar has a styled monthly selector', () => {
+  assert.match(main, /id="analysisMonthSelect" type="month"/);
+  assert.match(main, /memberTradingAnalysisData/);
+  assert.match(main, /event\.target\.id === 'analysisMonthSelect'/);
+  assert.match(theme, /\.analysis-month-control input/);
+  assert.match(theme, /\.analysis-calendar-head/);
+});
+
 test('redundant member positions page is removed while dashboard positions remain', () => {
   assert.doesNotMatch(index, /data-page="member-positions"/);
   assert.doesNotMatch(index, /id="member-positions"/);
