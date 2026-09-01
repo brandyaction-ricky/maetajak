@@ -93,6 +93,20 @@ test('admin dashboard consolidates full current positions and removes legacy sec
   assert.doesNotMatch(main, /openPage\('admin-master'\)/);
 });
 
+test('admin dashboard applies compact prototype status and KPI styling', () => {
+  assert.match(theme, /\.admin-live-status time \{[^}]*font-size: 10px/s);
+  assert.match(theme, /\.admin-operations-kpis \.kpi \{/);
+  assert.match(theme, /\.admin-dashboard-positions/);
+  assert.match(theme, /@media \(max-width: 820px\)[\s\S]*\.admin-live-status \{[^}]*flex-direction: column/s);
+});
+
+test('admin custom date range stays compact and stacks on mobile', () => {
+  assert.match(theme, /\.admin-date-range \{[^}]*width: fit-content/s);
+  assert.match(theme, /\.admin-date-range input \{[^}]*width: 164px/s);
+  assert.match(theme, /\.admin-date-range \.btn \{[^}]*min-height: 38px/s);
+  assert.match(theme, /@media \(max-width: 820px\)[\s\S]*\.admin-date-range[^}]*flex-direction: column/s);
+});
+
 test('redundant admin operational menus are removed at startup', () => {
   assert.doesNotMatch(main, /'admin-master':/);
   assert.doesNotMatch(main, /'admin-monitor':/);
