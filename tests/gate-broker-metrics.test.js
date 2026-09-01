@@ -13,16 +13,9 @@ test('actual Gate broker metrics remain private and admin-only', () => {
   assert.doesNotMatch(migration, /member_daily_performance/i);
 });
 
-test('admin dashboard loads actual Gate commission separately from member fees', () => {
-  assert.match(main, /get_admin_gate_broker_metrics/);
-  assert.match(main, /totals\.commission/);
-  assert.match(main, /Gate Broker 공식 API 실정산 기준/);
-});
-
-test('admin can query actual Gate commission for 7, 30, and 90 days', () => {
-  assert.match(main, /data-broker-range/);
-  assert.match(main, /\[7, 30, 90\]/);
-  assert.match(main, /adminBrokerRange/);
-  assert.match(main, /loadAdminBrokerMetrics/);
-  assert.match(main, /p_start_date: dates\[0\], p_end_date: dates\[1\]/);
+test('broker metrics storage remains available while its dashboard section is removed', () => {
+  assert.doesNotMatch(main, /adminBrokerChart/);
+  assert.doesNotMatch(main, /data-broker-range/);
+  assert.doesNotMatch(main, /adminBrokerRange/);
+  assert.doesNotMatch(main, /loadAdminBrokerMetrics/);
 });

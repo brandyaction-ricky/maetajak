@@ -13,7 +13,7 @@ test('members and admins have dedicated trading analysis pages', () => {
   assert.match(main, /get_my_trading_analysis/);
   assert.match(main, /get_admin_member_trading_analysis/);
   assert.match(main, /일별 손익 캘린더/);
-  assert.match(main, /종목별 실현손익/);
+  assert.doesNotMatch(main, /종목별 실현손익/);
 });
 
 test('admin profit management supports direct member and date-range selection', () => {
@@ -24,6 +24,17 @@ test('admin profit management supports direct member and date-range selection', 
   assert.match(rangeMigration, /trading_date between range_start and range_end/);
   assert.match(rangeMigration, /realised_pnl - performance\.fees \+ performance\.funding_pnl/);
   assert.match(rangeMigration, /DATE_RANGE_TOO_LARGE/);
+  assert.match(main, /adminAnalysisMemberSort/);
+  assert.match(main, /최근 가입순/);
+  assert.match(main, /오래된 가입순/);
+  assert.match(main, /renderAdminAnalysisMembers/);
+});
+
+test('member and admin profit management omit secondary metrics and ranking', () => {
+  assert.doesNotMatch(main, /id="analysisProfitFactor"/);
+  assert.doesNotMatch(main, /id="analysisFeesFunding"/);
+  assert.doesNotMatch(main, /id="analysisSymbols"/);
+  assert.doesNotMatch(main, /PNL RANKING/);
 });
 
 test('analysis starts at the copy start date and uses net realised pnl', () => {

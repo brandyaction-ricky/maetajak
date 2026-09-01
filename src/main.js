@@ -1,8 +1,9 @@
 import { createClient } from '@supabase/supabase-js';
 import { getAccessDecision } from './access.js';
-import './theme.css';
-import './design-system.css';
-import './design-system-bridge.css';
+import './prototype-theme.css';
+
+// The prototype stylesheet is the single visual source of truth.
+document.head.querySelector(':scope > style')?.remove();
 
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
@@ -22,12 +23,9 @@ const pages = {
   'member-copy': ['카피트레이딩 설정', '카피 비율과 리스크 한도를 관리합니다.'],
   'member-account': ['계정 설정', 'API 연결·보안·알림·계정을 관리합니다.'],
   'admin-dashboard': ['대시보드', 'Master와 전체 회원의 운영 상태를 확인합니다.'],
-  'admin-master': ['현재 포지션', 'Master 계정의 실제 포지션과 수익을 확인합니다.'],
   'admin-members': ['회원 관리', '가입 승인과 회원 리스트를 관리합니다.'],
   'admin-member-analysis': ['수익 관리', '회원별·기간별 카피트레이딩 수익을 조회합니다.'],
   'admin-api': ['API 연결 현황', '회원별 Gate.io API 상태를 확인합니다.'],
-  'admin-monitor': ['주문·포지션 모니터', '주문과 동기화 문제를 함께 확인합니다.'],
-  'admin-events': ['Copy Events', 'Master 변경이 회원에게 미친 영향을 확인합니다.'],
   'admin-audit': ['Audit Log', '관리자와 시스템 작업 이력을 확인합니다.'],
   'admin-settings': ['시스템 설정', '환경 및 기본값을 관리합니다.'],
 };
@@ -44,6 +42,8 @@ let adminGateApiBusy = false;
 let memberAnalysisBusy = false;
 let adminAnalysisSelectedUserId = '';
 let adminAnalysisRangeDays = 30;
+let adminAnalysisMemberSort = 'name';
+let adminAnalysisMembers = [];
 let copySystemTimer = null;
 let selectedMemberId = null;
 let passwordBusy = false;
@@ -56,7 +56,6 @@ let memberCumulativePerformance = null;
 let memberMonthPerformance = null;
 let memberLiveSnapshot = null;
 let adminOperationsRange = 30;
-let adminBrokerRange = 30;
 let adminOperationsMetrics = null;
 let adminMembersCache = [];
 let adminMemberSearch = '';
@@ -137,8 +136,12 @@ function enhancePauseModal() {
 }
 
 function enhanceNavigationAndHeader() {
-  const masterButton = document.querySelector('[data-page="admin-master"]');
-  if (masterButton) masterButton.textContent = '현재 포지션';
+  document.querySelector('[data-page="admin-master"]')?.remove();
+  byId('admin-master')?.remove();
+  document.querySelector('[data-page="admin-monitor"]')?.remove();
+  byId('admin-monitor')?.remove();
+  document.querySelector('[data-page="admin-events"]')?.remove();
+  byId('admin-events')?.remove();
   const leading = document.querySelector('.top > div:first-child');
   if (!leading || leading.classList.contains('top-leading')) return;
   const title = byId('title');
@@ -182,30 +185,9 @@ function enhanceLiveDataUi() {
   if (adminDashboard) adminDashboard.innerHTML = `<div class="admin-dashboard-heading"><div><h2>운영 대시보드</h2><p>전체 회원의 카피 상태, 계좌 규모, 장애 여부를 우선순위대로 확인합니다.</p></div><div class="admin-period-tabs" role="group" aria-label="운영 조회 기간">${[['today','오늘'],[7,'7일'],[30,'30일'],['month','이번 달']].map(([range,label]) => `<button type="button" data-admin-range="${range}" class="${range === 30 ? 'active' : ''}">${label}</button>`).join('')}<button type="button" data-admin-range="custom">직접 선택</button></div></div><form id="adminDateRangeForm" class="admin-date-range hidden"><label>시작일<input id="adminDateFrom" type="date" required></label><span>—</span><label>종료일<input id="adminDateTo" type="date" required></label><button class="btn" type="submit">조회</button></form>
     <div class="status admin-live-status"><div><span id="adminSystemDot" class="dot"></span><b id="adminSystemTitle">운영 상태 확인 중</b><div><span id="adminSystemDetail">Worker heartbeat를 확인하고 있습니다.</span></div></div><time id="adminOverviewObserved">실시간 데이터 확인 중</time></div>
     <div class="admin-operations-kpis"><div class="card kpi"><label>전체 회원</label><strong id="adminTotalMembers">0</strong><small id="adminMemberDelta">승인 회원 기준</small></div><div class="card kpi"><label>카피 중</label><strong id="adminCopyingMembers">0</strong><small id="adminCopyingRate">0% 정상 작동</small></div><div class="card kpi"><label>확인 필요</label><strong id="adminLiveActionCount" class="neg">0</strong><small id="adminAttentionBreakdown">API·주문 상태</small></div><div class="card kpi"><label>총 운용 자산</label><strong id="adminTotalAssets">-</strong><small>회원 최신 원장 합산</small></div><div class="card kpi"><label>기간 회원 PNL</label><strong id="adminPeriodPnl">-</strong><small id="adminPeriodLabel">선택 기간 합산</small></div></div>
-    <div class="admin-operations-main"><section class="card admin-pnl-panel"><div class="panel-title"><div><h3>회원 누적 PNL</h3><p>선택 기간 내 전체 회원 실현·미실현 합산</p></div></div><div id="adminPnlChart" class="admin-pnl-chart"><div class="member-chart-empty">성과 데이터를 불러오는 중입니다.</div></div></section><aside class="card admin-copy-health"><div class="panel-title"><div><h3>카피 상태</h3><p>현재 전체 회원 기준</p></div></div><div id="adminCopyDonut" class="copy-health-donut"><strong>0%</strong><span>정상 카피</span></div><div class="copy-health-legend"><span><i class="ok"></i>정상 <b id="adminSyncedCount">0</b></span><span><i></i>중단·오류 <b id="adminAttentionCount">0</b></span></div><div class="copy-health-list"><div><span>관리자 중단</span><b id="adminLiveOverrideCount">0</b></div><div><span>회원 일시중지</span><b id="adminPausedCount">0</b></div><div><span>API / 주문 오류</span><b id="adminLiveUnknownCount" class="neg">0</b></div></div></aside></div>
-    <section class="card admin-broker-panel"><div class="panel-title"><div><h3>Gate Broker 거래량 &amp; 커미션 수익</h3><p>Gate Broker 공식 API 실정산 기준 · 시간 단위 정산</p><small id="adminBrokerSyncStatus">동기화 상태 확인 중</small><small id="adminBrokerPeriod" class="broker-period-label">조회 기간 확인 중</small></div><div class="broker-panel-actions"><div class="admin-period-tabs broker-period-tabs" role="group" aria-label="커미션 조회 기간">${[7, 30, 90].map((days) => `<button type="button" data-broker-range="${days}" class="${days === 30 ? 'active' : ''}">${days}일</button>`).join('')}</div><div class="broker-summary"><span>거래량 <b id="adminBrokerVolume">-</b></span><span>커미션 <b id="adminBrokerFees">-</b></span><span>회원 <b id="adminBrokerUsers">-</b></span></div></div></div><div id="adminBrokerChart" class="admin-broker-chart"><div class="member-chart-empty">Gate Broker 실정산 데이터를 불러오는 중입니다.</div></div></section>
-    <div class="admin-operations-bottom"><section class="card admin-attention-panel"><div class="panel-title"><div><h3>확인 필요한 계정</h3><p>장애 및 비정상 상태 우선순위</p></div><button class="btn" type="button" onclick="openPage('admin-monitor')">전체 보기</button></div><div id="adminLiveActions" class="admin-attention-list"><div class="member-chart-empty">실제 상태를 불러오는 중입니다.</div></div></section><section class="card admin-master-preview"><div class="panel-title"><div><h3>마스터 현재 포지션</h3><p>회원 복사 기준 포지션</p></div><button class="btn" type="button" onclick="openPage('admin-master')">포지션 보기</button></div><div id="adminMasterPreview" class="admin-master-preview-grid"><div class="member-chart-empty">포지션을 불러오는 중입니다.</div></div></section></div>`;
+    <div class="master-position-section admin-dashboard-positions"><div class="master-position-head"><div><div class="master-position-title"><h3>현재 포지션</h3><span id="masterPositionBadge">0</span></div><p>Gate.io에서 Worker가 확인한 Master 무기한 선물 포지션입니다.</p></div><div class="master-filters" role="group" aria-label="포지션 방향 필터"><button class="active" type="button" data-master-filter="ALL">전체</button><button type="button" data-master-filter="LONG">Long</button><button type="button" data-master-filter="SHORT">Short</button></div></div><div id="adminMasterPositionCards" class="master-position-grid"><div class="master-position-empty">Master 포지션을 불러오는 중입니다.</div></div></div>`;
   const trades = byId('member-trades');
-  if (trades) trades.innerHTML = `<div class="member-trades-heading"><div><h2>내 카피 현황</h2><p>마스터 전략이 내 계정에 어떻게 복사되고 있는지 실제 회원 계정 기준으로 확인합니다.</p></div><span id="memberTradeStatus" class="chip yellow">상태 확인 중</span></div><section class="card member-gate-summary"><div class="gate-summary-logo">G</div><div><b>Gate.io 연결 계정</b><small id="memberTradeGateUid">UID 확인 중 · Futures</small></div><div class="gate-summary-equity"><strong id="memberTradeEquity">-</strong><small>현재 자산</small></div></section><section class="card member-copy-position-table"><div class="panel-title"><div><h3>현재 카피 포지션</h3><p>실제 회원 계정 기준</p></div></div><div class="table"><table><thead><tr><th>종목</th><th>방향</th><th>포지션 규모</th><th>진입가</th><th>현재가</th><th>미실현 PNL</th><th>ROI</th><th>증거금 비중</th><th>상태</th></tr></thead><tbody id="memberTradePositions"><tr><td colspan="9" class="empty-cell">실제 포지션을 불러오는 중입니다.</td></tr></tbody></table></div></section><section class="card member-copy-events"><div class="panel-title"><div><h3>최근 카피 이벤트</h3><p>주문·체결·동기화 기록</p></div></div><div class="table"><table><thead><tr><th>시간</th><th>종목</th><th>이벤트</th><th>심각도</th><th>상태</th></tr></thead><tbody id="memberLiveEvents"><tr><td colspan="5" class="empty-cell">실제 이벤트를 불러오는 중입니다.</td></tr></tbody></table></div></section>`;
-  const master = byId('admin-master');
-  if (master) master.innerHTML = `<div class="grid kpis master-kpis">
-      <div class="card kpi"><label>활성 포지션</label><strong id="masterPositionCount">0</strong><small id="masterDirectionCount">Long 0 · Short 0</small></div>
-      <div class="card kpi"><label>Long 포지션</label><strong id="masterLongCount" class="pos">0</strong><small>현재 보유 중인 Long</small></div>
-      <div class="card kpi"><label>Short 포지션</label><strong id="masterShortCount" class="neg">0</strong><small>현재 보유 중인 Short</small></div>
-      <div class="card kpi"><label>마지막 동기화</label><strong id="masterLastObserved">-</strong><small>Worker 포지션 Snapshot</small></div>
-    </div>
-    <div class="master-position-section">
-      <div class="master-position-head"><div><div class="master-position-title"><h3>현재 포지션</h3><span id="masterPositionBadge">0</span></div><p>Gate.io에서 Worker가 확인한 Master 무기한 선물 포지션입니다.</p></div>
-        <div class="master-filters" role="group" aria-label="포지션 방향 필터"><button class="active" type="button" data-master-filter="ALL">전체</button><button type="button" data-master-filter="LONG">Long</button><button type="button" data-master-filter="SHORT">Short</button></div>
-      </div>
-      <div id="adminMasterPositionCards" class="master-position-grid"><div class="master-position-empty">Master 포지션을 불러오는 중입니다.</div></div>
-    </div>`;
-  const monitor = byId('admin-monitor');
-  if (monitor) monitor.innerHTML = `<div class="tabs2"><button class="btn primary" onclick="monitorTab('orders',this)">주문 상태</button><button class="btn" onclick="monitorTab('sync',this)">포지션 동기화</button></div>
-    <div id="orders" class="subpage active card section"><div class="section-head"><h3>실제 주문 모니터</h3></div><div class="table"><table><thead><tr><th>회원</th><th>종목</th><th>Delta</th><th>체결</th><th>상태</th><th>Gate 주문</th><th>최근 변경</th></tr></thead><tbody id="adminLiveOrders"><tr><td colspan="7" class="empty-cell">주문 데이터를 불러오는 중입니다.</td></tr></tbody></table></div></div>
-      <div id="sync" class="subpage card section"><div class="section-head"><h3>실제 포지션 동기화</h3></div><div class="table"><table><thead><tr><th>회원</th><th>종목</th><th>Target</th><th>Actual</th><th>USDT 볼륨</th><th>Delta</th><th>상태</th><th>최근 확인</th></tr></thead><tbody id="adminLiveStates"><tr><td colspan="8" class="empty-cell">동기화 데이터를 불러오는 중입니다.</td></tr></tbody></table></div></div>`;
-  const eventsPage = byId('admin-events');
-  if (eventsPage) eventsPage.innerHTML = `<div class="card section"><div class="section-head"><div><h3>Copy Events</h3><p>Worker·주문·동기화·위험 상태의 실제 이벤트입니다.</p></div><button class="btn" type="button" id="adminEventsRefresh">새로고침</button></div><div class="table"><table><thead><tr><th>시간</th><th>회원</th><th>종목</th><th>이벤트</th><th>심각도</th><th>상세</th></tr></thead><tbody id="adminOperationalEvents"><tr><td colspan="6" class="empty-cell">운영 이벤트를 불러오는 중입니다.</td></tr></tbody></table></div></div>`;
+  if (trades) trades.innerHTML = `<div class="member-trades-heading"><div><h2>내 카피 현황</h2><p>마스터 전략이 내 계정에 어떻게 복사되고 있는지 실제 회원 계정 기준으로 확인합니다.</p></div><span id="memberTradeStatus" class="chip yellow">상태 확인 중</span></div><section class="card member-gate-summary"><div class="gate-summary-logo">G</div><div><b>Gate.io 연결 계정</b><small id="memberTradeGateUid">UID 확인 중 · Futures</small></div><div class="gate-summary-equity"><strong id="memberTradeEquity">-</strong><small>현재 자산</small></div></section><div class="member-trade-tabs" role="tablist" aria-label="카피 현황 구분"><button type="button" class="active" role="tab" aria-selected="true" data-member-trade-tab="positions">현재 카피 포지션</button><button type="button" role="tab" aria-selected="false" data-member-trade-tab="events">최근 카피 이벤트</button></div><section class="card member-copy-position-table" data-member-trade-panel="positions"><div class="panel-title"><div><h3>현재 카피 포지션</h3><p>실제 회원 계정 기준</p></div></div><div class="table"><table><thead><tr><th>종목</th><th>방향</th><th>포지션 규모</th><th>진입가</th><th>현재가</th><th>미실현 PNL</th><th>ROI</th><th>증거금 비중</th><th>상태</th></tr></thead><tbody id="memberTradePositions"><tr><td colspan="9" class="empty-cell">실제 포지션을 불러오는 중입니다.</td></tr></tbody></table></div></section><section class="card member-copy-events hidden" data-member-trade-panel="events"><div class="panel-title"><div><h3>최근 카피 이벤트</h3><p>주문·체결·동기화 기록</p></div></div><div class="table"><table><thead><tr><th>시간</th><th>종목</th><th>이벤트</th><th>심각도</th><th>상태</th></tr></thead><tbody id="memberLiveEvents"><tr><td colspan="5" class="empty-cell">실제 이벤트를 불러오는 중입니다.</td></tr></tbody></table></div></section>`;
   const auditPage = byId('admin-audit');
   if (auditPage) auditPage.innerHTML = `<div class="card section"><div class="section-head"><div><h3>Audit Log</h3><p>관리자 승인·API·카피 제어 변경 이력입니다.</p></div><button class="btn" type="button" id="adminAuditRefresh">새로고침</button></div><div class="table"><table><thead><tr><th>시간</th><th>작업자</th><th>작업</th><th>대상</th><th>변경 내용</th></tr></thead><tbody id="adminAuditRows"><tr><td colspan="5" class="empty-cell">감사 로그를 불러오는 중입니다.</td></tr></tbody></table></div></div>`;
 }
@@ -359,12 +341,9 @@ function enhanceMemberAnalysisPage() {
           <div class="card"><small>승률</small><b id="analysisWinRate">-</b></div>
           <div class="card"><small>평균 이익</small><b id="analysisAverageProfit">-</b></div>
           <div class="card"><small>평균 손실</small><b id="analysisAverageLoss">-</b></div>
-          <div class="card"><small>손익비</small><b id="analysisProfitFactor">-</b></div>
-          <div class="card"><small>수수료 · 펀딩</small><b id="analysisFeesFunding">-</b></div>
         </div>
         <div class="analysis-lower">
           <div class="card section"><div class="section-head"><div><small>DAILY PNL</small><h3>일별 손익 캘린더</h3></div><span id="analysisMonthLabel"></span></div><div id="analysisCalendar" class="analysis-calendar"></div></div>
-          <div class="card section"><div class="section-head"><div><small>PNL RANKING</small><h3>종목별 실현손익</h3></div></div><div id="analysisSymbols" class="analysis-symbols"></div></div>
         </div>
         <p class="analysis-footnote">순손익은 실현손익에서 거래 수수료를 차감하고 펀딩비를 반영합니다. 입출금과 미실현손익은 제외됩니다.</p>
       </div>
@@ -390,7 +369,7 @@ function enhanceAdminMemberAnalysisPage() {
   page.querySelector('.analysis-hero h2').textContent = '회원별 카피 수익 분석';
   page.querySelector('.analysis-hero p').textContent = 'Worker가 수집한 실제 체결 원장을 회원과 기간별로 조회합니다.';
   page.insertAdjacentHTML('afterbegin', `<div class="card section admin-analysis-selector">
-    <div><span class="admin-analysis-label">회원 선택</span><div id="adminAnalysisMemberList" class="admin-analysis-members"><span class="notice">회원 목록을 불러오는 중입니다.</span></div></div>
+    <div><div class="admin-analysis-member-head"><span class="admin-analysis-label">회원 선택</span><label>회원 순서<select id="adminAnalysisMemberSort"><option value="name">이름순</option><option value="newest">최근 가입순</option><option value="oldest">오래된 가입순</option></select></label></div><div id="adminAnalysisMemberList" class="admin-analysis-members"><span class="notice">회원 목록을 불러오는 중입니다.</span></div></div>
     <div class="admin-analysis-range">
       <div class="admin-analysis-presets" aria-label="조회 기간"><button type="button" data-analysis-range="7">7일</button><button type="button" class="active" data-analysis-range="30">30일</button><button type="button" data-analysis-range="90">90일</button><button type="button" data-analysis-range="180">180일</button></div>
       <form id="adminAnalysisDateForm" class="admin-analysis-dates"><label>시작일<input id="adminAnalysisStartDate" type="date" required></label><span>—</span><label>종료일<input id="adminAnalysisEndDate" type="date" required></label><button class="btn" type="submit">조회</button></form>
@@ -652,7 +631,7 @@ window.openPage = (id) => {
     loadAdminGateConnections();
   }
   if ((id === 'admin-settings' || id === 'admin-risk') && currentProfile?.role === 'ADMIN') loadCopySystemStatus();
-  if (['admin-dashboard', 'admin-master', 'admin-monitor'].includes(id) && currentProfile?.role === 'ADMIN') loadAdminLiveData();
+  if (id === 'admin-dashboard' && currentProfile?.role === 'ADMIN') loadAdminLiveData();
   if (id === 'admin-dashboard' && currentProfile?.role === 'ADMIN') loadAdminOperationsMetrics();
 };
 
@@ -1117,48 +1096,12 @@ function renderAdminOperationsMetrics(data) {
   renderAdminMemberRows();
 }
 
-function renderAdminBrokerMetrics(data) {
-  const totals = data?.totals || {};
-  const daily = Array.isArray(data?.daily) ? data.daily : [];
-  const sync = data?.sync || {};
-  const synced = sync.status === 'SYNCED';
-  if (byId('adminBrokerVolume')) byId('adminBrokerVolume').textContent = synced ? formatCompactUsd(totals.trading_volume) : '-';
-  if (byId('adminBrokerFees')) byId('adminBrokerFees').textContent = synced ? formatUsd(totals.commission) : '-';
-  if (byId('adminBrokerUsers')) byId('adminBrokerUsers').textContent = synced ? Number(totals.users || 0).toLocaleString() : '-';
-  if (byId('adminBrokerPeriod')) byId('adminBrokerPeriod').textContent = `${data?.range_start || '-'} → ${data?.range_end || '-'}`;
-  if (byId('adminBrokerSyncStatus')) {
-    byId('adminBrokerSyncStatus').textContent = synced
-      ? `최근 동기화 ${new Date(sync.observed_at).toLocaleString('ko-KR')}`
-      : sync.status === 'ERROR' ? 'Gate Broker API 동기화 오류' : 'Gate Broker API 연결 필요';
-  }
-  if (!synced) {
-    if (byId('adminBrokerChart')) byId('adminBrokerChart').innerHTML = '<div class="member-chart-empty">추정값은 표시하지 않습니다. Gate Broker API 연결 후 실제 커미션이 표시됩니다.</div>';
-    return;
-  }
-  renderOperationsChart('adminBrokerChart', daily, 'trading_volume', { feeKey: 'commission' });
-}
-
-async function loadAdminBrokerMetrics() {
-  if (!supabase || currentProfile?.role !== 'ADMIN') return;
-  const dates = adminRangeDates(adminBrokerRange);
-  const { data, error } = await supabase.rpc('get_admin_gate_broker_metrics', {
-    p_start_date: dates[0], p_end_date: dates[1],
-  });
-  if (error) {
-    if (byId('adminBrokerSyncStatus')) byId('adminBrokerSyncStatus').textContent = 'Gate Broker 집계 기능 배포 필요';
-    if (byId('adminBrokerChart')) byId('adminBrokerChart').innerHTML = '<div class="member-chart-empty">Gate Broker 실정산 데이터를 불러오지 못했습니다.</div>';
-    return;
-  }
-  renderAdminBrokerMetrics(data);
-}
-
 async function loadAdminOperationsMetrics(startDate = null, endDate = null) {
   if (!supabase || currentProfile?.role !== 'ADMIN') return;
   const dates = startDate && endDate ? [startDate, endDate] : adminRangeDates();
   const operations = await supabase.rpc('get_admin_operations_metrics', { p_start_date: dates[0], p_end_date: dates[1] });
   if (operations.error) return window.toast('운영 지표를 불러오지 못했습니다. DB 마이그레이션 상태를 확인해 주세요.');
   renderAdminOperationsMetrics(operations.data);
-  await loadAdminBrokerMetrics();
 }
 
 function compactPayload(payload) {
@@ -1535,8 +1478,8 @@ function renderTradingAnalysis(data, prefix = 'analysis') {
   analysisNode(prefix, 'WinRate').textContent = totals.win_rate == null ? '-' : `${Number(totals.win_rate).toFixed(1)}%`;
   analysisNode(prefix, 'AverageProfit').textContent = totals.average_profit == null ? '-' : formatUsd(totals.average_profit);
   analysisNode(prefix, 'AverageLoss').textContent = totals.average_loss == null ? '-' : formatUsd(totals.average_loss);
-  analysisNode(prefix, 'ProfitFactor').textContent = totals.profit_factor == null ? '-' : `${Number(totals.profit_factor).toFixed(2)} : 1`;
-  analysisNode(prefix, 'FeesFunding').textContent = formatUsd(Number(totals.funding_pnl || 0) - Number(totals.fees || 0));
+  if (analysisNode(prefix, 'ProfitFactor')) analysisNode(prefix, 'ProfitFactor').textContent = totals.profit_factor == null ? '-' : `${Number(totals.profit_factor).toFixed(2)} : 1`;
+  if (analysisNode(prefix, 'FeesFunding')) analysisNode(prefix, 'FeesFunding').textContent = formatUsd(Number(totals.funding_pnl || 0) - Number(totals.fees || 0));
   const totalAbs = grossProfit + Math.abs(grossLoss) || 1;
   analysisNode(prefix, 'ProfitBar').style.width = `${Math.max(4, grossProfit / totalAbs * 100)}%`;
   analysisNode(prefix, 'LossBar').style.width = `${Math.max(4, Math.abs(grossLoss) / totalAbs * 100)}%`;
@@ -1557,7 +1500,8 @@ function renderTradingAnalysis(data, prefix = 'analysis') {
   analysisNode(prefix, 'Calendar').innerHTML = '<small>일</small><small>월</small><small>화</small><small>수</small><small>목</small><small>금</small><small>토</small>' + cells.join('');
 
   const maxSymbolPnl = Math.max(...symbols.map((item) => Math.abs(Number(item.net_pnl || 0))), 1);
-  analysisNode(prefix, 'Symbols').innerHTML = symbols.length ? symbols.slice(0, 10).map((item, index) => {
+  const symbolsNode = analysisNode(prefix, 'Symbols');
+  if (symbolsNode) symbolsNode.innerHTML = symbols.length ? symbols.slice(0, 10).map((item, index) => {
     const pnl = Number(item.net_pnl || 0);
     return `<div class="analysis-symbol"><div><span>${index + 1}</span><b>${escapeHtml(item.contract)}</b><strong class="${pnl > 0 ? 'pos' : pnl < 0 ? 'neg' : ''}">${formatUsd(pnl)}</strong></div><i><em class="${pnl < 0 ? 'negative' : ''}" style="width:${Math.max(4, Math.abs(pnl) / maxSymbolPnl * 100)}%"></em></i><small>정산 ${Number(item.trade_count || 0).toLocaleString('ko-KR')}건</small></div>`;
   }).join('') : '<div class="empty-cell">종목별 집계 데이터가 없습니다.</div>';
@@ -1576,11 +1520,24 @@ async function loadAdminAnalysisMembers() {
   if (!supabase || currentProfile?.role !== 'ADMIN') return;
   const list = byId('adminAnalysisMemberList');
   if (!list || list.dataset.loaded === 'true') return;
-  const { data, error } = await supabase.from('profiles').select('id,full_name,email').eq('role', 'MEMBER').eq('approval_status', 'APPROVED').order('full_name');
+  const { data, error } = await supabase.from('profiles').select('id,full_name,email,created_at').eq('role', 'MEMBER').eq('approval_status', 'APPROVED');
   if (error) return window.toast('수익 조회 회원을 불러오지 못했습니다.');
   list.dataset.loaded = 'true';
-  list.innerHTML = (data || []).length ? data.map((member) => `<button type="button" data-analysis-member="${member.id}"><b>${escapeHtml(member.full_name || '-')}</b><small>${escapeHtml(member.email || '-')}</small></button>`).join('') : '<span class="notice">조회할 승인 회원이 없습니다.</span>';
-  if (!adminAnalysisSelectedUserId && data?.[0]?.id) await loadAdminMemberTradingAnalysis(data[0].id);
+  adminAnalysisMembers = Array.isArray(data) ? data : [];
+  renderAdminAnalysisMembers();
+  const firstMemberId = list.querySelector('[data-analysis-member]')?.dataset.analysisMember;
+  if (!adminAnalysisSelectedUserId && firstMemberId) await loadAdminMemberTradingAnalysis(firstMemberId);
+}
+
+function renderAdminAnalysisMembers() {
+  const list = byId('adminAnalysisMemberList');
+  if (!list) return;
+  const members = [...adminAnalysisMembers].sort((left, right) => {
+    if (adminAnalysisMemberSort === 'newest') return new Date(right.created_at || 0) - new Date(left.created_at || 0);
+    if (adminAnalysisMemberSort === 'oldest') return new Date(left.created_at || 0) - new Date(right.created_at || 0);
+    return String(left.full_name || left.email || '').localeCompare(String(right.full_name || right.email || ''), 'ko');
+  });
+  list.innerHTML = members.length ? members.map((member) => `<button type="button" data-analysis-member="${member.id}" class="${member.id === adminAnalysisSelectedUserId ? 'active' : ''}"><b>${escapeHtml(member.full_name || '-')}</b><small>${escapeHtml(member.email || '-')}</small></button>`).join('') : '<span class="notice">조회할 승인 회원이 없습니다.</span>';
 }
 
 function toDateInputValue(date) {
@@ -1791,6 +1748,16 @@ document.addEventListener('click', async (event) => {
   if (event.target.id === 'memberDetailModal' || event.target.closest('[data-member-detail-close]')) closeMemberDetail();
   const navButton = event.target.closest('.nav-btn[data-page]');
   if (navButton) window.openPage(navButton.dataset.page);
+  const memberTradeTab = event.target.closest('[data-member-trade-tab]');
+  if (memberTradeTab) {
+    const selected = memberTradeTab.dataset.memberTradeTab;
+    document.querySelectorAll('[data-member-trade-tab]').forEach((button) => {
+      const active = button === memberTradeTab;
+      button.classList.toggle('active', active);
+      button.setAttribute('aria-selected', String(active));
+    });
+    document.querySelectorAll('[data-member-trade-panel]').forEach((panel) => panel.classList.toggle('hidden', panel.dataset.memberTradePanel !== selected));
+  }
   const pauseButton = event.target.closest('[data-copy-pause]');
   if (pauseButton) await setCopyPause(pauseButton.dataset.copyPause);
   if (event.target.closest('#adminEmergencyHalt')) await emergencyHalt();
@@ -1816,12 +1783,6 @@ document.addEventListener('click', async (event) => {
     memberDashboardRange = Number(dashboardRange.dataset.dashboardRange);
     document.querySelectorAll('[data-dashboard-range]').forEach((button) => button.classList.toggle('active', button === dashboardRange));
     await loadMemberDashboardPerformance(memberDashboardRange);
-  }
-  const brokerRange = event.target.closest('[data-broker-range]');
-  if (brokerRange) {
-    adminBrokerRange = Number(brokerRange.dataset.brokerRange);
-    document.querySelectorAll('[data-broker-range]').forEach((button) => button.classList.toggle('active', button === brokerRange));
-    await loadAdminBrokerMetrics();
   }
   const dashboardMetric = event.target.closest('[data-dashboard-metric]');
   if (dashboardMetric) {
@@ -1856,6 +1817,12 @@ document.addEventListener('click', async (event) => {
     window.toast(approvalButton.dataset.approval === 'APPROVED' ? '회원 가입을 승인했습니다.' : '회원 가입을 거절했습니다.');
     await loadAdminMembers();
   }
+});
+
+document.addEventListener('change', (event) => {
+  if (event.target.id !== 'adminAnalysisMemberSort') return;
+  adminAnalysisMemberSort = ['name', 'newest', 'oldest'].includes(event.target.value) ? event.target.value : 'name';
+  renderAdminAnalysisMembers();
 });
 
 document.addEventListener('input', (event) => {

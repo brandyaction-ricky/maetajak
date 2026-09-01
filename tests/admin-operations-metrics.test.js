@@ -16,10 +16,10 @@ test('admin operations metrics are admin-only and sourced from actual worker led
   assert.match(migration, /revoke all on function public\.get_admin_operations_metrics/i);
 });
 
-test('admin dashboard exposes real PNL, broker volume, fees, and member metrics', () => {
+test('admin dashboard keeps real member metrics after broker section removal', () => {
   assert.match(main, /get_admin_operations_metrics/);
-  assert.match(main, /adminBrokerVolume/);
-  assert.match(main, /adminBrokerFees/);
+  assert.doesNotMatch(main, /adminBrokerVolume/);
+  assert.doesNotMatch(main, /adminBrokerFees/);
   assert.match(main, /adminTotalAssets/);
   assert.match(main, /adminPeriodPnl/);
   assert.match(main, /adminMembersCache/);
