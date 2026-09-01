@@ -182,7 +182,7 @@ function enhanceLiveDataUi() {
     <div class="status admin-live-status"><div><span id="adminSystemDot" class="dot"></span><b id="adminSystemTitle">운영 상태 확인 중</b><div><span id="adminSystemDetail">Worker heartbeat를 확인하고 있습니다.</span></div></div><time id="adminOverviewObserved">실시간 데이터 확인 중</time></div>
     <div class="admin-operations-kpis"><div class="card kpi"><label>전체 회원</label><strong id="adminTotalMembers">0</strong><small id="adminMemberDelta">승인 회원 기준</small></div><div class="card kpi"><label>카피 중</label><strong id="adminCopyingMembers">0</strong><small id="adminCopyingRate">0% 정상 작동</small></div><div class="card kpi"><label>확인 필요</label><strong id="adminLiveActionCount" class="neg">0</strong><small id="adminAttentionBreakdown">API·주문 상태</small></div><div class="card kpi"><label>총 운용 자산</label><strong id="adminTotalAssets">-</strong><small>회원 최신 원장 합산</small></div><div class="card kpi"><label>기간 회원 PNL</label><strong id="adminPeriodPnl">-</strong><small id="adminPeriodLabel">선택 기간 합산</small></div></div>
     <div class="admin-operations-main"><section class="card admin-pnl-panel"><div class="panel-title"><div><h3>회원 누적 PNL</h3><p>선택 기간 내 전체 회원 실현·미실현 합산</p></div></div><div id="adminPnlChart" class="admin-pnl-chart"><div class="member-chart-empty">성과 데이터를 불러오는 중입니다.</div></div></section><aside class="card admin-copy-health"><div class="panel-title"><div><h3>카피 상태</h3><p>현재 전체 회원 기준</p></div></div><div id="adminCopyDonut" class="copy-health-donut"><strong>0%</strong><span>정상 카피</span></div><div class="copy-health-legend"><span><i class="ok"></i>정상 <b id="adminSyncedCount">0</b></span><span><i></i>중단·오류 <b id="adminAttentionCount">0</b></span></div><div class="copy-health-list"><div><span>관리자 중단</span><b id="adminLiveOverrideCount">0</b></div><div><span>회원 일시중지</span><b id="adminPausedCount">0</b></div><div><span>API / 주문 오류</span><b id="adminLiveUnknownCount" class="neg">0</b></div></div></aside></div>
-    <section class="card admin-broker-panel"><div class="panel-title"><div><h3>Broker Trading Volume &amp; 수수료</h3><p>실제 Worker가 적재한 회원 거래 원장 기준</p></div><div class="broker-summary"><span>거래량 <b id="adminBrokerVolume">-</b></span><span>수수료 <b id="adminBrokerFees">-</b></span><span>회원 <b id="adminBrokerUsers">0</b></span></div></div><div id="adminBrokerChart" class="admin-broker-chart"><div class="member-chart-empty">거래량과 수수료 데이터를 불러오는 중입니다.</div></div></section>
+    <section class="card admin-broker-panel"><div class="panel-title"><div><h3>Gate Broker 거래량 &amp; 커미션 수익</h3><p>Gate Broker 공식 API 실정산 기준 · 시간 단위 정산</p><small id="adminBrokerSyncStatus">동기화 상태 확인 중</small></div><div class="broker-summary"><span>거래량 <b id="adminBrokerVolume">-</b></span><span>커미션 <b id="adminBrokerFees">-</b></span><span>회원 <b id="adminBrokerUsers">-</b></span></div></div><div id="adminBrokerChart" class="admin-broker-chart"><div class="member-chart-empty">Gate Broker 실정산 데이터를 불러오는 중입니다.</div></div></section>
     <div class="admin-operations-bottom"><section class="card admin-attention-panel"><div class="panel-title"><div><h3>확인 필요한 계정</h3><p>장애 및 비정상 상태 우선순위</p></div><button class="btn" type="button" onclick="openPage('admin-monitor')">전체 보기</button></div><div id="adminLiveActions" class="admin-attention-list"><div class="member-chart-empty">실제 상태를 불러오는 중입니다.</div></div></section><section class="card admin-master-preview"><div class="panel-title"><div><h3>마스터 현재 포지션</h3><p>회원 복사 기준 포지션</p></div><button class="btn" type="button" onclick="openPage('admin-master')">포지션 보기</button></div><div id="adminMasterPreview" class="admin-master-preview-grid"><div class="member-chart-empty">포지션을 불러오는 중입니다.</div></div></section></div>`;
   const trades = byId('member-trades');
   if (trades) trades.innerHTML = `<div class="member-trades-heading"><div><h2>내 카피 현황</h2><p>마스터 전략이 내 계정에 어떻게 복사되고 있는지 실제 회원 계정 기준으로 확인합니다.</p></div><span id="memberTradeStatus" class="chip yellow">상태 확인 중</span></div><section class="card member-gate-summary"><div class="gate-summary-logo">G</div><div><b>Gate.io 연결 계정</b><small id="memberTradeGateUid">UID 확인 중 · Futures</small></div><div class="gate-summary-equity"><strong id="memberTradeEquity">-</strong><small>현재 자산</small></div></section><section class="card member-copy-position-table"><div class="panel-title"><div><h3>현재 카피 포지션</h3><p>실제 회원 계정 기준</p></div></div><div class="table"><table><thead><tr><th>종목</th><th>방향</th><th>포지션 규모</th><th>진입가</th><th>현재가</th><th>미실현 PNL</th><th>ROI</th><th>증거금 비중</th><th>상태</th></tr></thead><tbody id="memberTradePositions"><tr><td colspan="9" class="empty-cell">실제 포지션을 불러오는 중입니다.</td></tr></tbody></table></div></section><section class="card member-copy-events"><div class="panel-title"><div><h3>최근 카피 이벤트</h3><p>주문·체결·동기화 기록</p></div></div><div class="table"><table><thead><tr><th>시간</th><th>종목</th><th>이벤트</th><th>심각도</th><th>상태</th></tr></thead><tbody id="memberLiveEvents"><tr><td colspan="5" class="empty-cell">실제 이벤트를 불러오는 중입니다.</td></tr></tbody></table></div></section>`;
@@ -1100,9 +1100,6 @@ function renderAdminOperationsMetrics(data) {
     byId('adminPeriodPnl').className = pnl >= 0 ? 'pos' : 'neg';
   }
   if (byId('adminPeriodLabel')) byId('adminPeriodLabel').textContent = `${data.range_start} → ${data.range_end}`;
-  if (byId('adminBrokerVolume')) byId('adminBrokerVolume').textContent = formatCompactUsd(totals.trading_volume);
-  if (byId('adminBrokerFees')) byId('adminBrokerFees').textContent = formatUsd(totals.fees);
-  if (byId('adminBrokerUsers')) byId('adminBrokerUsers').textContent = Number(totals.active_users || 0).toLocaleString();
   if (byId('adminCopyDonut')) {
     byId('adminCopyDonut').style.setProperty('--copy-rate', `${rate.toFixed(2)}%`);
     byId('adminCopyDonut').querySelector('strong').textContent = `${Math.round(rate)}%`;
@@ -1115,17 +1112,43 @@ function renderAdminOperationsMetrics(data) {
   if (byId('adminLiveOverrideCount')) byId('adminLiveOverrideCount').textContent = String(members.filter((member) => member.copy_status === 'HALTED').length);
   if (byId('adminLiveUnknownCount')) byId('adminLiveUnknownCount').textContent = String(members.filter((member) => ['API_ERROR', 'ERROR'].includes(member.copy_status)).length);
   renderOperationsChart('adminPnlChart', daily, 'pnl', { cumulative: true });
-  renderOperationsChart('adminBrokerChart', daily, 'trading_volume', { feeKey: 'fees' });
   adminMembersCache = members;
   renderAdminMemberRows();
+}
+
+function renderAdminBrokerMetrics(data) {
+  const totals = data?.totals || {};
+  const daily = Array.isArray(data?.daily) ? data.daily : [];
+  const sync = data?.sync || {};
+  const synced = sync.status === 'SYNCED';
+  if (byId('adminBrokerVolume')) byId('adminBrokerVolume').textContent = synced ? formatCompactUsd(totals.trading_volume) : '-';
+  if (byId('adminBrokerFees')) byId('adminBrokerFees').textContent = synced ? formatUsd(totals.commission) : '-';
+  if (byId('adminBrokerUsers')) byId('adminBrokerUsers').textContent = synced ? Number(totals.users || 0).toLocaleString() : '-';
+  if (byId('adminBrokerSyncStatus')) {
+    byId('adminBrokerSyncStatus').textContent = synced
+      ? `최근 동기화 ${new Date(sync.observed_at).toLocaleString('ko-KR')}`
+      : sync.status === 'ERROR' ? 'Gate Broker API 동기화 오류' : 'Gate Broker API 연결 필요';
+  }
+  if (!synced) {
+    if (byId('adminBrokerChart')) byId('adminBrokerChart').innerHTML = '<div class="member-chart-empty">추정값은 표시하지 않습니다. Gate Broker API 연결 후 실제 커미션이 표시됩니다.</div>';
+    return;
+  }
+  renderOperationsChart('adminBrokerChart', daily, 'trading_volume', { feeKey: 'commission' });
 }
 
 async function loadAdminOperationsMetrics(startDate = null, endDate = null) {
   if (!supabase || currentProfile?.role !== 'ADMIN') return;
   const dates = startDate && endDate ? [startDate, endDate] : adminRangeDates();
-  const { data, error } = await supabase.rpc('get_admin_operations_metrics', { p_start_date: dates[0], p_end_date: dates[1] });
-  if (error) return window.toast('운영 지표를 불러오지 못했습니다. DB 마이그레이션 상태를 확인해 주세요.');
-  renderAdminOperationsMetrics(data);
+  const [operations, broker] = await Promise.all([
+    supabase.rpc('get_admin_operations_metrics', { p_start_date: dates[0], p_end_date: dates[1] }),
+    supabase.rpc('get_admin_gate_broker_metrics', { p_start_date: dates[0], p_end_date: dates[1] }),
+  ]);
+  if (operations.error) return window.toast('운영 지표를 불러오지 못했습니다. DB 마이그레이션 상태를 확인해 주세요.');
+  renderAdminOperationsMetrics(operations.data);
+  if (broker.error) {
+    if (byId('adminBrokerSyncStatus')) byId('adminBrokerSyncStatus').textContent = 'Gate Broker 집계 기능 배포 필요';
+    if (byId('adminBrokerChart')) byId('adminBrokerChart').innerHTML = '<div class="member-chart-empty">Gate Broker 실정산 데이터를 불러오지 못했습니다.</div>';
+  } else renderAdminBrokerMetrics(broker.data);
 }
 
 function compactPayload(payload) {

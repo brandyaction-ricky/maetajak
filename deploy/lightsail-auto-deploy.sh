@@ -46,7 +46,12 @@ if ! git diff --quiet "${local_sha}" "${remote_sha}" -- supabase/migrations; the
       },
     });
     const schema = response.ok ? await response.json() : {};
-    if (!schema.paths?.["/rpc/clear_member_copy_baseline_legs"]) process.exit(1);
+    const requiredRpcs = [
+      "/rpc/clear_member_copy_baseline_legs",
+      "/rpc/get_admin_gate_broker_metrics",
+      "/rpc/upsert_gate_broker_metrics",
+    ];
+    if (requiredRpcs.some((path) => !schema.paths?.[path])) process.exit(1);
   ' >/dev/null; then
     echo "auto_deploy=blocked_database_migration" >&2
     exit 1

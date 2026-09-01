@@ -22,6 +22,12 @@ read -r -s -p "Alert webhook URL (hidden, required before LIVE): " alert_webhook
 echo
 read -r -s -p "Alert webhook bearer token (hidden, optional): " alert_webhook_bearer
 echo
+read -r -p "Gate Broker commission UID [49084031]: " gate_broker_uid
+gate_broker_uid="${gate_broker_uid:-49084031}"
+read -r -s -p "Gate Broker read API key (hidden, optional when Master UID matches): " gate_broker_api_key
+echo
+read -r -s -p "Gate Broker secret key (hidden, optional when Master UID matches): " gate_broker_secret_key
+echo
 
 if [[ ! "${supabase_url}" =~ ^https://[A-Za-z0-9-]+\.supabase\.co/?$ ]]; then
   echo "Invalid production Supabase URL." >&2
@@ -47,6 +53,10 @@ trap 'rm -f "${temp_env:-}"' EXIT
   printf 'SUPABASE_SERVICE_ROLE_KEY=%s\n' "${service_role_key}"
   printf 'GATE_API_BASE_URL=https://api.gateio.ws\n'
   printf 'GATE_CHANNEL_ID=maetajak\n'
+  printf 'GATE_BROKER_UID=%s\n' "${gate_broker_uid}"
+  printf 'GATE_BROKER_API_KEY=%s\n' "${gate_broker_api_key}"
+  printf 'GATE_BROKER_SECRET_KEY=%s\n' "${gate_broker_secret_key}"
+  printf 'BROKER_SYNC_INTERVAL_MS=3600000\n'
   printf 'WORKER_ID=maetajak-lightsail-seoul-01\n'
   printf 'WORKER_VERSION=0.3.0\n'
   printf 'WORKER_PUBLIC_IP=%s\n' "${worker_public_ip}"

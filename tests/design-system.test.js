@@ -32,7 +32,7 @@ test('redundant member positions page is removed while dashboard positions remai
 test('admin dashboard follows the member dashboard visual hierarchy', () => {
   assert.match(main, /admin-operations-kpis/);
   assert.match(main, /회원 누적 PNL/);
-  assert.match(main, /Broker Trading Volume/);
+  assert.match(main, /Gate Broker 거래량/);
   assert.match(main, /admin-copy-health/);
   assert.match(theme, /\.admin-operations-main/);
   assert.match(theme, /\.admin-broker-chart/);

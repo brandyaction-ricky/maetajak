@@ -40,6 +40,8 @@ test('automated deployment verifies DRY_RUN and only resumes a previously health
   assert.match(verify, /member_sync_failed/);
   assert.match(autoDeploy, /blocked_database_migration/);
   assert.match(autoDeploy, /clear_member_copy_baseline_legs/);
+  assert.match(autoDeploy, /get_admin_gate_broker_metrics/);
+  assert.match(autoDeploy, /upsert_gate_broker_metrics/);
   assert.match(autoDeploy, /database_migration_already_applied/);
   assert.match(autoDeploy, /git merge-base --is-ancestor/);
   assert.match(autoDeploy, /recover_inactive_worker/);

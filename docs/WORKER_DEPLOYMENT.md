@@ -16,6 +16,7 @@
 
 - 추천인 계정 UID: `45997867` - 신규 회원은 이 계정의 추천 링크로 가입합니다.
 - API Broker 커미션 수령 UID: `49084031` - Channel ID `maetajak`에 귀속된 20%를 수령합니다.
+- 관리자 대시보드의 Broker 거래량과 커미션은 Gate `rebate/broker/commission_history` 실정산 API를 시간 단위로 동기화합니다. Broker UID가 Master UID와 같으면 기존 Master 읽기 키를 사용하고, 다르면 `/etc/maetajak/worker.env`의 `GATE_BROKER_API_KEY`와 `GATE_BROKER_SECRET_KEY`에 별도 읽기 키를 설정합니다.
 - API Broker Channel ID: `maetajak` - Worker가 모든 회원 Futures 주문 헤더에 `X-Gate-Channel-Id: maetajak`를 자동 주입합니다.
 - Futures decimal size: 최신 Gate API 규격에 맞춰 인증된 Futures 요청에 `X-Gate-Size-Decimal: 1`을 자동 주입합니다.
 - Master UID: 실제 신호 원본으로 사용할 Gate 계정 UID를 관리자 화면에 연결합니다. 추천인 UID나 Broker 수령 UID와 반드시 같을 필요는 없습니다.

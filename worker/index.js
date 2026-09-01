@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { validateGateChannelId, verifyGateAccount } from './gate.js';
 import { TradingRunner } from './trading-runner.js';
 import { sendWorkerAlert, shouldSendFailureAlert } from './alerts.js';
+import { syncGateBrokerMetrics } from './broker-metrics.js';
 
 const supabaseUrl = process.env.SUPABASE_URL;
 const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -20,6 +21,10 @@ const alertWebhookBearer = process.env.ALERT_WEBHOOK_BEARER || '';
 const telegramBotToken = process.env.TELEGRAM_BOT_TOKEN || '';
 const telegramChatId = process.env.TELEGRAM_CHAT_ID || '';
 const alertsConfigured = Boolean(alertWebhookUrl || (telegramBotToken && telegramChatId));
+const brokerUid = process.env.GATE_BROKER_UID || '49084031';
+const brokerApiKey = process.env.GATE_BROKER_API_KEY || '';
+const brokerSecretKey = process.env.GATE_BROKER_SECRET_KEY || '';
+const brokerSyncIntervalMs = Math.max(300_000, Number(process.env.BROKER_SYNC_INTERVAL_MS || 3_600_000));
 if (!supabaseUrl || !serviceRoleKey) throw new Error('SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required');
 if (gateChannelId) validateGateChannelId(gateChannelId);
 if (gateChannelId && gateChannelId !== 'maetajak') throw new Error('GATE_CHANNEL_ID must equal the approved Channel ID maetajak');
@@ -32,7 +37,7 @@ if (tradingMode === 'LIVE' && (!workerPublicIp || baseUrl !== 'https://api.gatei
 if (tradingMode === 'LIVE' && !alertsConfigured) throw new Error('LIVE mode requires a Telegram or webhook alert destination');
 
 const supabase = createClient(supabaseUrl, serviceRoleKey, { auth: { persistSession: false, autoRefreshToken: false } });
-const state = { verification: false, trading: false, stopping: false };
+const state = { verification: false, trading: false, broker: false, stopping: false };
 
 function log(event, details = {}) {
   console.log(JSON.stringify({ at: new Date().toISOString(), worker_id: workerId, event, ...details }));
@@ -109,6 +114,37 @@ export async function runTradingCycle() {
   } finally { state.trading = false; }
 }
 
+export async function runBrokerMetricsSync() {
+  if (state.broker || state.stopping) return;
+  state.broker = true;
+  try {
+    let apiKey = brokerApiKey;
+    let secretKey = brokerSecretKey;
+    if (!apiKey || !secretKey) {
+      const { data: context, error } = await supabase.rpc('get_copy_worker_context');
+      if (error) throw new Error(`get_copy_worker_context: ${error.message}`);
+      if (String(context?.master?.gate_uid || '') === String(brokerUid)) {
+        apiKey = context.master.api_key;
+        secretKey = context.master.secret_key;
+      }
+    }
+    if (!apiKey || !secretKey) {
+      await supabase.rpc('report_gate_broker_sync_status', {
+        p_status: 'NOT_CONFIGURED', p_error_code: 'BROKER_API_KEY_REQUIRED', p_observed_at: new Date().toISOString(),
+      });
+      return;
+    }
+    const result = await syncGateBrokerMetrics({ supabase, apiKey, secretKey, baseUrl });
+    log('gate_broker_metrics_synced', result);
+  } catch (error) {
+    const code = error?.code || (error instanceof Error ? error.message.split(':', 1)[0] : 'BROKER_SYNC_FAILED');
+    await supabase.rpc('report_gate_broker_sync_status', {
+      p_status: 'ERROR', p_error_code: String(code).slice(0, 80), p_observed_at: new Date().toISOString(),
+    });
+    log('gate_broker_metrics_error', { code: String(code).slice(0, 80) });
+  } finally { state.broker = false; }
+}
+
 function stop(signal) {
   state.stopping = true;
   log('worker_stopping', { signal });
@@ -120,5 +156,7 @@ process.on('SIGINT', () => stop('SIGINT'));
 log('worker_started', { mode: tradingMode, gate_base_url: baseUrl, broker_channel_id: gateChannelId || null, fixed_ip_configured: Boolean(workerPublicIp) });
 await runVerificationBatch();
 await runTradingCycle();
+await runBrokerMetricsSync();
 setInterval(runVerificationBatch, pollIntervalMs);
 setInterval(runTradingCycle, syncIntervalMs);
+setInterval(runBrokerMetricsSync, brokerSyncIntervalMs);
