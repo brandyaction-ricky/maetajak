@@ -30,9 +30,10 @@ test('redundant member positions page is removed while dashboard positions remai
 });
 
 test('admin dashboard follows the member dashboard visual hierarchy', () => {
-  assert.match(main, /admin-overview-card/);
-  assert.match(main, /실시간 카피 운영 현황/);
-  assert.match(main, /member-account-kpis/);
-  assert.match(main, /admin-action-section/);
-  assert.match(theme, /\.admin-sync-track/);
+  assert.match(main, /admin-operations-kpis/);
+  assert.match(main, /회원 누적 PNL/);
+  assert.match(main, /Broker Trading Volume/);
+  assert.match(main, /admin-copy-health/);
+  assert.match(theme, /\.admin-operations-main/);
+  assert.match(theme, /\.admin-broker-chart/);
 });
