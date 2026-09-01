@@ -113,8 +113,25 @@ tbody tr:hover { background: #141416; }
 .admin-date-range, .member-date-range, .admin-analysis-dates { display: flex; align-items: end; justify-content: flex-end; gap: 8px; margin-bottom: 14px; }
 .admin-date-range label, .member-date-range label, .admin-analysis-dates label { display: grid; gap: 6px; color: var(--muted); font-size: 10px; }
 .admin-date-range input, .member-date-range input, .admin-analysis-dates input, .admin-member-search { min-height: 38px; padding: 0 10px; border: 1px solid var(--line); border-radius: 8px; background: #111; color: var(--text); color-scheme: dark; }
+.admin-date-range { width: fit-content; max-width: 100%; margin-left: auto; padding: 12px; border: 1px solid var(--line); border-radius: 11px; background: var(--panel); }
+.admin-date-range label { min-width: 0; }
+.admin-date-range input { width: 164px; max-width: 100%; font-size: 11px; }
+.admin-date-range > span { display: grid; min-height: 38px; place-items: center; color: var(--subtle); font-size: 11px; }
+.admin-date-range .btn { min-height: 38px; padding: 0 14px; }
 
 .member-dashboard-kpis, .admin-operations-kpis { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; margin-bottom: 12px; }
+.admin-live-status { min-height: 72px; padding: 15px 18px; margin-bottom: 12px; }
+.admin-live-status > div:first-child { min-width: 0; }
+.admin-live-status b { font-size: 12px; }
+.admin-live-status b + div { margin: 4px 0 0 19px; }
+.admin-live-status b + div span { display: block; overflow: hidden; font-size: 10px; line-height: 1.5; text-overflow: ellipsis; white-space: nowrap; }
+.admin-live-status time { flex: 0 0 auto; padding: 7px 10px; border: 1px solid rgba(54, 201, 143, .18); border-radius: 8px; background: rgba(10, 10, 11, .48); color: var(--muted); font-size: 10px; font-weight: 650; line-height: 1.35; white-space: nowrap; }
+.admin-operations-kpis .kpi { min-height: 106px; padding: 14px; }
+.admin-operations-kpis .kpi label { font-size: 10px; }
+.admin-operations-kpis .kpi strong { margin-top: 12px; overflow: hidden; font-size: 21px; line-height: 1.15; text-overflow: ellipsis; white-space: nowrap; }
+.admin-operations-kpis .kpi small { margin-top: 7px; overflow: hidden; font-size: 9px; line-height: 1.45; text-overflow: ellipsis; white-space: nowrap; }
+.admin-dashboard-positions { padding-top: 6px; }
+.admin-dashboard-positions .master-position-card { min-height: 226px; }
 .member-dashboard-kpis .kpi { min-height: 106px; padding: 14px; }
 .member-dashboard-kpis .kpi label { font-size: 10px; }
 .member-dashboard-kpis .kpi strong { margin-top: 12px; font-size: 21px; line-height: 1.15; white-space: nowrap; }
@@ -374,10 +391,15 @@ tbody tr:hover { background: #141416; }
   .content { padding: 20px 16px 40px; }
   .member-dashboard-kpis, .admin-operations-kpis, .kpis { grid-template-columns: repeat(2, 1fr); }
   .admin-dashboard-heading, .member-trades-heading, .master-position-head, .member-position-head, .panel-title { align-items: flex-start; flex-direction: column; }
+  .admin-live-status { align-items: flex-start; flex-direction: column; gap: 12px; }
+  .admin-live-status time { margin-left: 19px; }
   .analysis-calendar-head { align-items: stretch; }
   .analysis-month-control input { width: 100%; }
   .admin-period-tabs { max-width: 100%; overflow: auto; }
-  .admin-analysis-range, .admin-analysis-dates { align-items: stretch; flex-direction: column; }
+  .admin-date-range, .admin-analysis-range, .admin-analysis-dates { align-items: stretch; flex-direction: column; }
+  .admin-date-range { width: 100%; }
+  .admin-date-range input { width: 100%; }
+  .admin-date-range > span { display: none; }
   .analysis-metrics { grid-template-columns: repeat(2, 1fr); }
   .copy-settings-layout, .admin-api-setup { grid-template-columns: 1fr; }
   .copy-settings-primary, .copy-settings-secondary { grid-template-rows: none; }
@@ -401,4 +423,6 @@ tbody tr:hover { background: #141416; }
   .member-detail-tabs { display: grid; grid-template-columns: 1fr; }
   .flow { grid-template-columns: repeat(2, 1fr); }
   .copy-risk-inputs { grid-template-columns: 1fr; }
+  .admin-live-status b + div span { white-space: normal; }
+  .admin-live-status time { width: calc(100% - 19px); white-space: normal; }
 }
