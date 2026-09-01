@@ -141,6 +141,22 @@ test('member live status keeps copy metadata and action compact', () => {
   assert.match(theme, /@media \(max-width: 820px\)[\s\S]*\.dashboard-live-meta \{[^}]*width: calc\(100% - 19px\)/s);
 });
 
+test('admin profit filters share a compact aligned control row', () => {
+  assert.match(main, /class="admin-analysis-preset-field"/);
+  assert.doesNotMatch(main, /id="adminAnalysisMemberSort"/);
+  assert.match(theme, /\.admin-analysis-dates \{[^}]*margin-bottom: 0/s);
+  assert.match(theme, /\.admin-analysis-dates input \{[^}]*width: 164px/s);
+  assert.match(theme, /\.admin-analysis-presets button \{[^}]*min-height: 32px/s);
+});
+
+test('member detail tabs share styled responsive panels', () => {
+  assert.match(theme, /\.member-detail-modal \{[^}]*width: min\(920px, 100%\);[^}]*padding: 22px/s);
+  assert.match(theme, /\.member-detail-summary \.member-control-actions \{[^}]*grid-column: 1 \/ -1/s);
+  assert.match(theme, /\.member-performance-table \{[^}]*min-width: 680px/s);
+  assert.match(theme, /\.member-password-reset-actions \{[^}]*grid-template-columns: minmax\(0, 1fr\) auto/s);
+  assert.match(theme, /@media \(max-width: 560px\)[\s\S]*\.member-detail-tabs \{[^}]*repeat\(3,/s);
+});
+
 test('redundant admin operational menus are removed at startup', () => {
   assert.doesNotMatch(main, /'admin-master':/);
   assert.doesNotMatch(main, /'admin-monitor':/);
