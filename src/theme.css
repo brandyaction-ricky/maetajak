@@ -1420,3 +1420,254 @@ td,
     gap: 12px;
   }
 }
+
+/* 2026 operations dashboard refresh */
+.dashboard-live-status,
+.admin-live-status {
+  margin-bottom: 18px;
+  border-color: rgba(25, 201, 151, .42);
+  background: linear-gradient(90deg, rgba(10, 47, 38, .72), rgba(10, 31, 27, .46));
+}
+
+.dashboard-live-meta,
+.admin-live-status time {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.member-dashboard-kpis,
+.admin-operations-kpis {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 14px;
+  margin-bottom: 14px;
+}
+
+.member-dashboard-kpis .kpi,
+.admin-operations-kpis .kpi {
+  min-width: 0;
+  min-height: 154px;
+}
+
+.member-dashboard-main,
+.admin-operations-main {
+  display: grid;
+  grid-template-columns: minmax(0, 1.75fr) minmax(300px, .85fr);
+  gap: 14px;
+  align-items: stretch;
+}
+
+.member-pnl-panel,
+.member-risk-panel,
+.admin-pnl-panel,
+.admin-copy-health,
+.admin-broker-panel,
+.admin-attention-panel,
+.admin-master-preview,
+.admin-pending-members,
+.admin-member-directory {
+  padding: 24px;
+}
+
+.panel-title,
+.admin-dashboard-heading,
+.member-trades-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.panel-title h3,
+.admin-dashboard-heading h2,
+.member-trades-heading h2 {
+  margin: 0;
+}
+
+.panel-title p,
+.admin-dashboard-heading p,
+.member-trades-heading p {
+  margin: 6px 0 0;
+  color: var(--muted);
+}
+
+.member-risk-panel .panel-title,
+.admin-copy-health .panel-title {
+  padding-bottom: 18px;
+  border-bottom: 1px solid var(--line);
+}
+
+.risk-status-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-height: 88px;
+  border-bottom: 1px solid var(--line);
+}
+
+.risk-status-row:last-child { border-bottom: 0; }
+.risk-status-row b { display: block; }
+.risk-status-row small { display: block; margin-top: 6px; color: var(--muted); }
+.risk-status-row > strong { font-size: 20px; white-space: nowrap; }
+
+.member-trades-heading { margin-bottom: 18px; }
+.member-trades-status { display: inline-flex; align-items: center; gap: 7px; padding: 8px 12px; border-radius: 999px; color: var(--green); background: rgba(25, 201, 151, .1); font-weight: 700; }
+.member-gate-summary { display: flex; align-items: center; gap: 14px; padding: 22px 26px; margin-bottom: 14px; }
+.gate-summary-logo { flex: 0 0 48px; width: 48px; height: 48px; display: grid; place-items: center; border-radius: 14px; background: #20242a; font-size: 22px; font-weight: 800; }
+.member-gate-summary small { display: block; margin-top: 5px; color: var(--muted); }
+.gate-summary-equity { margin-left: auto; text-align: right; }
+.gate-summary-equity strong { display: block; font-size: 22px; }
+
+.member-copy-position-table,
+.member-copy-events { padding: 0; overflow: hidden; }
+.member-copy-position-table .panel-title,
+.member-copy-events .panel-title { padding: 22px 24px; border-bottom: 1px solid var(--line); }
+.member-copy-position-table .table,
+.member-copy-events .table,
+.admin-member-directory .table,
+.admin-pending-members .table { margin: 0; }
+.trade-symbol { display: flex; align-items: center; gap: 10px; white-space: nowrap; }
+.trade-direction { font-weight: 800; }
+.trade-direction.long { color: var(--green); }
+.trade-direction.short { color: var(--red); }
+
+.copy-settings-primary,
+.copy-settings-secondary {
+  display: grid;
+  gap: 14px;
+  min-width: 0;
+}
+
+.copy-settings-primary > .copy-control-card,
+.copy-settings-primary > .copy-risk-card,
+.copy-settings-secondary > .copy-existing-policy,
+.copy-settings-secondary > .copy-setting-summary {
+  grid-column: auto;
+  grid-row: auto;
+}
+
+.copy-settings-secondary > .copy-setting-summary { position: sticky; top: 90px; }
+
+.admin-dashboard-heading { align-items: center; margin-bottom: 16px; }
+.admin-period-tabs { display: flex; align-items: center; gap: 4px; padding: 4px; border: 1px solid var(--line); border-radius: 12px; }
+.admin-period-tabs button { border: 0; border-radius: 8px; padding: 8px 13px; background: transparent; color: var(--muted); font-weight: 700; }
+.admin-period-tabs button.active { color: var(--text); background: #292d33; }
+.admin-date-range { display: flex; align-items: end; justify-content: flex-end; gap: 8px; margin: -4px 0 14px; }
+.admin-date-range label { display: grid; gap: 5px; color: var(--muted); font-size: 10px; }
+.admin-date-range input,
+.admin-member-search { min-height: 40px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); color: var(--text); padding: 0 12px; color-scheme: dark; }
+
+.admin-pnl-chart,
+.admin-broker-chart {
+  min-height: 290px;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  margin-top: 18px;
+}
+.admin-pnl-chart svg,
+.admin-broker-chart svg { width: 100%; min-width: 620px; }
+
+.copy-health-donut {
+  --copy-rate: 0;
+  width: 170px;
+  aspect-ratio: 1;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  margin: 28px auto 18px;
+  border-radius: 50%;
+  background: radial-gradient(circle at center, var(--panel) 0 57%, transparent 58%), conic-gradient(var(--green) calc(var(--copy-rate) * 1%), #292d33 0);
+}
+.copy-health-donut strong { font-size: 30px; }
+.copy-health-donut span { color: var(--muted); font-size: 11px; }
+.copy-health-legend { display: flex; justify-content: center; gap: 18px; color: var(--muted); font-size: 11px; }
+.copy-health-legend span { display: inline-flex; align-items: center; gap: 6px; }
+.copy-health-legend i { width: 8px; height: 8px; border-radius: 50%; background: #454a52; }
+.copy-health-legend i.ok { background: var(--green); }
+.copy-health-list { margin-top: 22px; }
+.copy-health-list > div { display: flex; justify-content: space-between; padding: 15px 0; border-top: 1px solid var(--line); }
+
+.admin-broker-panel { margin-top: 14px; }
+.broker-summary { display: flex; gap: 22px; color: var(--muted); font-size: 12px; }
+.broker-summary span { display: grid; gap: 4px; }
+.broker-summary b { color: var(--text); font-size: 18px; }
+.admin-chart-labels { display: flex; justify-content: space-between; width: 100%; color: var(--muted); font-size: 10px; }
+.broker-fee-bar { fill: rgba(25, 201, 151, .22); }
+
+.admin-operations-bottom { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 14px; }
+.admin-attention-list { margin-top: 12px; }
+.admin-attention-row { display: grid; grid-template-columns: 1fr auto; gap: 8px 16px; padding: 16px 0; border-top: 1px solid var(--line); }
+.admin-attention-row small { color: var(--muted); }
+.admin-master-preview-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-top: 14px; }
+.admin-master-preview-card { padding: 14px; border: 1px solid var(--line); border-radius: 12px; }
+.admin-master-preview-card > div { display: flex; align-items: center; gap: 9px; }
+.admin-master-preview-card small { display: block; color: var(--muted); margin-top: 3px; }
+.admin-master-preview-card > strong { display: block; margin: 16px 0 8px; font-size: 19px; }
+.admin-master-preview-card > span { font-size: 11px; font-weight: 800; }
+
+.admin-pending-members { margin-bottom: 14px; }
+.admin-member-directory { padding-bottom: 6px; }
+.admin-member-search { min-width: 220px; }
+.admin-members-table { min-width: 1180px; }
+.admin-member-identity { display: flex; align-items: center; gap: 10px; min-width: 180px; }
+.admin-member-identity > span { width: 36px; height: 36px; display: grid; place-items: center; border-radius: 11px; background: #24282e; font-weight: 800; }
+.admin-member-identity small { display: block; margin-top: 4px; color: var(--muted); }
+.member-margin-cell { min-width: 130px; }
+.member-margin-cell > div { height: 6px; margin-top: 7px; overflow: hidden; border-radius: 999px; background: #292d33; }
+.member-margin-cell i { display: block; height: 100%; border-radius: inherit; background: var(--green); }
+
+@media (max-width: 1280px) {
+  .member-dashboard-kpis,
+  .admin-operations-kpis { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .member-dashboard-main,
+  .admin-operations-main { grid-template-columns: minmax(0, 1.45fr) minmax(280px, .8fr); }
+}
+
+@media (max-width: 900px) {
+  .member-dashboard-kpis,
+  .admin-operations-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .member-dashboard-main,
+  .admin-operations-main,
+  .admin-operations-bottom { grid-template-columns: 1fr; }
+  .admin-dashboard-heading { align-items: flex-start; flex-direction: column; }
+  .admin-master-preview-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@media (max-width: 760px) {
+  .dashboard-live-status,
+  .admin-live-status,
+  .panel-title,
+  .member-trades-heading { align-items: flex-start; flex-direction: column; }
+  .dashboard-live-meta { width: 100%; justify-content: space-between; }
+  .member-dashboard-kpis,
+  .admin-operations-kpis { grid-template-columns: 1fr; }
+  .member-pnl-panel,
+  .member-risk-panel,
+  .admin-pnl-panel,
+  .admin-copy-health,
+  .admin-broker-panel,
+  .admin-attention-panel,
+  .admin-master-preview,
+  .admin-pending-members,
+  .admin-member-directory { padding: 18px 14px; }
+  .admin-period-tabs { width: 100%; overflow-x: auto; }
+  .admin-period-tabs button { flex: 0 0 auto; }
+  .admin-date-range { display: grid; grid-template-columns: 1fr auto 1fr; }
+  .admin-date-range .btn { grid-column: 1 / -1; }
+  .broker-summary { width: 100%; justify-content: space-between; }
+  .member-gate-summary { align-items: flex-start; padding: 18px 14px; }
+  .gate-summary-equity { margin-left: 0; }
+  .copy-settings-secondary > .copy-setting-summary { position: static; }
+}
+
+@media (max-width: 520px) {
+  .admin-master-preview-grid { grid-template-columns: 1fr; }
+  .member-gate-summary { flex-wrap: wrap; }
+  .gate-summary-equity { flex-basis: 100%; text-align: left; }
+  .admin-member-search { min-width: 0; width: 100%; }
+}
