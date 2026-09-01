@@ -26,7 +26,7 @@ const pages = {
   'admin-members': ['회원 관리', '가입 승인과 회원 리스트를 관리합니다.'],
   'admin-member-analysis': ['수익 관리', '회원별·기간별 카피트레이딩 수익을 조회합니다.'],
   'admin-api': ['API 연결 현황', '회원별 Gate.io API 상태를 확인합니다.'],
-  'admin-audit': ['Audit Log', '관리자와 시스템 작업 이력을 확인합니다.'],
+  'admin-audit': ['감사 기록', '관리자와 시스템의 주요 변경 이력을 확인합니다.'],
   'admin-settings': ['시스템 설정', '환경 및 기본값을 관리합니다.'],
 };
 
@@ -142,6 +142,8 @@ function enhanceNavigationAndHeader() {
   byId('admin-monitor')?.remove();
   document.querySelector('[data-page="admin-events"]')?.remove();
   byId('admin-events')?.remove();
+  const auditNav = document.querySelector('[data-page="admin-audit"]');
+  if (auditNav) auditNav.textContent = '감사 기록';
   const leading = document.querySelector('.top > div:first-child');
   if (!leading || leading.classList.contains('top-leading')) return;
   const title = byId('title');
@@ -187,9 +189,9 @@ function enhanceLiveDataUi() {
     <div class="admin-operations-kpis"><div class="card kpi"><label>전체 회원</label><strong id="adminTotalMembers">0</strong><small id="adminMemberDelta">승인 회원 기준</small></div><div class="card kpi"><label>카피 중</label><strong id="adminCopyingMembers">0</strong><small id="adminCopyingRate">0% 정상 작동</small></div><div class="card kpi"><label>확인 필요</label><strong id="adminLiveActionCount" class="neg">0</strong><small id="adminAttentionBreakdown">API·주문 상태</small></div><div class="card kpi"><label>총 운용 자산</label><strong id="adminTotalAssets">-</strong><small>회원 최신 원장 합산</small></div><div class="card kpi"><label>기간 회원 PNL</label><strong id="adminPeriodPnl">-</strong><small id="adminPeriodLabel">선택 기간 합산</small></div></div>
     <div class="master-position-section admin-dashboard-positions"><div class="master-position-head"><div><div class="master-position-title"><h3>현재 포지션</h3><span id="masterPositionBadge">0</span></div><p>Gate.io에서 Worker가 확인한 Master 무기한 선물 포지션입니다.</p></div><div class="master-filters" role="group" aria-label="포지션 방향 필터"><button class="active" type="button" data-master-filter="ALL">전체</button><button type="button" data-master-filter="LONG">Long</button><button type="button" data-master-filter="SHORT">Short</button></div></div><div id="adminMasterPositionCards" class="master-position-grid"><div class="master-position-empty">Master 포지션을 불러오는 중입니다.</div></div></div>`;
   const trades = byId('member-trades');
-  if (trades) trades.innerHTML = `<div class="member-trades-heading"><div><h2>내 카피 현황</h2><p>마스터 전략이 내 계정에 어떻게 복사되고 있는지 실제 회원 계정 기준으로 확인합니다.</p></div><span id="memberTradeStatus" class="chip yellow">상태 확인 중</span></div><section class="card member-gate-summary"><div class="gate-summary-logo">G</div><div><b>Gate.io 연결 계정</b><small id="memberTradeGateUid">UID 확인 중 · Futures</small></div><div class="gate-summary-equity"><strong id="memberTradeEquity">-</strong><small>현재 자산</small></div></section><div class="member-trade-tabs" role="tablist" aria-label="카피 현황 구분"><button type="button" class="active" role="tab" aria-selected="true" data-member-trade-tab="positions">현재 카피 포지션</button><button type="button" role="tab" aria-selected="false" data-member-trade-tab="events">최근 카피 이벤트</button></div><section class="card member-copy-position-table" data-member-trade-panel="positions"><div class="panel-title"><div><h3>현재 카피 포지션</h3><p>실제 회원 계정 기준</p></div></div><div class="table"><table><thead><tr><th>종목</th><th>방향</th><th>포지션 규모</th><th>진입가</th><th>현재가</th><th>미실현 PNL</th><th>ROI</th><th>증거금 비중</th><th>상태</th></tr></thead><tbody id="memberTradePositions"><tr><td colspan="9" class="empty-cell">실제 포지션을 불러오는 중입니다.</td></tr></tbody></table></div></section><section class="card member-copy-events hidden" data-member-trade-panel="events"><div class="panel-title"><div><h3>최근 카피 이벤트</h3><p>주문·체결·동기화 기록</p></div></div><div class="table"><table><thead><tr><th>시간</th><th>종목</th><th>이벤트</th><th>심각도</th><th>상태</th></tr></thead><tbody id="memberLiveEvents"><tr><td colspan="5" class="empty-cell">실제 이벤트를 불러오는 중입니다.</td></tr></tbody></table></div></section>`;
+  if (trades) trades.innerHTML = `<div class="member-trades-heading"><div><h2>내 카피 현황</h2><p>마스터 전략이 내 계정에 어떻게 복사되고 있는지 실제 회원 계정 기준으로 확인합니다.</p></div><span id="memberTradeStatus" class="chip yellow">상태 확인 중</span></div><section class="card member-gate-summary"><div class="gate-summary-logo">G</div><div><b>Gate.io 연결 계정</b><small id="memberTradeGateUid">UID 확인 중 · Futures</small></div><div class="gate-summary-equity"><strong id="memberTradeEquity">-</strong><small>현재 자산</small></div></section><section class="card member-copy-position-table"><div class="panel-title"><div><h3>현재 카피 포지션</h3><p>실제 회원 계정 기준</p></div></div><div class="table"><table><thead><tr><th>종목</th><th>방향</th><th>포지션 규모</th><th>진입가</th><th>현재가</th><th>미실현 PNL</th><th>ROI</th><th>증거금 비중</th><th>상태</th></tr></thead><tbody id="memberTradePositions"><tr><td colspan="9" class="empty-cell">실제 포지션을 불러오는 중입니다.</td></tr></tbody></table></div></section>`;
   const auditPage = byId('admin-audit');
-  if (auditPage) auditPage.innerHTML = `<div class="card section"><div class="section-head"><div><h3>Audit Log</h3><p>관리자 승인·API·카피 제어 변경 이력입니다.</p></div><button class="btn" type="button" id="adminAuditRefresh">새로고침</button></div><div class="table"><table><thead><tr><th>시간</th><th>작업자</th><th>작업</th><th>대상</th><th>변경 내용</th></tr></thead><tbody id="adminAuditRows"><tr><td colspan="5" class="empty-cell">감사 로그를 불러오는 중입니다.</td></tr></tbody></table></div></div>`;
+  if (auditPage) auditPage.innerHTML = `<div class="card section"><div class="section-head"><div><h3>감사 기록</h3><p>관리자 승인·API 연결·카피 제어의 주요 변경 이력입니다.</p></div><button class="btn" type="button" id="adminAuditRefresh">새로고침</button></div><div class="table"><table><thead><tr><th>시간</th><th>작업자</th><th>작업 내용</th><th>대상</th><th>상세 변경</th></tr></thead><tbody id="adminAuditRows"><tr><td colspan="5" class="empty-cell">감사 기록을 불러오는 중입니다.</td></tr></tbody></table></div></div>`;
 }
 
 function enhanceCopySettingsUi() {
@@ -270,13 +272,22 @@ function enhanceMemberDetailModal() {
           <div><small>회원 상세</small><h3 id="memberDetailTitle">-</h3><p id="memberDetailEmail">-</p></div>
           <span id="memberDetailStatus" class="chip">-</span>
         </div>
-        <div id="memberDetailSummary" class="member-detail-summary"></div>
-        <div id="memberPasswordResetActions" class="member-password-reset-actions hidden">
-          <div><h3>로그인 비밀번호</h3><p>회원에게 일회성 비밀번호 재설정 링크를 이메일로 전송합니다.</p></div>
-          <button id="memberPasswordResetButton" class="btn" type="button">비밀번호 재설정 메일 발송</button>
+        <div class="member-detail-tabs" role="tablist" aria-label="회원 상세 정보 구분">
+          <button type="button" class="active" role="tab" aria-selected="true" data-member-detail-tab="overview">기본·카피 설정</button>
+          <button type="button" role="tab" aria-selected="false" data-member-detail-tab="performance">수익 내역</button>
+          <button type="button" role="tab" aria-selected="false" data-member-detail-tab="security">계정 보안</button>
         </div>
-        <div class="section-head member-performance-title"><div><h3>월별 수익</h3><p>실현손익·수수료·펀딩비가 반영된 집계입니다.</p></div></div>
-        <div class="table"><table class="member-performance-table"><thead><tr><th>월</th><th>순손익</th><th>수익률</th><th>거래량</th><th>거래</th><th>승률</th></tr></thead><tbody id="memberMonthlyPerformance"><tr><td colspan="6" class="empty-cell">월별 수익을 불러오는 중입니다.</td></tr></tbody></table></div>
+        <section class="member-detail-panel" data-member-detail-panel="overview"><div id="memberDetailSummary" class="member-detail-summary"></div></section>
+        <section class="member-detail-panel hidden" data-member-detail-panel="performance">
+          <div class="section-head member-performance-title"><div><h3>월별 수익</h3><p>실현손익·수수료·펀딩비가 반영된 집계입니다.</p></div></div>
+          <div class="table"><table class="member-performance-table"><thead><tr><th>월</th><th>순손익</th><th>수익률</th><th>거래량</th><th>거래</th><th>승률</th></tr></thead><tbody id="memberMonthlyPerformance"><tr><td colspan="6" class="empty-cell">월별 수익을 불러오는 중입니다.</td></tr></tbody></table></div>
+        </section>
+        <section class="member-detail-panel hidden" data-member-detail-panel="security">
+          <div id="memberPasswordResetActions" class="member-password-reset-actions hidden">
+            <div><h3>로그인 비밀번호</h3><p>회원에게 일회성 비밀번호 재설정 링크를 이메일로 전송합니다.</p></div>
+            <button id="memberPasswordResetButton" class="btn" type="button">비밀번호 재설정 메일 발송</button>
+          </div>
+        </section>
       </div>
     </div>`);
 }
@@ -910,7 +921,6 @@ async function loadMemberLiveData() {
   const { data, error } = await supabase.rpc('get_my_live_trading_data');
   if (error) return window.toast('실제 거래 데이터를 불러오지 못했습니다.');
   const positions = Array.isArray(data?.positions) ? data.positions : [];
-  const events = Array.isArray(data?.events) ? data.events : [];
   const openPositions = Array.isArray(data?.open_positions) ? data.open_positions : [];
   const account = data?.account;
   memberLiveSnapshot = data;
@@ -931,7 +941,6 @@ async function loadMemberLiveData() {
   const detailedRows = positions.length ? positions.map((position) => `<tr><td>${escapeHtml(position.contract)}</td><td>${Number(position.target_size)}</td><td>${Number(position.actual_size)}</td><td>${Number(position.delta_size)}</td><td>${stateChip(position.state)}${position.pause_reason ? `<small>${escapeHtml(position.pause_reason)}</small>` : ''}</td><td>${position.observed_at ? new Date(position.observed_at).toLocaleString('ko-KR') : '-'}</td></tr>`).join('') : '<tr><td colspan="6" class="empty-cell">Worker가 확인한 실제 포지션이 아직 없습니다.</td></tr>';
   if (byId('memberLivePositions')) byId('memberLivePositions').innerHTML = detailedRows;
   if (byId('memberDashPositions')) byId('memberDashPositions').innerHTML = positions.length ? positions.map((position) => `<tr><td>${escapeHtml(position.contract)}</td><td>${Number(position.target_size)}</td><td>${Number(position.actual_size)}</td><td>${Number(position.delta_size)}</td><td>${stateChip(position.state)}</td></tr>`).join('') : '<tr><td colspan="5" class="empty-cell">Worker가 확인한 실제 포지션이 아직 없습니다.</td></tr>';
-  if (byId('memberLiveEvents')) byId('memberLiveEvents').innerHTML = events.length ? events.map((event) => `<tr><td>${new Date(event.occurred_at).toLocaleString('ko-KR')}</td><td>${escapeHtml(event.contract || '-')}</td><td>${escapeHtml(event.type)}</td><td>${escapeHtml(event.severity)}</td><td>${stateChip(event.payload?.status || event.payload?.state || '-')}</td></tr>`).join('') : '<tr><td colspan="5" class="empty-cell">실제 Copy Event가 아직 없습니다.</td></tr>';
   if (byId('memberTradeEquity')) byId('memberTradeEquity').textContent = account ? formatUsd(account.total_equity) : '-';
   if (byId('memberTradeGateUid')) byId('memberTradeGateUid').textContent = `UID ${byId('gateUid')?.value ? `****${byId('gateUid').value.slice(-4)}` : '연결 확인 중'} · Futures Enabled`;
   if (byId('memberTradeStatus')) {
@@ -1125,9 +1134,28 @@ async function loadAdminAuditLog() {
   const { data, error } = await supabase.rpc('get_admin_audit_log', { p_limit: 200 });
   const tbody = byId('adminAuditRows');
   if (!tbody) return;
-  if (error) return void (tbody.innerHTML = '<tr><td colspan="5" class="empty-cell neg">감사 로그를 불러오지 못했습니다.</td></tr>');
+  if (error) return void (tbody.innerHTML = '<tr><td colspan="5" class="empty-cell neg">감사 기록을 불러오지 못했습니다.</td></tr>');
   const logs = Array.isArray(data) ? data : [];
-  tbody.innerHTML = logs.length ? logs.map((log) => `<tr><td>${new Date(log.created_at).toLocaleString('ko-KR')}</td><td>${escapeHtml(log.actor_name || log.actor_email || 'SYSTEM')}</td><td>${escapeHtml(log.action)}</td><td>${escapeHtml(log.target_name || log.target_email || '-')}</td><td class="payload-cell">${escapeHtml(compactPayload(log.next_value))}</td></tr>`).join('') : '<tr><td colspan="5" class="empty-cell">아직 기록된 관리자 작업이 없습니다.</td></tr>';
+  tbody.innerHTML = logs.length ? logs.map((log) => `<tr><td>${new Date(log.created_at).toLocaleString('ko-KR')}</td><td>${escapeHtml(log.actor_name || log.actor_email || '시스템')}</td><td>${escapeHtml(auditActionLabel(log.action))}</td><td>${escapeHtml(log.target_name || log.target_email || '-')}</td><td class="payload-cell">${escapeHtml(compactPayload(log.next_value))}</td></tr>`).join('') : '<tr><td colspan="5" class="empty-cell">아직 기록된 관리자 작업이 없습니다.</td></tr>';
+}
+
+function auditActionLabel(action) {
+  const labels = {
+    USER_APPROVAL_CHANGED: '회원 승인 상태 변경',
+    COPY_SYSTEM_CONTROL_UPDATED: '전체 카피 제어 변경',
+    MEMBER_COPY_CONTROL_UPDATED: '회원 카피 상태 변경',
+    LIVE_COPY_ENABLED: '실거래 카피 활성화',
+    LIVE_COPY_HALTED: '실거래 카피 중단',
+    GATE_API_CREDENTIALS_SAVED: '회원 API 정보 저장',
+    GATE_API_VERIFIED: '회원 API 검증 완료',
+    GATE_API_VERIFICATION_FAILED: '회원 API 검증 실패',
+    MEMBER_GATE_API_REVERIFICATION_REQUESTED: '회원 API 재검증 요청',
+    MEMBER_GATE_API_DISCONNECTED: '회원 API 연결 해제',
+    MASTER_GATE_API_CREDENTIALS_SAVED: 'Master API 정보 저장',
+    MASTER_GATE_API_DISCONNECTED: 'Master API 연결 해제',
+    MEMBER_PASSWORD_RESET_REQUESTED: '회원 비밀번호 재설정 요청',
+  };
+  return labels[action] || String(action || '알 수 없는 작업').replaceAll('_', ' ').toLowerCase();
 }
 
 async function setAdminMemberControl(mode) {
@@ -1583,6 +1611,18 @@ function closeMemberDetail() {
   selectedMemberId = null;
 }
 
+function setMemberDetailTab(tab = 'overview') {
+  const selected = ['overview', 'performance', 'security'].includes(tab) ? tab : 'overview';
+  document.querySelectorAll('[data-member-detail-tab]').forEach((button) => {
+    const active = button.dataset.memberDetailTab === selected;
+    button.classList.toggle('active', active);
+    button.setAttribute('aria-selected', String(active));
+  });
+  document.querySelectorAll('[data-member-detail-panel]').forEach((panel) => {
+    panel.classList.toggle('hidden', panel.dataset.memberDetailPanel !== selected);
+  });
+}
+
 async function openMemberDetail(userId) {
   if (!supabase || currentProfile?.role !== 'ADMIN' || memberDetailBusy) return;
   const modal = byId('memberDetailModal');
@@ -1592,6 +1632,7 @@ async function openMemberDetail(userId) {
   byId('memberDetailTitle').textContent = '불러오는 중...';
   byId('memberDetailEmail').textContent = '';
   byId('memberDetailSummary').innerHTML = '';
+  setMemberDetailTab('overview');
   byId('memberPasswordResetActions')?.classList.add('hidden');
   byId('memberMonthlyPerformance').innerHTML = '<tr><td colspan="6" class="empty-cell">월별 수익을 불러오는 중입니다.</td></tr>';
   memberDetailBusy = true;
@@ -1748,22 +1789,13 @@ document.addEventListener('click', async (event) => {
   if (event.target.id === 'memberDetailModal' || event.target.closest('[data-member-detail-close]')) closeMemberDetail();
   const navButton = event.target.closest('.nav-btn[data-page]');
   if (navButton) window.openPage(navButton.dataset.page);
-  const memberTradeTab = event.target.closest('[data-member-trade-tab]');
-  if (memberTradeTab) {
-    const selected = memberTradeTab.dataset.memberTradeTab;
-    document.querySelectorAll('[data-member-trade-tab]').forEach((button) => {
-      const active = button === memberTradeTab;
-      button.classList.toggle('active', active);
-      button.setAttribute('aria-selected', String(active));
-    });
-    document.querySelectorAll('[data-member-trade-panel]').forEach((panel) => panel.classList.toggle('hidden', panel.dataset.memberTradePanel !== selected));
-  }
+  const memberDetailTab = event.target.closest('[data-member-detail-tab]');
+  if (memberDetailTab) setMemberDetailTab(memberDetailTab.dataset.memberDetailTab);
   const pauseButton = event.target.closest('[data-copy-pause]');
   if (pauseButton) await setCopyPause(pauseButton.dataset.copyPause);
   if (event.target.closest('#adminEmergencyHalt')) await emergencyHalt();
   if (event.target.closest('#gateApiDisconnect')) await disconnectMemberGateApi();
   if (event.target.closest('#adminGateApiDisconnect')) await disconnectAdminMasterGateApi();
-  if (event.target.closest('#adminEventsRefresh')) await loadAdminOperationalEvents();
   if (event.target.closest('#adminAuditRefresh')) await loadAdminAuditLog();
   if (event.target.closest('#memberPasswordResetButton')) await requestMemberPasswordReset();
   if (event.target.closest('#copySettingsSave')) await saveCopySettings();
