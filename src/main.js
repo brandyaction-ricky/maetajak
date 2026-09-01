@@ -50,8 +50,15 @@ let passwordBusy = false;
 let passwordRecoveryMode = false;
 let adminPasswordResetBusy = false;
 let memberDashboardRange = 30;
-let memberDashboardMetric = 'ROI';
+let memberDashboardMetric = 'PNL';
 let memberDashboardPerformance = null;
+let memberCumulativePerformance = null;
+let memberMonthPerformance = null;
+let memberLiveSnapshot = null;
+let adminOperationsRange = 30;
+let adminOperationsMetrics = null;
+let adminMembersCache = [];
+let adminMemberSearch = '';
 
 function extendCopySettingOptions() {
   const selects = [...document.querySelectorAll('select')];
@@ -165,28 +172,20 @@ function enhanceOperationsStatusUi() {
 
 function enhanceLiveDataUi() {
   const memberDashboard = byId('member-dashboard');
-  if (memberDashboard) memberDashboard.innerHTML = `<div class="status"><div><span id="memberSystemDot" class="dot"></span><b id="memberSystemTitle">운영 상태 확인 중</b><div><span id="memberSystemDetail">Worker와 주문 안전 상태를 불러오고 있습니다.</span></div></div><button class="btn red" onclick="openPause()">카피 관리</button></div>
-    <section class="card section member-performance-card">
-      <div class="member-performance-toolbar"><div class="member-period-tabs" role="group" aria-label="성과 조회 기간">${[7, 30, 90, 180].map((days) => `<button type="button" data-dashboard-range="${days}" class="${days === 30 ? 'active' : ''}">${days}D</button>`).join('')}</div><form id="memberDateRangeForm" class="member-date-range"><label>시작일<input id="memberDateFrom" type="date" required></label><span>—</span><label>종료일<input id="memberDateTo" type="date" required></label><button class="btn" type="submit">조회</button></form></div>
-      <div class="member-performance-head"><div><small>카피 시작 이후 실제 선물 원장</small><h3>ROI &amp; PNL</h3></div><div class="member-metric-toggle"><button type="button" data-dashboard-metric="ROI" class="active">ROI</button><button type="button" data-dashboard-metric="PNL">PNL</button></div></div>
-      <strong id="memberPerformanceValue" class="member-performance-value">집계 대기</strong>
-      <div id="memberPerformanceChart" class="member-performance-chart"><div class="member-chart-empty">Trading Worker가 성과를 집계하면 차트가 표시됩니다.</div></div>
-      <div class="member-performance-foot"><span id="memberPerformancePeriod">-</span><span>입출금 제외 · 수수료·펀딩 반영</span></div>
-    </section>
-    <div class="grid kpis member-account-kpis"><div class="card kpi"><label>총 자산</label><strong id="memberLiveEquity">-</strong><small id="memberUsedMargin">사용 증거금 -</small></div><div class="card kpi"><label>사용 가능 증거금</label><strong id="memberLiveAvailable">-</strong><div class="member-margin-track"><i id="memberMarginBar"></i></div><small id="memberMarginUsage">사용률 -</small></div><div class="card kpi"><label>활성 포지션</label><strong id="memberOpenPositionCount">0</strong><small id="memberPositionDirections">Long 0 · Short 0</small></div><div class="card kpi"><label>미실현 손익</label><strong id="memberLiveUnrealised">-</strong><small id="memberLiveObserved">마지막 확인 -</small></div></div>
+  if (memberDashboard) memberDashboard.innerHTML = `<div class="status dashboard-live-status"><div><span id="memberSystemDot" class="dot"></span><b id="memberSystemTitle">운영 상태 확인 중</b><div><span id="memberSystemDetail">Worker와 주문 안전 상태를 불러오고 있습니다.</span></div></div><div class="dashboard-live-meta"><span id="memberCopyStartedAt">카피 시작일 확인 중</span><button class="btn red" onclick="openPause()">카피 관리</button></div></div>
+    <div class="member-dashboard-kpis"><div class="card kpi"><label>누적 수익</label><strong id="memberCumulativePnl">-</strong><small>카피 시작일 이후</small></div><div class="card kpi"><label>이번 달 수익</label><strong id="memberMonthPnl">-</strong><small id="memberMonthPeriod">이번 달</small></div><div class="card kpi"><label>누적 수익률</label><strong id="memberCumulativeRoi">-</strong><small>입출금 효과 제외</small></div><div class="card kpi"><label>현재 계좌</label><strong id="memberLiveEquity">-</strong><small>USDT 기준</small></div><div class="card kpi"><label>증거금 사용률</label><strong id="memberDashboardMarginUsage">-</strong><div class="member-margin-track"><i id="memberMarginBar"></i></div><small id="memberUsedMargin">사용 증거금 -</small></div></div>
+    <div class="member-dashboard-main"><section class="card member-pnl-panel"><div class="panel-title"><div><h3>누적 PNL</h3><p>카피 시작 이후 실제 트레이딩 손익</p></div><div class="member-period-tabs" role="group" aria-label="성과 조회 기간">${[7, 30, 90, 180].map((days) => `<button type="button" data-dashboard-range="${days}" class="${days === 30 ? 'active' : ''}">${days}D</button>`).join('')}</div></div><strong id="memberPerformanceValue" class="member-performance-value">집계 대기</strong><div id="memberPerformanceChart" class="member-performance-chart"><div class="member-chart-empty">Trading Worker가 성과를 집계하면 차트가 표시됩니다.</div></div><div class="member-performance-foot"><span id="memberPerformancePeriod">-</span><span>입출금 제외 · 수수료·펀딩 반영</span></div></section>
+      <aside class="card member-risk-panel"><div class="panel-title"><div><h3>내 위험 상태</h3><p>현재 설정 대비 사용 수준</p></div></div><div class="risk-status-row"><div><b>종목당 최대 포지션</b><small id="memberPositionCapUsage">현재 사용 -</small></div><strong id="memberPositionCapLimit">-</strong></div><div class="risk-status-row"><div><b>일일 최대 손실</b><small id="memberDailyLossUsage">오늘 사용 -</small></div><strong id="memberDailyLossLimit">-</strong></div><div class="risk-status-row"><div><b>최대 드로우다운</b><small id="memberDrawdownUsage">현재 -</small></div><strong id="memberDrawdownLimit">-</strong></div><div class="risk-status-row"><div><b>카피 비율</b><small>Master 기준 비례 복사</small></div><strong id="memberCopyRatioLimit">-</strong></div></aside></div>
     <section class="member-position-section"><div class="member-position-head"><div><h3>현재 포지션 <span id="memberPositionBadge">0</span></h3><p>Gate.io Worker가 확인한 실제 무기한 선물 포지션입니다.</p></div></div><div id="memberOpenPositionCards" class="member-open-position-grid"><div class="master-position-empty">현재 포지션을 불러오는 중입니다.</div></div></section>`;
   const adminDashboard = byId('admin-dashboard');
-  if (adminDashboard) adminDashboard.innerHTML = `<div class="status"><div><span id="adminSystemDot" class="dot"></span><b id="adminSystemTitle">운영 상태 확인 중</b><div><span id="adminSystemDetail">Worker heartbeat를 확인하고 있습니다.</span></div></div><button class="btn" type="button" onclick="openPage('admin-monitor')">주문·포지션 확인</button></div>
-    <section class="card section member-performance-card admin-overview-card">
-      <div class="member-performance-head"><div><small>MASTER → MEMBER COPY STATUS</small><h3>실시간 카피 운영 현황</h3></div><span id="adminOverviewChip" class="chip yellow">확인 중</span></div>
-      <strong id="adminSyncRate" class="member-performance-value">0.00%</strong>
-      <div class="admin-sync-overview"><div class="admin-sync-track"><i id="adminSyncBar"></i></div><div class="admin-sync-labels"><span>정상 동기화 <b id="adminSyncedCount">0</b></span><span>확인 필요 <b id="adminAttentionCount">0</b></span></div></div>
-      <div class="member-performance-foot"><span id="adminOverviewObserved">실시간 운영 데이터 확인 중</span><span>실제 Worker Snapshot 기준</span></div>
-    </section>
-    <div class="grid kpis member-account-kpis"><div class="card kpi"><label>Master 포지션</label><strong id="adminLiveMasterCount">0</strong><small>현재 열린 포지션</small></div><div class="card kpi"><label>회원 동기화 종목</label><strong id="adminLiveStateCount">0</strong><small>Worker 관리 대상</small></div><div class="card kpi"><label>미확정 주문</label><strong id="adminLiveUnknownCount" class="warn">0</strong><small>체결 결과 확인 필요</small></div><div class="card kpi"><label>카피 정지 종목</label><strong id="adminLiveOverrideCount" class="warn">0</strong><small>수동 변경·안전 정지</small></div></div>
-    <section class="admin-action-section"><div class="member-position-head"><div><h3>확인이 필요한 항목 <span id="adminLiveActionCount">0</span></h3><p>자동 카피가 중단됐거나 주문 확인이 필요한 항목입니다.</p></div></div><div id="adminLiveActions" class="admin-action-grid"><div class="master-position-empty">확인이 필요한 상태를 불러오는 중입니다.</div></div></section>`;
+  if (adminDashboard) adminDashboard.innerHTML = `<div class="admin-dashboard-heading"><div><h2>운영 대시보드</h2><p>전체 회원의 카피 상태, 계좌 규모, 장애 여부를 우선순위대로 확인합니다.</p></div><div class="admin-period-tabs" role="group" aria-label="운영 조회 기간">${[['today','오늘'],[7,'7일'],[30,'30일'],['month','이번 달']].map(([range,label]) => `<button type="button" data-admin-range="${range}" class="${range === 30 ? 'active' : ''}">${label}</button>`).join('')}<button type="button" data-admin-range="custom">직접 선택</button></div></div><form id="adminDateRangeForm" class="admin-date-range hidden"><label>시작일<input id="adminDateFrom" type="date" required></label><span>—</span><label>종료일<input id="adminDateTo" type="date" required></label><button class="btn" type="submit">조회</button></form>
+    <div class="status admin-live-status"><div><span id="adminSystemDot" class="dot"></span><b id="adminSystemTitle">운영 상태 확인 중</b><div><span id="adminSystemDetail">Worker heartbeat를 확인하고 있습니다.</span></div></div><time id="adminOverviewObserved">실시간 데이터 확인 중</time></div>
+    <div class="admin-operations-kpis"><div class="card kpi"><label>전체 회원</label><strong id="adminTotalMembers">0</strong><small id="adminMemberDelta">승인 회원 기준</small></div><div class="card kpi"><label>카피 중</label><strong id="adminCopyingMembers">0</strong><small id="adminCopyingRate">0% 정상 작동</small></div><div class="card kpi"><label>확인 필요</label><strong id="adminLiveActionCount" class="neg">0</strong><small id="adminAttentionBreakdown">API·주문 상태</small></div><div class="card kpi"><label>총 운용 자산</label><strong id="adminTotalAssets">-</strong><small>회원 최신 원장 합산</small></div><div class="card kpi"><label>기간 회원 PNL</label><strong id="adminPeriodPnl">-</strong><small id="adminPeriodLabel">선택 기간 합산</small></div></div>
+    <div class="admin-operations-main"><section class="card admin-pnl-panel"><div class="panel-title"><div><h3>회원 누적 PNL</h3><p>선택 기간 내 전체 회원 실현·미실현 합산</p></div></div><div id="adminPnlChart" class="admin-pnl-chart"><div class="member-chart-empty">성과 데이터를 불러오는 중입니다.</div></div></section><aside class="card admin-copy-health"><div class="panel-title"><div><h3>카피 상태</h3><p>현재 전체 회원 기준</p></div></div><div id="adminCopyDonut" class="copy-health-donut"><strong>0%</strong><span>정상 카피</span></div><div class="copy-health-legend"><span><i class="ok"></i>정상 <b id="adminSyncedCount">0</b></span><span><i></i>중단·오류 <b id="adminAttentionCount">0</b></span></div><div class="copy-health-list"><div><span>관리자 중단</span><b id="adminLiveOverrideCount">0</b></div><div><span>회원 일시중지</span><b id="adminPausedCount">0</b></div><div><span>API / 주문 오류</span><b id="adminLiveUnknownCount" class="neg">0</b></div></div></aside></div>
+    <section class="card admin-broker-panel"><div class="panel-title"><div><h3>Broker Trading Volume &amp; 수수료</h3><p>실제 Worker가 적재한 회원 거래 원장 기준</p></div><div class="broker-summary"><span>거래량 <b id="adminBrokerVolume">-</b></span><span>수수료 <b id="adminBrokerFees">-</b></span><span>회원 <b id="adminBrokerUsers">0</b></span></div></div><div id="adminBrokerChart" class="admin-broker-chart"><div class="member-chart-empty">거래량과 수수료 데이터를 불러오는 중입니다.</div></div></section>
+    <div class="admin-operations-bottom"><section class="card admin-attention-panel"><div class="panel-title"><div><h3>확인 필요한 계정</h3><p>장애 및 비정상 상태 우선순위</p></div><button class="btn" type="button" onclick="openPage('admin-monitor')">전체 보기</button></div><div id="adminLiveActions" class="admin-attention-list"><div class="member-chart-empty">실제 상태를 불러오는 중입니다.</div></div></section><section class="card admin-master-preview"><div class="panel-title"><div><h3>마스터 현재 포지션</h3><p>회원 복사 기준 포지션</p></div><button class="btn" type="button" onclick="openPage('admin-master')">포지션 보기</button></div><div id="adminMasterPreview" class="admin-master-preview-grid"><div class="member-chart-empty">포지션을 불러오는 중입니다.</div></div></section></div>`;
   const trades = byId('member-trades');
-  if (trades) trades.innerHTML = `<div class="card section"><div class="section-head"><div><h3>Copy Events</h3><p>실제 주문·체결·동기화 이벤트입니다.</p></div></div><div class="table"><table><thead><tr><th>시간</th><th>종목</th><th>이벤트</th><th>심각도</th><th>상태</th></tr></thead><tbody id="memberLiveEvents"><tr><td colspan="5" class="empty-cell">실제 이벤트를 불러오는 중입니다.</td></tr></tbody></table></div></div>`;
+  if (trades) trades.innerHTML = `<div class="member-trades-heading"><div><h2>내 카피 현황</h2><p>마스터 전략이 내 계정에 어떻게 복사되고 있는지 실제 회원 계정 기준으로 확인합니다.</p></div><span id="memberTradeStatus" class="chip yellow">상태 확인 중</span></div><section class="card member-gate-summary"><div class="gate-summary-logo">G</div><div><b>Gate.io 연결 계정</b><small id="memberTradeGateUid">UID 확인 중 · Futures</small></div><div class="gate-summary-equity"><strong id="memberTradeEquity">-</strong><small>현재 자산</small></div></section><section class="card member-copy-position-table"><div class="panel-title"><div><h3>현재 카피 포지션</h3><p>실제 회원 계정 기준</p></div></div><div class="table"><table><thead><tr><th>종목</th><th>방향</th><th>포지션 규모</th><th>진입가</th><th>현재가</th><th>미실현 PNL</th><th>ROI</th><th>증거금 비중</th><th>상태</th></tr></thead><tbody id="memberTradePositions"><tr><td colspan="9" class="empty-cell">실제 포지션을 불러오는 중입니다.</td></tr></tbody></table></div></section><section class="card member-copy-events"><div class="panel-title"><div><h3>최근 카피 이벤트</h3><p>주문·체결·동기화 기록</p></div></div><div class="table"><table><thead><tr><th>시간</th><th>종목</th><th>이벤트</th><th>심각도</th><th>상태</th></tr></thead><tbody id="memberLiveEvents"><tr><td colspan="5" class="empty-cell">실제 이벤트를 불러오는 중입니다.</td></tr></tbody></table></div></section>`;
   const master = byId('admin-master');
   if (master) master.innerHTML = `<div class="grid kpis master-kpis">
       <div class="card kpi"><label>활성 포지션</label><strong id="masterPositionCount">0</strong><small id="masterDirectionCount">Long 0 · Short 0</small></div>
@@ -213,13 +212,13 @@ function enhanceLiveDataUi() {
 function enhanceCopySettingsUi() {
   const page = byId('member-copy');
   if (!page) return;
-  page.innerHTML = `<div class="copy-settings-layout">
+  page.innerHTML = `<div class="copy-settings-layout"><div class="copy-settings-primary">
     <section class="card section copy-control-card"><div class="section-head"><div><small>COPY EXPOSURE</small><h3>카피 비율</h3><p>Master의 포지션 변화를 내 자산 기준으로 복제할 비율입니다.</p></div><strong id="copyRatioValue">100%</strong></div><input id="copyRatioSelect" class="copy-range" type="range" min="50" max="200" step="10" value="100"><div class="copy-range-labels"><span>50%</span><span>100%</span><span>150%</span><span>200%</span></div></section>
     <section class="card section copy-control-card"><div class="section-head"><div><small>POSITION CAP</small><h3>종목당 최대 포지션 비중</h3><p>한 종목이 내 총자산에서 차지할 수 있는 상한입니다.</p></div><strong id="maxPositionRatioValue">30%</strong></div><input id="maxPositionRatioSelect" class="copy-range" type="range" min="20" max="50" step="10" value="30"><div class="copy-range-labels"><span>20% 안전</span><span>30% 균형</span><span>40% 적극</span><span>50% 최대</span></div></section>
-    <section class="card section copy-existing-policy"><div><small>EXISTING POSITION MODE</small><h3>기존 포지션 처리</h3><p>API 연결 시점에 Master가 이미 보유한 포지션은 진입하지 않고, 이후 추가·감소 및 신규 진입부터 카피합니다.</p></div><span class="chip">연결 이후만 카피</span></section>
     <section class="card section copy-risk-card"><div class="section-head"><div><small>RISK LIMITS</small><h3>계정 리스크 한도</h3><p>한도 도달 시 Worker가 신규 주문을 자동 차단합니다.</p></div></div><div class="copy-risk-inputs"><label><span>일일 최대 손실</span><div><input id="dailyLossLimitInput" type="number" min="3" max="10" step="1" value="5"><b>%</b></div></label><label><span>최대 Drawdown</span><div><input id="maxDrawdownInput" type="number" min="10" max="20" step="1" value="15"><b>%</b></div></label><label><span>레버리지 정책</span><div><b>Master 자동 추종</b></div></label></div><div class="notice">LONG·SHORT 각 포지션은 Master가 사용한 레버리지와 증거금 모드로 진입합니다.</div></section>
+    </div><div class="copy-settings-secondary"><section class="card section copy-existing-policy"><div><small>EXISTING POSITION MODE</small><h3>기존 포지션 처리</h3><p>API 연결 시점에 Master가 이미 보유한 포지션은 진입하지 않고, 이후 추가·감소 및 신규 진입부터 카피합니다.</p></div><span class="chip">연결 이후만 카피</span></section>
     <aside class="card section copy-setting-summary"><small>SETTING PREVIEW</small><h3>현재 설정 요약</h3><div class="metric"><span>카피 비율</span><b id="copyPreviewRatio">100%</b></div><div class="metric"><span>종목당 최대 비중</span><b id="copyPreviewCap">30%</b></div><div class="metric"><span>포지션 모드</span><b>LONG·SHORT 양방향</b></div><div class="metric"><span>레버리지</span><b>Master 자동 추종</b></div><div class="metric"><span>리스크 차단</span><b id="copyPreviewRisk">-5% · -15%</b></div><div class="notice">설정 변경은 다음 Worker 주기부터 적용됩니다. 기존 포지션을 임의로 확대하지 않습니다.</div><button id="copySettingsSave" class="btn primary full" type="button">설정 저장</button></aside>
-  </div>`;
+  </div></div>`;
 }
 
 function refreshCopySettingPreview() {
@@ -270,6 +269,12 @@ function enhanceAdminApiPage() {
       <div class="table"><table><thead><tr><th>회원</th><th>UID</th><th>상태</th><th>Futures 권한</th><th>Worker IP</th><th>최근 확인</th><th>관리</th></tr></thead>
       <tbody id="adminGateConnections"><tr><td colspan="7" class="empty-cell">API 연결 현황을 불러오는 중입니다.</td></tr></tbody></table></div>
     </div>`;
+}
+
+function enhanceAdminMembersPage() {
+  const page = byId('admin-members');
+  if (!page) return;
+  page.innerHTML = `<section class="card admin-pending-members"><div class="panel-title"><div><h3>가입 승인 대기</h3><p>승인 전 회원을 확인하고 접근 권한을 관리합니다.</p></div><span id="pendingCount" class="chip yellow">0 PENDING</span></div><div class="table"><table><thead><tr><th>신청자</th><th>이메일</th><th>휴대폰</th><th>신청시간</th><th>관리</th></tr></thead><tbody id="pendingMembers"><tr><td colspan="5" class="empty-cell">승인 대기 회원을 불러오는 중입니다.</td></tr></tbody></table></div></section><section class="card admin-member-directory"><div class="panel-title"><div><h3>전체 회원</h3><p id="memberDirectorySummary">회원 상태와 실제 계좌 지표를 확인합니다.</p></div><input id="adminMemberSearch" class="admin-member-search" type="search" placeholder="회원 검색" aria-label="회원 검색"></div><div class="table"><table class="admin-members-table"><thead><tr><th>회원</th><th>카피 상태</th><th>총 자산</th><th>오늘 PNL</th><th>카피 비율</th><th>증거금 사용</th><th>API 상태</th><th>마지막 동기화</th><th>관리</th></tr></thead><tbody id="memberList"><tr><td colspan="9" class="empty-cell">회원 목록을 불러오는 중입니다.</td></tr></tbody></table></div></section>`;
 }
 
 function enhanceMemberDetailModal() {
@@ -458,6 +463,7 @@ function showApp(profile) {
     loadGateConnection();
     loadMemberLiveData();
     loadMemberDashboardPerformance();
+    loadMemberCumulativePerformance();
   }
   startGateStatusPolling();
 }
@@ -646,6 +652,7 @@ window.openPage = (id) => {
   }
   if ((id === 'admin-settings' || id === 'admin-risk') && currentProfile?.role === 'ADMIN') loadCopySystemStatus();
   if (['admin-dashboard', 'admin-master', 'admin-monitor'].includes(id) && currentProfile?.role === 'ADMIN') loadAdminLiveData();
+  if (id === 'admin-dashboard' && currentProfile?.role === 'ADMIN') loadAdminOperationsMetrics();
 };
 
 window.openPause = () => byId('pauseModal').classList.add('open');
@@ -836,6 +843,48 @@ function renderMemberPerformance() {
   if (byId('memberMdd')) byId('memberMdd').textContent = `${Number(totals.mdd || 0).toFixed(2)}%`;
   if (byId('memberAverageTrades')) byId('memberAverageTrades').textContent = Number(totals.average_daily_trades || 0).toFixed(2);
   if (byId('memberLastTrade')) byId('memberLastTrade').textContent = totals.last_trade_at ? new Date(totals.last_trade_at).toLocaleString('ko-KR') : '-';
+  if (byId('memberDrawdownUsage')) byId('memberDrawdownUsage').textContent = `현재 ${Number(totals.mdd || 0).toFixed(2)}%`;
+}
+
+function renderMemberCumulativeStats() {
+  const cumulative = memberCumulativePerformance?.totals || {};
+  const monthly = memberMonthPerformance?.totals || {};
+  const cumulativePnl = Number(cumulative.net_pnl || 0);
+  const monthPnl = Number(monthly.net_pnl || 0);
+  const cumulativeRoi = Number(cumulative.roi || 0);
+  const setSigned = (id, value, percent = false) => {
+    const node = byId(id);
+    if (!node) return;
+    node.textContent = percent ? `${value >= 0 ? '+' : ''}${value.toFixed(2)}%` : formatUsd(value);
+    node.className = value >= 0 ? 'pos' : 'neg';
+  };
+  setSigned('memberCumulativePnl', cumulativePnl);
+  setSigned('memberMonthPnl', monthPnl);
+  setSigned('memberCumulativeRoi', cumulativeRoi, true);
+  const copyStart = currentProfile?.copy_started_at ? String(currentProfile.copy_started_at).slice(0, 10) : memberCumulativePerformance?.range_start;
+  if (byId('memberCopyStartedAt')) byId('memberCopyStartedAt').textContent = `카피 시작일 ${copyStart || '-'}`;
+  if (byId('memberMonthPeriod')) byId('memberMonthPeriod').textContent = memberMonthPerformance?.range_start ? `${memberMonthPerformance.range_start} ~ 오늘` : '이번 달';
+  if (byId('memberDailyLossUsage')) {
+    const todayPnl = Number(memberMonthPerformance?.days?.at(-1)?.net_pnl || 0);
+    const equity = Number(memberLiveSnapshot?.account?.total_equity || 0);
+    const todayPct = equity > 0 ? todayPnl * 100 / equity : 0;
+    byId('memberDailyLossUsage').textContent = `오늘 ${todayPct.toFixed(2)}%`;
+  }
+}
+
+async function loadMemberCumulativePerformance() {
+  if (!supabase || currentProfile?.role !== 'MEMBER') return;
+  const today = new Date().toISOString().slice(0, 10);
+  const fallback = new Date(Date.now() - 364 * 86400000).toISOString().slice(0, 10);
+  const copyStart = String(currentProfile.copy_started_at || fallback).slice(0, 10);
+  const monthStart = `${today.slice(0, 7)}-01`;
+  const [cumulativeResult, monthResult] = await Promise.all([
+    supabase.rpc('get_my_dashboard_performance_range', { p_start_date: copyStart < fallback ? fallback : copyStart, p_end_date: today }),
+    supabase.rpc('get_my_dashboard_performance_range', { p_start_date: monthStart, p_end_date: today }),
+  ]);
+  if (!cumulativeResult.error) memberCumulativePerformance = cumulativeResult.data;
+  if (!monthResult.error) memberMonthPerformance = monthResult.data;
+  renderMemberCumulativeStats();
 }
 
 async function loadMemberDashboardPerformance(days = memberDashboardRange) {
@@ -862,6 +911,12 @@ function renderMemberOpenPositions(openPositions, account) {
   const longs = positions.filter((position) => position.side === 'LONG').length;
   if (byId('memberPositionDirections')) byId('memberPositionDirections').textContent = `Long ${longs} · Short ${positions.length - longs}`;
   const container = byId('memberOpenPositionCards');
+  const maxExposure = positions.reduce((max, position) => Math.max(max, totalEquity > 0 ? Math.abs(Number(position.notional || 0)) * 100 / totalEquity : 0), 0);
+  if (byId('memberPositionCapUsage')) byId('memberPositionCapUsage').textContent = `현재 최대 사용 ${maxExposure.toFixed(2)}%`;
+  if (byId('memberPositionCapLimit')) byId('memberPositionCapLimit').textContent = `${Number(currentProfile?.max_position_ratio ?? 30)}%`;
+  if (byId('memberDailyLossLimit')) byId('memberDailyLossLimit').textContent = `${Number(currentProfile?.daily_loss_limit_pct ?? 5)}%`;
+  if (byId('memberDrawdownLimit')) byId('memberDrawdownLimit').textContent = `${Number(currentProfile?.max_drawdown_pct ?? 15)}%`;
+  if (byId('memberCopyRatioLimit')) byId('memberCopyRatioLimit').textContent = `${Number(currentProfile?.copy_ratio ?? 100)}%`;
   if (!container) return;
   container.innerHTML = positions.length ? positions.map((position) => {
     const pnl = Number(position.unrealised_pnl || 0); const roe = Number(position.roe || 0);
@@ -878,18 +933,41 @@ async function loadMemberLiveData() {
   const events = Array.isArray(data?.events) ? data.events : [];
   const openPositions = Array.isArray(data?.open_positions) ? data.open_positions : [];
   const account = data?.account;
+  memberLiveSnapshot = data;
   if (byId('memberLiveEquity')) byId('memberLiveEquity').textContent = account ? formatUsd(account.total_equity) : '-';
   if (byId('memberLiveAvailable')) byId('memberLiveAvailable').textContent = account ? formatUsd(account.available_equity) : '-';
   if (byId('memberLiveUnrealised')) byId('memberLiveUnrealised').textContent = account ? formatUsd(account.unrealised_pnl) : '-';
   if (byId('memberLiveObserved')) byId('memberLiveObserved').textContent = account?.observed_at ? `마지막 확인 ${new Date(account.observed_at).toLocaleTimeString('ko-KR')}` : '마지막 확인 -';
   if (byId('memberUsedMargin')) byId('memberUsedMargin').textContent = account ? `사용 증거금 ${formatUsd(Math.abs(Number(account.used_margin || 0)))}` : '사용 증거금 -';
   if (byId('memberMarginUsage')) byId('memberMarginUsage').textContent = account ? `사용률 ${Number(account.margin_usage_pct || 0).toFixed(2)}%` : '사용률 -';
+  if (byId('memberDashboardMarginUsage')) byId('memberDashboardMarginUsage').textContent = account ? `${Number(account.margin_usage_pct || 0).toFixed(2)}%` : '-';
+  if (byId('memberDailyLossUsage')) {
+    const todayPnl = Number(memberMonthPerformance?.days?.at(-1)?.net_pnl || 0);
+    const todayPct = Number(account?.total_equity || 0) > 0 ? todayPnl * 100 / Number(account.total_equity) : 0;
+    byId('memberDailyLossUsage').textContent = `오늘 ${todayPct.toFixed(2)}%`;
+  }
   if (byId('memberMarginBar')) byId('memberMarginBar').style.width = `${Math.min(100, Math.max(0, Number(account?.margin_usage_pct || 0)))}%`;
   renderMemberOpenPositions(openPositions, account);
   const detailedRows = positions.length ? positions.map((position) => `<tr><td>${escapeHtml(position.contract)}</td><td>${Number(position.target_size)}</td><td>${Number(position.actual_size)}</td><td>${Number(position.delta_size)}</td><td>${stateChip(position.state)}${position.pause_reason ? `<small>${escapeHtml(position.pause_reason)}</small>` : ''}</td><td>${position.observed_at ? new Date(position.observed_at).toLocaleString('ko-KR') : '-'}</td></tr>`).join('') : '<tr><td colspan="6" class="empty-cell">Worker가 확인한 실제 포지션이 아직 없습니다.</td></tr>';
   if (byId('memberLivePositions')) byId('memberLivePositions').innerHTML = detailedRows;
   if (byId('memberDashPositions')) byId('memberDashPositions').innerHTML = positions.length ? positions.map((position) => `<tr><td>${escapeHtml(position.contract)}</td><td>${Number(position.target_size)}</td><td>${Number(position.actual_size)}</td><td>${Number(position.delta_size)}</td><td>${stateChip(position.state)}</td></tr>`).join('') : '<tr><td colspan="5" class="empty-cell">Worker가 확인한 실제 포지션이 아직 없습니다.</td></tr>';
   if (byId('memberLiveEvents')) byId('memberLiveEvents').innerHTML = events.length ? events.map((event) => `<tr><td>${new Date(event.occurred_at).toLocaleString('ko-KR')}</td><td>${escapeHtml(event.contract || '-')}</td><td>${escapeHtml(event.type)}</td><td>${escapeHtml(event.severity)}</td><td>${stateChip(event.payload?.status || event.payload?.state || '-')}</td></tr>`).join('') : '<tr><td colspan="5" class="empty-cell">실제 Copy Event가 아직 없습니다.</td></tr>';
+  if (byId('memberTradeEquity')) byId('memberTradeEquity').textContent = account ? formatUsd(account.total_equity) : '-';
+  if (byId('memberTradeGateUid')) byId('memberTradeGateUid').textContent = `UID ${byId('gateUid')?.value ? `****${byId('gateUid').value.slice(-4)}` : '연결 확인 중'} · Futures Enabled`;
+  if (byId('memberTradeStatus')) {
+    const blocked = positions.some((position) => ['ERROR', 'HALTED'].includes(position.state));
+    byId('memberTradeStatus').textContent = blocked ? '확인 필요' : '정상 카피 중';
+    byId('memberTradeStatus').className = blocked ? 'chip red' : 'chip';
+  }
+  const stateByContract = new Map(positions.map((position) => [position.contract, position]));
+  if (byId('memberTradePositions')) byId('memberTradePositions').innerHTML = openPositions.length ? openPositions.map((position) => {
+    const pnl = Number(position.unrealised_pnl || 0);
+    const roe = Number(position.roe || 0);
+    const notional = Math.abs(Number(position.notional || 0));
+    const exposure = Number(account?.total_equity || 0) > 0 ? notional * 100 / Number(account.total_equity) : 0;
+    const state = stateByContract.get(position.contract)?.state || 'SYNCED';
+    return `<tr><td><div class="trade-symbol">${positionLogo(position.contract)}<b>${escapeHtml(position.contract)}</b></div></td><td class="${position.side === 'LONG' ? 'pos' : 'neg'}"><b>${escapeHtml(position.side)}</b></td><td>${formatUsd(notional)}</td><td>${formatMasterPrice(position.entry_price)}</td><td>${formatMasterPrice(position.mark_price)}</td><td class="${pnl >= 0 ? 'pos' : 'neg'}"><b>${formatUsd(pnl)}</b></td><td class="${roe >= 0 ? 'pos' : 'neg'}"><b>${roe >= 0 ? '+' : ''}${roe.toFixed(2)}%</b></td><td>${exposure.toFixed(2)}%</td><td>${stateChip(state)}</td></tr>`;
+  }).join('') : '<tr><td colspan="9" class="empty-cell">현재 열린 카피 포지션이 없습니다.</td></tr>';
 }
 
 async function loadAdminLiveData() {
@@ -934,7 +1012,7 @@ async function loadAdminLiveData() {
   if (byId('adminLiveUnknownCount')) byId('adminLiveUnknownCount').textContent = String(unknownOrders.length);
   if (byId('adminLiveOverrideCount')) byId('adminLiveOverrideCount').textContent = String(overrides.length);
   if (byId('adminLiveActionCount')) byId('adminLiveActionCount').textContent = String(actions.length);
-  if (byId('adminLiveActions')) byId('adminLiveActions').innerHTML = actions.length ? actions.map((action) => `<div class="alert"><h4>${escapeHtml(action.title)}</h4><p>${escapeHtml(action.detail)}</p></div>`).join('') : '<div class="notice">현재 조치가 필요한 실제 상태가 없습니다.</div>';
+  if (byId('adminLiveActions')) byId('adminLiveActions').innerHTML = actions.length ? actions.slice(0, 6).map((action) => `<div class="admin-attention-row"><div><b>${escapeHtml(action.title)}</b><small>${escapeHtml(action.detail)}</small></div><span class="chip yellow">확인 필요</span></div>`).join('') : '<div class="notice">현재 조치가 필요한 실제 상태가 없습니다.</div>';
   const syncedCount = states.filter((state) => state.state === 'SYNCED').length;
   const syncRate = states.length ? syncedCount * 100 / states.length : 100;
   if (byId('adminSyncRate')) {
@@ -944,6 +1022,7 @@ async function loadAdminLiveData() {
   if (byId('adminSyncBar')) byId('adminSyncBar').style.width = `${Math.max(0, Math.min(100, syncRate))}%`;
   if (byId('adminSyncedCount')) byId('adminSyncedCount').textContent = String(syncedCount);
   if (byId('adminAttentionCount')) byId('adminAttentionCount').textContent = String(actions.length);
+  if (byId('adminPausedCount')) byId('adminPausedCount').textContent = String(states.filter((state) => state.state === 'PAUSED').length);
   if (byId('adminOverviewChip')) {
     byId('adminOverviewChip').textContent = actions.length ? '확인 필요' : '정상 운영';
     byId('adminOverviewChip').className = actions.length ? 'chip yellow' : 'chip';
@@ -952,8 +1031,101 @@ async function loadAdminLiveData() {
   if (byId('adminOverviewObserved')) byId('adminOverviewObserved').textContent = latestObserved ? `마지막 동기화 ${new Date(latestObserved).toLocaleString('ko-KR')}` : '동기화 기록 없음';
   adminMasterPositions = master;
   renderAdminMasterPositions();
+  if (byId('adminMasterPreview')) byId('adminMasterPreview').innerHTML = master.length ? master.slice(0, 4).map((position) => {
+    const size = Number(position.size || 0);
+    const pnl = Number(position.unrealised_pnl || 0);
+    return `<div class="admin-master-preview-card"><div>${positionLogo(position.contract)}<div><b>${escapeHtml(position.contract)}</b><small>Perpetual</small></div></div><strong class="${pnl >= 0 ? 'pos' : 'neg'}">${formatUsd(pnl)}</strong><span class="${size >= 0 ? 'pos' : 'neg'}">${size >= 0 ? 'LONG' : 'SHORT'} · ${Math.abs(size).toLocaleString()}</span></div>`;
+  }).join('') : '<div class="member-chart-empty">현재 열린 마스터 포지션이 없습니다.</div>';
   if (byId('adminLiveStates')) byId('adminLiveStates').innerHTML = states.length ? states.map((state) => `<tr><td>${escapeHtml(state.name || state.email || '-')}</td><td>${escapeHtml(state.contract)}</td><td>${Number(state.target_size)}</td><td>${Number(state.actual_size)}</td><td>${state.actual_notional == null ? '-' : formatUsd(Math.abs(Number(state.actual_notional)))}</td><td>${Number(state.delta_size)}</td><td>${stateChip(state.state)}${state.pause_reason ? `<small>${escapeHtml(state.pause_reason)}</small>` : ''}</td><td>${state.observed_at ? new Date(state.observed_at).toLocaleString('ko-KR') : '-'}</td></tr>`).join('') : '<tr><td colspan="8" class="empty-cell">회원 포지션 snapshot이 아직 없습니다.</td></tr>';
   if (byId('adminLiveOrders')) byId('adminLiveOrders').innerHTML = orders.length ? orders.map((order) => `<tr><td>${escapeHtml(order.name || order.email || '-')}</td><td>${escapeHtml(order.contract)}</td><td>${Number(order.delta_size)}</td><td>${Number(order.filled_size)}</td><td>${stateChip(order.status)}${order.error_code ? `<small>${escapeHtml(order.error_code)}</small>` : ''}</td><td>${escapeHtml(order.gate_order_id || '-')}</td><td>${new Date(order.updated_at).toLocaleString('ko-KR')}</td></tr>`).join('') : '<tr><td colspan="7" class="empty-cell">실제 주문 내역이 아직 없습니다.</td></tr>';
+  if (byId('admin-dashboard')?.classList.contains('active')) await loadAdminOperationsMetrics();
+}
+
+function formatCompactUsd(value, signed = false) {
+  const number = Number(value || 0);
+  const absolute = Math.abs(number);
+  const sign = number < 0 ? '-' : signed && number > 0 ? '+' : '';
+  if (absolute >= 1_000_000) return `${sign}$${(absolute / 1_000_000).toFixed(2)}M`;
+  if (absolute >= 1_000) return `${sign}$${(absolute / 1_000).toFixed(1)}K`;
+  return signed ? formatUsd(number) : `$${absolute.toFixed(2)}`;
+}
+
+function renderOperationsChart(targetId, rows, key, { cumulative = false, feeKey = null } = {}) {
+  const target = byId(targetId);
+  if (!target) return;
+  if (!rows.length) return void (target.innerHTML = '<div class="member-chart-empty">선택한 기간에 집계된 실제 데이터가 없습니다.</div>');
+  const width = 960; const height = 260; const padX = 34; const padY = 24;
+  let running = 0;
+  const values = rows.map((row) => {
+    const raw = Number(row[key] || 0);
+    running = cumulative ? running + raw : raw;
+    return running;
+  });
+  const max = Math.max(0, ...values); const min = Math.min(0, ...values); const span = Math.max(1, max - min);
+  const points = values.map((value, index) => ({ value, x: padX + (rows.length === 1 ? 0 : index * (width - padX * 2) / (rows.length - 1)), y: padY + (max - value) * (height - padY * 2) / span }));
+  const line = points.map((point) => `${point.x.toFixed(1)},${point.y.toFixed(1)}`).join(' ');
+  const baseline = padY + (max - 0) * (height - padY * 2) / span;
+  const area = `${points[0].x},${baseline} ${line} ${points.at(-1).x},${baseline}`;
+  const feeMax = feeKey ? Math.max(1, ...rows.map((row) => Number(row[feeKey] || 0))) : 1;
+  const bars = feeKey ? rows.map((row, index) => {
+    const x = points[index].x; const fee = Number(row[feeKey] || 0); const barHeight = fee * 72 / feeMax;
+    return `<rect x="${x - 7}" y="${height - padY - barHeight}" width="14" height="${barHeight}" rx="4" class="broker-fee-bar"><title>${row.date} 수수료 ${formatUsd(fee)}</title></rect>`;
+  }).join('') : '';
+  target.innerHTML = `<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="실제 운영 지표 추이"><defs><linearGradient id="${targetId}Fill" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#32d583" stop-opacity=".28"/><stop offset="1" stop-color="#32d583" stop-opacity=".02"/></linearGradient></defs>${[0,1,2,3].map((row) => `<line x1="${padX}" y1="${padY + row * (height - padY * 2) / 3}" x2="${width - padX}" y2="${padY + row * (height - padY * 2) / 3}" class="member-chart-axis"/>`).join('')}<polygon points="${area}" fill="url(#${targetId}Fill)"/><polyline points="${line}" class="member-chart-line"/>${bars}<circle cx="${points.at(-1).x}" cy="${points.at(-1).y}" r="5" class="member-chart-point"/></svg><div class="admin-chart-labels"><span>${rows[0].date}</span><span>${rows.at(-1).date}</span></div>`;
+}
+
+function adminRangeDates(range = adminOperationsRange) {
+  const end = new Date();
+  const start = new Date(end);
+  if (range === 'today') start.setTime(end.getTime());
+  else if (range === 'month') start.setDate(1);
+  else start.setDate(end.getDate() - Math.max(1, Number(range || 30)) + 1);
+  return [start.toISOString().slice(0, 10), end.toISOString().slice(0, 10)];
+}
+
+function renderAdminOperationsMetrics(data) {
+  adminOperationsMetrics = data;
+  const totals = data?.totals || {};
+  const members = Array.isArray(data?.members) ? data.members : [];
+  const daily = Array.isArray(data?.daily) ? data.daily : [];
+  const copying = Number(totals.copying_members || 0); const memberCount = Number(totals.members || 0);
+  const rate = memberCount ? copying * 100 / memberCount : 0;
+  if (byId('adminTotalMembers')) byId('adminTotalMembers').textContent = memberCount.toLocaleString();
+  if (byId('adminCopyingMembers')) byId('adminCopyingMembers').textContent = copying.toLocaleString();
+  if (byId('adminCopyingRate')) byId('adminCopyingRate').textContent = `${rate.toFixed(1)}% 정상 작동`;
+  if (byId('adminTotalAssets')) byId('adminTotalAssets').textContent = formatCompactUsd(totals.total_assets);
+  if (byId('adminPeriodPnl')) {
+    const pnl = Number(totals.period_pnl || 0);
+    byId('adminPeriodPnl').textContent = formatCompactUsd(pnl, true);
+    byId('adminPeriodPnl').className = pnl >= 0 ? 'pos' : 'neg';
+  }
+  if (byId('adminPeriodLabel')) byId('adminPeriodLabel').textContent = `${data.range_start} → ${data.range_end}`;
+  if (byId('adminBrokerVolume')) byId('adminBrokerVolume').textContent = formatCompactUsd(totals.trading_volume);
+  if (byId('adminBrokerFees')) byId('adminBrokerFees').textContent = formatUsd(totals.fees);
+  if (byId('adminBrokerUsers')) byId('adminBrokerUsers').textContent = Number(totals.active_users || 0).toLocaleString();
+  if (byId('adminCopyDonut')) {
+    byId('adminCopyDonut').style.setProperty('--copy-rate', rate.toFixed(2));
+    byId('adminCopyDonut').querySelector('strong').textContent = `${Math.round(rate)}%`;
+  }
+  if (byId('adminSyncedCount')) byId('adminSyncedCount').textContent = String(copying);
+  const attention = Math.max(0, memberCount - copying);
+  if (byId('adminAttentionCount')) byId('adminAttentionCount').textContent = String(attention);
+  if (byId('adminLiveActionCount')) byId('adminLiveActionCount').textContent = String(attention);
+  if (byId('adminPausedCount')) byId('adminPausedCount').textContent = String(members.filter((member) => member.copy_status === 'PAUSED').length);
+  if (byId('adminLiveOverrideCount')) byId('adminLiveOverrideCount').textContent = String(members.filter((member) => member.copy_status === 'HALTED').length);
+  if (byId('adminLiveUnknownCount')) byId('adminLiveUnknownCount').textContent = String(members.filter((member) => ['API_ERROR', 'ERROR'].includes(member.copy_status)).length);
+  renderOperationsChart('adminPnlChart', daily, 'pnl', { cumulative: true });
+  renderOperationsChart('adminBrokerChart', daily, 'trading_volume', { feeKey: 'fees' });
+  adminMembersCache = members;
+  renderAdminMemberRows();
+}
+
+async function loadAdminOperationsMetrics(startDate = null, endDate = null) {
+  if (!supabase || currentProfile?.role !== 'ADMIN') return;
+  const dates = startDate && endDate ? [startDate, endDate] : adminRangeDates();
+  const { data, error } = await supabase.rpc('get_admin_operations_metrics', { p_start_date: dates[0], p_end_date: dates[1] });
+  if (error) return window.toast('운영 지표를 불러오지 못했습니다. DB 마이그레이션 상태를 확인해 주세요.');
+  renderAdminOperationsMetrics(data);
 }
 
 function compactPayload(payload) {
@@ -1025,9 +1197,11 @@ function renderGateConnection(connection) {
     byId('gateApiKey').required = true;
     byId('gateSecretKey').required = true;
     byId('gateApiConnect').textContent = '저장 및 연결 검증';
+    if (byId('memberTradeGateUid')) byId('memberTradeGateUid').textContent = 'Gate.io API 미연결';
     return;
   }
   byId('gateUid').value = connection.gate_uid || '';
+  if (byId('memberTradeGateUid')) byId('memberTradeGateUid').textContent = `UID ${connection.gate_uid ? `****${String(connection.gate_uid).slice(-4)}` : '-'} · Futures Enabled`;
   byId('gateApiKey').placeholder = connection.api_key_last4 ? `저장됨 ····${connection.api_key_last4}` : 'API Key 입력';
   const hasStoredCredential = Boolean(connection.api_key_last4);
   byId('gateApiForm').dataset.hasStoredCredential = String(hasStoredCredential);
@@ -1294,10 +1468,6 @@ function formatUsd(value) {
   return `${sign}$${Math.abs(number).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
-function formatCompactUsd(value) {
-  return `$${Number(value || 0).toLocaleString('en-US', { notation: 'compact', maximumFractionDigits: 2 })}`;
-}
-
 function positionLogo(contract) {
   const base = String(contract || '').split('_')[0].replace(/[^A-Z0-9]/gi, '').toUpperCase();
   const label = base.slice(0, 2) || '?';
@@ -1491,11 +1661,13 @@ function getMemberCopyProgress(profile, connection, positionStates = []) {
 
 async function loadAdminMembers() {
   if (!supabase || currentProfile?.role !== 'ADMIN') return;
-  const [{ data, error }, connectionsResult, liveResult] = await Promise.all([
+  const [profilesResult, connectionsResult, liveResult, metricsResult] = await Promise.all([
     supabase.from('profiles').select('id,email,full_name,phone,approval_status,role,copy_ratio,max_position_ratio,copy_paused,member_halted,reduce_only,created_at').order('created_at', { ascending: false }),
     supabase.rpc('get_admin_gate_api_connections'),
     supabase.rpc('get_admin_live_trading_data'),
+    supabase.rpc('get_admin_operations_metrics', { p_start_date: new Date().toISOString().slice(0, 10), p_end_date: new Date().toISOString().slice(0, 10) }),
   ]);
+  const { data, error } = profilesResult;
   if (error) return window.toast('회원 목록을 불러오지 못했습니다.');
   const connections = Array.isArray(connectionsResult.data) ? connectionsResult.data : [];
   const positionStates = Array.isArray(liveResult.data?.member_states) ? liveResult.data.member_states : [];
@@ -1511,11 +1683,34 @@ async function loadAdminMembers() {
   byId('pendingMembers').innerHTML = pending.length ? pending.map((profile) => `
     <tr><td>${escapeHtml(profile.full_name || '-')}</td><td>${escapeHtml(profile.email || '-')}</td><td>${escapeHtml(profile.phone || '-')}</td><td>${new Date(profile.created_at).toLocaleString('ko-KR')}</td><td><button class="btn green" data-approval="APPROVED" data-user-id="${profile.id}">승인</button> <button class="btn red" data-approval="REJECTED" data-user-id="${profile.id}">거절</button></td></tr>
   `).join('') : '<tr><td colspan="5" class="empty-cell">승인 대기 회원이 없습니다.</td></tr>';
-  const members = data.filter((profile) => profile.approval_status !== 'PENDING');
-  byId('memberList').innerHTML = members.length ? members.map((profile) => {
+  const metricRows = new Map((Array.isArray(metricsResult.data?.members) ? metricsResult.data.members : []).map((member) => [member.id, member]));
+  adminMembersCache = data.filter((profile) => profile.role === 'MEMBER' && profile.approval_status !== 'PENDING').map((profile) => {
+    const metric = metricRows.get(profile.id) || {};
     const progress = getMemberCopyProgress(profile, connectionByUserId.get(profile.id), statesByEmail.get(String(profile.email || '').toLowerCase()) || []);
-    return `<div class="member"><div><b>${escapeHtml(profile.full_name || '-')}</b><small>${escapeHtml(profile.email || '-')}</small></div><div><small>권한</small><b>${escapeHtml(profile.role)}</b></div><div><small>승인</small><b class="${profile.approval_status === 'APPROVED' ? 'pos' : 'warn'}">${escapeHtml(profile.approval_status)}</b></div><div class="member-copy-progress"><small>카피 상태</small><span class="${progress.className}">${escapeHtml(progress.label)}</span><em>${escapeHtml(progress.detail)}</em></div><div><small>Copy Ratio</small><b>${Number(profile.copy_ratio ?? 100)}%</b></div><div><small>최대 포지션 비중</small><b>${Number(profile.max_position_ratio ?? 30)}%</b></div><div><small>가입일</small><b>${new Date(profile.created_at).toLocaleDateString('ko-KR')}</b></div><button class="btn" type="button" data-member-detail="${profile.id}">상세</button></div>`;
-  }).join('') : '<div class="notice">표시할 회원이 없습니다.</div>';
+    return { ...profile, ...metric, fallback_progress: progress, connection: connectionByUserId.get(profile.id) || null };
+  });
+  renderAdminMemberRows();
+}
+
+function renderAdminMemberRows() {
+  const tableBody = byId('memberList');
+  if (!tableBody) return;
+  const query = adminMemberSearch.trim().toLowerCase();
+  const rows = adminMembersCache.filter((member) => !query || `${member.full_name || ''} ${member.email || ''}`.toLowerCase().includes(query));
+  const statusMeta = {
+    COPYING: ['카피 중', 'chip'], PAUSED: ['일시 정지', 'chip yellow'], HALTED: ['중단', 'chip red'],
+    REDUCE_ONLY: ['축소 전용', 'chip yellow'], API_ERROR: ['API 오류', 'chip red'], ERROR: ['주문 오류', 'chip red'],
+    ATTENTION: ['확인 필요', 'chip yellow'],
+  };
+  tableBody.innerHTML = rows.length ? rows.map((member) => {
+    const fallback = member.fallback_progress || { label: '상태 확인', className: 'chip yellow' };
+    const status = statusMeta[member.copy_status] || [fallback.label, fallback.className];
+    const pnl = member.today_pnl == null ? null : Number(member.today_pnl);
+    const apiStatus = member.api_status || member.connection?.status || 'NOT_CONNECTED';
+    const apiLabel = apiStatus === 'VERIFIED' ? '정상' : apiStatus === 'ERROR' ? '권한 오류' : apiStatus === 'DISABLED' ? '연결 해제' : '확인 필요';
+    return `<tr><td><div class="admin-member-identity"><span>${escapeHtml(String(member.full_name || member.email || '?').slice(0, 1))}</span><div><b>${escapeHtml(member.full_name || '-')}</b><small>${escapeHtml(member.email || '-')}</small></div></div></td><td><span class="${status[1]}">${escapeHtml(status[0])}</span></td><td><b>${member.total_equity == null ? '-' : formatUsd(member.total_equity)}</b></td><td class="${pnl == null ? '' : pnl >= 0 ? 'pos' : 'neg'}"><b>${pnl == null ? '-' : formatUsd(pnl)}</b></td><td>${Number(member.copy_ratio ?? 100)}%</td><td><div class="member-margin-cell"><b>${Number(member.margin_usage_pct || 0).toFixed(1)}%</b><div><i style="width:${Math.min(100, Math.max(0, Number(member.margin_usage_pct || 0)))}%"></i></div></div></td><td class="${apiStatus === 'VERIFIED' ? 'pos' : 'neg'}">${escapeHtml(apiLabel)}</td><td>${member.last_observed_at ? new Date(member.last_observed_at).toLocaleString('ko-KR') : '-'}</td><td><button class="btn" type="button" data-member-detail="${member.id}">상세</button></td></tr>`;
+  }).join('') : '<tr><td colspan="9" class="empty-cell">조건에 맞는 회원이 없습니다.</td></tr>';
+  if (byId('memberDirectorySummary')) byId('memberDirectorySummary').textContent = `${adminMembersCache.length}명 · 카피 중 ${adminMembersCache.filter((member) => member.copy_status === 'COPYING').length}명 · 확인 필요 ${adminMembersCache.filter((member) => member.copy_status !== 'COPYING').length}명`;
 }
 
 async function loadAdminGateConnections() {
@@ -1572,6 +1767,17 @@ document.addEventListener('click', async (event) => {
   if (event.target.closest('#adminAuditRefresh')) await loadAdminAuditLog();
   if (event.target.closest('#memberPasswordResetButton')) await requestMemberPasswordReset();
   if (event.target.closest('#copySettingsSave')) await saveCopySettings();
+  const adminRange = event.target.closest('[data-admin-range]');
+  if (adminRange) {
+    document.querySelectorAll('[data-admin-range]').forEach((button) => button.classList.toggle('active', button === adminRange));
+    if (adminRange.dataset.adminRange === 'custom') {
+      byId('adminDateRangeForm')?.classList.remove('hidden');
+    } else {
+      adminOperationsRange = /^\d+$/.test(adminRange.dataset.adminRange) ? Number(adminRange.dataset.adminRange) : adminRange.dataset.adminRange;
+      byId('adminDateRangeForm')?.classList.add('hidden');
+      await loadAdminOperationsMetrics();
+    }
+  }
   const dashboardRange = event.target.closest('[data-dashboard-range]');
   if (dashboardRange) {
     memberDashboardRange = Number(dashboardRange.dataset.dashboardRange);
@@ -1617,6 +1823,10 @@ document.addEventListener('input', (event) => {
   if (event.target.matches('#copyRatioSelect, #maxPositionRatioSelect, #dailyLossLimitInput, #maxDrawdownInput, #maxLeverageInput')) {
     refreshCopySettingPreview();
   }
+  if (event.target.id === 'adminMemberSearch') {
+    adminMemberSearch = event.target.value;
+    renderAdminMemberRows();
+  }
 });
 
 document.addEventListener('keydown', (event) => {
@@ -1626,6 +1836,13 @@ document.addEventListener('keydown', (event) => {
 });
 
 document.addEventListener('submit', async (event) => {
+  if (event.target.id === 'adminDateRangeForm') {
+    event.preventDefault();
+    const startDate = byId('adminDateFrom').value;
+    const endDate = byId('adminDateTo').value;
+    if (!startDate || !endDate || startDate > endDate) return window.toast('날짜 범위를 확인해 주세요.');
+    await loadAdminOperationsMetrics(startDate, endDate);
+  }
   if (event.target.id === 'adminAnalysisDateForm') {
     event.preventDefault();
     document.querySelectorAll('[data-analysis-range]').forEach((button) => button.classList.remove('active'));
@@ -1666,6 +1883,7 @@ async function boot() {
   enhanceLiveDataUi();
   enhanceCopySettingsUi();
   enhanceAdminApiPage();
+  enhanceAdminMembersPage();
   enhanceMemberDetailModal();
   enhanceLegalUi();
   enhanceMemberAnalysisPage();
