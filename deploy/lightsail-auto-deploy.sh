@@ -19,6 +19,10 @@ git fetch --quiet origin main
 local_sha="$(git rev-parse HEAD)"
 remote_sha="$(git rev-parse origin/main)"
 if [[ "${local_sha}" == "${remote_sha}" ]]; then
+  if [[ "$(systemctl is-active maetajak-worker.service || true)" != "active" ]]; then
+    echo "auto_deploy=recover_inactive_worker"
+    exec "${APP_DIR}/deploy/lightsail-deploy-dry-run.sh"
+  fi
   echo "auto_deploy=no_change"
   exit 0
 fi

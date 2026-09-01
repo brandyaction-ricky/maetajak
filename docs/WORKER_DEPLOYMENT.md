@@ -108,6 +108,8 @@ DB는 최근 Worker heartbeat, 운영 Gate URL, 고정 IP, 최근 준비 테스�
 
 실패하면 Worker는 중지되고 DB 실행 잠금은 유지됩니다. 배포 직전 DB와 Worker가 모두 정상인 LIVE 상태였던 경우에만, DRY_RUN 검증을 통과한 뒤 기존 LIVE 상태를 자동 복구합니다. 수동 중단·장애 중단·OBSERVE·DRY_RUN 상태는 자동 복구하지 않습니다. 최초 LIVE 승격은 DRY_RUN 목표 수량 검토 후 `lightsail-enable-live.sh`의 별도 확인 절차가 필요합니다.
 
+배포 스크립트가 이미 이미지를 빌드한 뒤 systemd는 같은 이미지를 재빌드하지 않고 시작합니다. 빌드 또는 시작 실패로 서비스가 비활성 상태에 남으면 다음 자동 배포 주기가 동일 커밋을 안전한 DRY_RUN 절차로 다시 복구합니다.
+
 최초 한 번 `sudo /opt/maetajak/deploy/install-auto-deploy.sh`를 실행하면 systemd 타이머가 설치됩니다. 인바운드 SSH 키나 GitHub Secret은 필요하지 않습니다. 변경이 없을 때는 짧은 `git fetch`만 수행하고, Worker 관련 변경이 있을 때만 재빌드합니다. UI 전용 변경은 서버 체크아웃만 갱신하며 Worker를 재시작하지 않습니다.
 
 DB 마이그레이션이 포함된 커밋은 자동 배포가 차단됩니다. 운영 SQL을 먼저 적용하고 검증한 뒤 서버 체크아웃을 갱신해야 합니다. 기존 운영 DB의 `supabase_migrations.schema_migrations`에는 이미 적용된 버전을 등록해 이력을 일관되게 유지합니다.

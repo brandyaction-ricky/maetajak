@@ -3,6 +3,7 @@ set -Eeuo pipefail
 
 readonly ENV_FILE="${MAETAJAK_ENV_FILE:-/etc/maetajak/worker.env}"
 readonly MODE="${1:-}"
+readonly APP_DIR="/opt/maetajak"
 
 if [[ "${EUID}" -ne 0 ]]; then
   echo "Run this script as root." >&2
@@ -16,6 +17,14 @@ if [[ "${MODE}" != "DRY_RUN" && "${MODE}" != "LIVE" && "${MODE}" != "OBSERVE" ]]
   echo "Mode must be OBSERVE, DRY_RUN, or LIVE." >&2
   exit 1
 fi
+
+# Deployments build the image explicitly before starting systemd. Keep the
+# installed unit synchronized with the checked-out release so systemd does not
+# repeat the build and hit its start timeout on small Lightsail instances.
+install -m 644 -o root -g root \
+  "${APP_DIR}/deploy/maetajak-worker.service" \
+  /etc/systemd/system/maetajak-worker.service
+systemctl daemon-reload
 
 temp_env="$(mktemp "${ENV_FILE}.XXXXXX")"
 trap 'rm -f "${temp_env}"' EXIT

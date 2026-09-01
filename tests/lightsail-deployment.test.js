@@ -42,6 +42,8 @@ test('automated deployment verifies DRY_RUN and only resumes a previously health
   assert.match(autoDeploy, /clear_member_copy_baseline_legs/);
   assert.match(autoDeploy, /database_migration_already_applied/);
   assert.match(autoDeploy, /git merge-base --is-ancestor/);
+  assert.match(autoDeploy, /recover_inactive_worker/);
+  assert.match(autoDeploy, /systemctl is-active maetajak-worker\.service/);
   assert.match(timer, /OnUnitActiveSec=3min/);
   assert.match(workflow, /npm test/);
   assert.doesNotMatch(workflow, /LIGHTSAIL_SSH_PRIVATE_KEY/);
@@ -88,6 +90,10 @@ test('Lightsail configuration keeps server secrets outside the Git checkout', ()
 
 test('systemd refuses to start a worker that fails preflight', () => {
   const service = readFileSync('deploy/maetajak-worker.service', 'utf8');
+  const mode = readFileSync('deploy/set-worker-mode.sh', 'utf8');
   assert.match(service, /ExecStartPre=.*worker:preflight/);
   assert.match(service, /Environment=MAETAJAK_ENV_FILE=\/etc\/maetajak\/worker\.env/);
+  assert.match(service, /up -d --no-build/);
+  assert.match(mode, /install -m 644 .*maetajak-worker\.service/s);
+  assert.match(mode, /systemctl daemon-reload/);
 });
