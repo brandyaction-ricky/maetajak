@@ -46,7 +46,6 @@ let memberAnalysisBusy = false;
 let memberTradingAnalysisData = null;
 let adminAnalysisSelectedUserId = '';
 let adminAnalysisRangeDays = 30;
-let adminAnalysisMemberSort = 'name';
 let adminAnalysisMembers = [];
 let copySystemTimer = null;
 let selectedMemberId = null;
@@ -384,9 +383,9 @@ function enhanceAdminMemberAnalysisPage() {
   page.querySelector('.analysis-hero h2').textContent = '회원별 카피 수익 분석';
   page.querySelector('.analysis-hero p').textContent = 'Worker가 수집한 실제 체결 원장을 회원과 기간별로 조회합니다.';
   page.insertAdjacentHTML('afterbegin', `<div class="card section admin-analysis-selector">
-    <div><div class="admin-analysis-member-head"><span class="admin-analysis-label">회원 선택</span><label>회원 순서<select id="adminAnalysisMemberSort"><option value="name">이름순</option><option value="newest">최근 가입순</option><option value="oldest">오래된 가입순</option></select></label></div><div id="adminAnalysisMemberList" class="admin-analysis-members"><span class="notice">회원 목록을 불러오는 중입니다.</span></div></div>
+    <div><span class="admin-analysis-label">회원 선택</span><div id="adminAnalysisMemberList" class="admin-analysis-members"><span class="notice">회원 목록을 불러오는 중입니다.</span></div></div>
     <div class="admin-analysis-range">
-      <div class="admin-analysis-presets" aria-label="조회 기간"><button type="button" data-analysis-range="7">7일</button><button type="button" class="active" data-analysis-range="30">30일</button><button type="button" data-analysis-range="90">90일</button><button type="button" data-analysis-range="180">180일</button></div>
+      <div class="admin-analysis-preset-field"><span>조회 기간</span><div class="admin-analysis-presets" aria-label="조회 기간"><button type="button" data-analysis-range="7">7일</button><button type="button" class="active" data-analysis-range="30">30일</button><button type="button" data-analysis-range="90">90일</button><button type="button" data-analysis-range="180">180일</button></div></div>
       <form id="adminAnalysisDateForm" class="admin-analysis-dates"><label>시작일<input id="adminAnalysisStartDate" type="date" required></label><span>—</span><label>종료일<input id="adminAnalysisEndDate" type="date" required></label><button class="btn" type="submit">조회</button></form>
     </div>
   </div>`);
@@ -1583,7 +1582,7 @@ async function loadAdminAnalysisMembers() {
   if (!supabase || currentProfile?.role !== 'ADMIN') return;
   const list = byId('adminAnalysisMemberList');
   if (!list || list.dataset.loaded === 'true') return;
-  const { data, error } = await supabase.from('profiles').select('id,full_name,email,created_at').eq('role', 'MEMBER').eq('approval_status', 'APPROVED');
+  const { data, error } = await supabase.from('profiles').select('id,full_name,email').eq('role', 'MEMBER').eq('approval_status', 'APPROVED');
   if (error) return window.toast('수익 조회 회원을 불러오지 못했습니다.');
   list.dataset.loaded = 'true';
   adminAnalysisMembers = Array.isArray(data) ? data : [];
@@ -1595,11 +1594,7 @@ async function loadAdminAnalysisMembers() {
 function renderAdminAnalysisMembers() {
   const list = byId('adminAnalysisMemberList');
   if (!list) return;
-  const members = [...adminAnalysisMembers].sort((left, right) => {
-    if (adminAnalysisMemberSort === 'newest') return new Date(right.created_at || 0) - new Date(left.created_at || 0);
-    if (adminAnalysisMemberSort === 'oldest') return new Date(left.created_at || 0) - new Date(right.created_at || 0);
-    return String(left.full_name || left.email || '').localeCompare(String(right.full_name || right.email || ''), 'ko');
-  });
+  const members = [...adminAnalysisMembers].sort((left, right) => String(left.full_name || left.email || '').localeCompare(String(right.full_name || right.email || ''), 'ko'));
   list.innerHTML = members.length ? members.map((member) => `<button type="button" data-analysis-member="${member.id}" class="${member.id === adminAnalysisSelectedUserId ? 'active' : ''}"><b>${escapeHtml(member.full_name || '-')}</b><small>${escapeHtml(member.email || '-')}</small></button>`).join('') : '<span class="notice">조회할 승인 회원이 없습니다.</span>';
 }
 
@@ -1689,7 +1684,7 @@ async function openMemberDetail(userId) {
   byId('memberDetailStatus').className = member.approval_status === 'APPROVED' ? 'chip' : 'chip yellow';
   byId('memberDetailSummary').innerHTML = `
     <div><small>권한</small><b>${escapeHtml(member.role || '-')}</b></div>
-    <div><small>Copy Ratio</small><b>${Number(member.copy_ratio ?? 100)}%</b></div>
+    <div><small>카피 비율</small><b>${Number(member.copy_ratio ?? 100)}%</b></div>
     <div><small>최대 포지션 비중</small><b>${Number(member.max_position_ratio ?? 30)}%</b></div>
     <div><small>가입일</small><b>${member.created_at ? new Date(member.created_at).toLocaleDateString('ko-KR') : '-'}</b></div>
     ${member.role === 'MEMBER' ? '<div class="member-control-actions"><small>관리자 카피 제어</small><div class="actions"><button class="btn" type="button" data-member-control="PAUSE">일시중지</button><button class="btn" type="button" data-member-control="REDUCE_ONLY">축소 전용</button><button class="btn red" type="button" data-member-control="HALT">중단</button><button class="btn green" type="button" data-member-control="RESUME">재개</button></div></div>' : ''}`;
@@ -1887,10 +1882,6 @@ document.addEventListener('click', async (event) => {
 });
 
 document.addEventListener('change', (event) => {
-  if (event.target.id === 'adminAnalysisMemberSort') {
-    adminAnalysisMemberSort = ['name', 'newest', 'oldest'].includes(event.target.value) ? event.target.value : 'name';
-    renderAdminAnalysisMembers();
-  }
   if (event.target.id === 'analysisMonthSelect' && memberTradingAnalysisData) renderTradingAnalysis(memberTradingAnalysisData);
   if (event.target.id === 'adminPositionOwner') {
     adminPositionOwner = event.target.value || 'MASTER';
