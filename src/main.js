@@ -40,6 +40,7 @@ let adminMasterPositions = [];
 let adminMasterFilter = 'ALL';
 let adminGateApiBusy = false;
 let memberAnalysisBusy = false;
+let memberTradingAnalysisData = null;
 let adminAnalysisSelectedUserId = '';
 let adminAnalysisRangeDays = 30;
 let adminAnalysisMemberSort = 'name';
@@ -346,7 +347,7 @@ function enhanceMemberAnalysisPage() {
       </div>
       <div id="analysisEmpty" class="card section analysis-empty">Trading Worker가 거래 원장을 집계하면 분석 결과가 표시됩니다.</div>
       <div id="analysisContent" class="hidden">
-        <div class="analysis-profit-loss card section"><div><small>총이익</small><strong id="analysisGrossProfit" class="pos">$0.00</strong><span id="analysisWinCount">이익 정산 0건</span></div><div class="analysis-balance"><i id="analysisProfitBar"></i><i id="analysisLossBar"></i></div><div class="analysis-loss"><small>총손실</small><strong id="analysisGrossLoss" class="neg">$0.00</strong><span id="analysisLossCount">손실 정산 0건</span></div></div>
+        <div class="analysis-profit-loss card section"><div><small>총이익</small><strong id="analysisGrossProfit" class="pos">$0.00</strong></div><div class="analysis-balance"><i id="analysisProfitBar"></i><i id="analysisLossBar"></i></div><div class="analysis-loss"><small>총손실</small><strong id="analysisGrossLoss" class="neg">$0.00</strong></div></div>
         <div class="analysis-metrics">
           <div class="card"><small>순실현손익</small><b id="analysisNetPnl">$0.00</b></div>
           <div class="card"><small>승률</small><b id="analysisWinRate">-</b></div>
@@ -354,7 +355,7 @@ function enhanceMemberAnalysisPage() {
           <div class="card"><small>평균 손실</small><b id="analysisAverageLoss">-</b></div>
         </div>
         <div class="analysis-lower">
-          <div class="card section"><div class="section-head"><div><small>DAILY PNL</small><h3>일별 손익 캘린더</h3></div><span id="analysisMonthLabel"></span></div><div id="analysisCalendar" class="analysis-calendar"></div></div>
+          <div class="card section analysis-calendar-card"><div class="section-head analysis-calendar-head"><div><small>DAILY PNL</small><h3>일별 손익 캘린더</h3></div><label class="analysis-month-control"><span>조회 월</span><input id="analysisMonthSelect" type="month" aria-label="손익 조회 월"></label></div><div id="analysisCalendar" class="analysis-calendar"></div></div>
         </div>
         <p class="analysis-footnote">순손익은 실현손익에서 거래 수수료를 차감하고 펀딩비를 반영합니다. 입출금과 미실현손익은 제외됩니다.</p>
       </div>
@@ -1499,8 +1500,6 @@ function renderTradingAnalysis(data, prefix = 'analysis') {
   const netPnl = Number(totals.net_pnl || 0);
   analysisNode(prefix, 'GrossProfit').textContent = formatUsd(grossProfit);
   analysisNode(prefix, 'GrossLoss').textContent = formatUsd(grossLoss);
-  analysisNode(prefix, 'WinCount').textContent = `이익 정산 ${Number(totals.wins || 0).toLocaleString('ko-KR')}건`;
-  analysisNode(prefix, 'LossCount').textContent = `손실 정산 ${Number(totals.losses || 0).toLocaleString('ko-KR')}건`;
   analysisNode(prefix, 'NetPnl').textContent = formatUsd(netPnl);
   analysisNode(prefix, 'NetPnl').className = netPnl > 0 ? 'pos' : netPnl < 0 ? 'neg' : '';
   analysisNode(prefix, 'WinRate').textContent = totals.win_rate == null ? '-' : `${Number(totals.win_rate).toFixed(1)}%`;
@@ -1513,9 +1512,20 @@ function renderTradingAnalysis(data, prefix = 'analysis') {
   analysisNode(prefix, 'LossBar').style.width = `${Math.max(4, Math.abs(grossLoss) / totalAbs * 100)}%`;
 
   const latestDate = new Date(`${days.at(-1)?.date || data.ended_on}T00:00:00`);
-  const year = latestDate.getFullYear();
-  const month = latestDate.getMonth();
-  analysisNode(prefix, 'MonthLabel').textContent = `${year}.${String(month + 1).padStart(2, '0')}`;
+  const monthInput = prefix === 'analysis' ? byId('analysisMonthSelect') : null;
+  const latestMonth = `${latestDate.getFullYear()}-${String(latestDate.getMonth() + 1).padStart(2, '0')}`;
+  const firstDate = String(days[0]?.date || data.started_on || data.ended_on || '').slice(0, 7);
+  if (monthInput) {
+    monthInput.min = firstDate || latestMonth;
+    monthInput.max = String(data.ended_on || days.at(-1)?.date || '').slice(0, 7) || latestMonth;
+    if (!monthInput.value || monthInput.value < monthInput.min || monthInput.value > monthInput.max) monthInput.value = latestMonth;
+  }
+  const selectedMonth = monthInput?.value || latestMonth;
+  const [selectedYear, selectedMonthNumber] = selectedMonth.split('-').map(Number);
+  const selectedDate = new Date(selectedYear, selectedMonthNumber - 1, 1);
+  const year = selectedDate.getFullYear();
+  const month = selectedDate.getMonth();
+  if (analysisNode(prefix, 'MonthLabel')) analysisNode(prefix, 'MonthLabel').textContent = `${year}.${String(month + 1).padStart(2, '0')}`;
   const pnlByDate = new Map(days.map((day) => [day.date, Number(day.net_pnl || 0)]));
   const firstWeekday = new Date(year, month, 1).getDay();
   const daysInMonth = new Date(year, month + 1, 0).getDate();
@@ -1541,6 +1551,7 @@ async function loadTradingAnalysis() {
   const { data, error } = await supabase.rpc('get_my_trading_analysis');
   memberAnalysisBusy = false;
   if (error) return window.toast('수익 분석을 불러오지 못했습니다.');
+  memberTradingAnalysisData = data;
   renderTradingAnalysis(data);
 }
 
@@ -1852,9 +1863,11 @@ document.addEventListener('click', async (event) => {
 });
 
 document.addEventListener('change', (event) => {
-  if (event.target.id !== 'adminAnalysisMemberSort') return;
-  adminAnalysisMemberSort = ['name', 'newest', 'oldest'].includes(event.target.value) ? event.target.value : 'name';
-  renderAdminAnalysisMembers();
+  if (event.target.id === 'adminAnalysisMemberSort') {
+    adminAnalysisMemberSort = ['name', 'newest', 'oldest'].includes(event.target.value) ? event.target.value : 'name';
+    renderAdminAnalysisMembers();
+  }
+  if (event.target.id === 'analysisMonthSelect' && memberTradingAnalysisData) renderTradingAnalysis(memberTradingAnalysisData);
 });
 
 document.addEventListener('input', (event) => {
