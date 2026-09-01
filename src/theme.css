@@ -1581,7 +1581,7 @@ td,
   justify-items: center;
   margin: 28px auto 18px;
   border-radius: 50%;
-  background: radial-gradient(circle at center, var(--panel) 0 57%, transparent 58%), conic-gradient(var(--green) calc(var(--copy-rate) * 1%), #292d33 0);
+  background: radial-gradient(circle at center, var(--panel) 0 57%, transparent 58%), conic-gradient(var(--green) var(--copy-rate), #292d33 0);
 }
 .copy-health-donut strong { font-size: 30px; }
 .copy-health-donut span { color: var(--muted); font-size: 11px; }
