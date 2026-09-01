@@ -125,13 +125,20 @@ tbody tr:hover { background: #141416; }
 .admin-live-status b { font-size: 12px; }
 .admin-live-status b + div { margin: 4px 0 0 19px; }
 .admin-live-status b + div span { display: block; overflow: hidden; font-size: 10px; line-height: 1.5; text-overflow: ellipsis; white-space: nowrap; }
-.admin-live-status time { flex: 0 0 auto; padding: 7px 10px; border: 1px solid rgba(54, 201, 143, .18); border-radius: 8px; background: rgba(10, 10, 11, .48); color: var(--muted); font-size: 10px; font-weight: 650; line-height: 1.35; white-space: nowrap; }
+.admin-live-status time { flex: 0 0 auto; padding: 0; border: 0; background: transparent; color: var(--muted); font-size: 10px; font-weight: 650; line-height: 1.35; white-space: nowrap; }
+.dashboard-live-meta { display: flex; flex: 0 0 auto; align-items: center; gap: 10px; }
+.dashboard-live-meta > span { color: var(--muted); font-size: 10px; font-weight: 650; line-height: 1.35; white-space: nowrap; }
+.dashboard-live-meta .btn { min-height: 34px; padding: 0 12px; font-size: 11px; }
 .admin-operations-kpis .kpi { min-height: 106px; padding: 14px; }
 .admin-operations-kpis .kpi label { font-size: 10px; }
 .admin-operations-kpis .kpi strong { margin-top: 12px; overflow: hidden; font-size: 21px; line-height: 1.15; text-overflow: ellipsis; white-space: nowrap; }
 .admin-operations-kpis .kpi small { margin-top: 7px; overflow: hidden; font-size: 9px; line-height: 1.45; text-overflow: ellipsis; white-space: nowrap; }
 .admin-dashboard-positions { padding-top: 6px; }
 .admin-dashboard-positions .master-position-card { min-height: 226px; }
+.admin-position-controls { display: flex; align-items: flex-end; gap: 8px; }
+.admin-position-owner { display: grid; gap: 5px; color: var(--muted); font-size: 9px; }
+.admin-position-owner select { min-width: 172px; min-height: 36px; padding: 0 30px 0 10px; border: 1px solid var(--line); border-radius: 9px; outline: 0; background: var(--panel); color: var(--text); font-size: 11px; font-weight: 700; }
+.admin-position-owner select:focus { border-color: #666671; box-shadow: 0 0 0 3px rgba(244, 244, 245, .06); }
 .member-dashboard-kpis .kpi { min-height: 106px; padding: 14px; }
 .member-dashboard-kpis .kpi label { font-size: 10px; }
 .member-dashboard-kpis .kpi strong { margin-top: 12px; font-size: 21px; line-height: 1.15; white-space: nowrap; }
@@ -266,8 +273,14 @@ tbody tr:hover { background: #141416; }
 #member-account > .grid > .card:last-child { grid-column: 1 / -1; }
 #member-account .field input { width: 100%; }
 
+#admin-api.page.active, #admin-settings.page.active { display: grid; gap: 12px; }
 .admin-api-setup { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-.admin-master-api-card, .admin-master-security { padding: 16px; }
+.admin-master-api-card, .admin-master-security, .admin-api-connections { min-width: 0; padding: 18px; }
+#admin-api > .kpis { margin: 0; }
+.operations-grid { gap: 12px; margin: 0; }
+.operations-grid > .card, .operations-emergency { min-width: 0; padding: 18px; }
+.operations-emergency, .operations-note { margin: 0; }
+.operations-note { padding: 16px 18px; }
 .admin-api-fields { display: grid; gap: 10px; }
 .admin-secret-field { position: relative; }
 .admin-api-submit-row, .credential-actions, .member-control-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
@@ -387,12 +400,23 @@ tbody tr:hover { background: #141416; }
   .sidebar { position: fixed; z-index: 40; left: 0; top: 0; width: 248px; transform: translateX(-100%); transition: .2s; }
   .sidebar.open { transform: translateX(0); }
   .mobile { display: inline-flex; }
-  .top { padding: 0 16px; }
+  .top { height: 64px; gap: 10px; padding: 0 14px; }
+  .top-leading { min-width: 0; flex: 1 1 auto; gap: 10px; }
+  .top-leading > .mobile { width: 36px; height: 36px; min-height: 36px; flex: 0 0 36px; align-items: center; justify-content: center; padding: 0; border-radius: 9px; font-size: 13px; line-height: 1; }
+  .top-copy { min-width: 0; }
+  .top-copy h2 { overflow: hidden; font-size: 14px; line-height: 1.25; text-overflow: ellipsis; white-space: nowrap; }
+  .top-copy small { overflow: hidden; margin-top: 3px; font-size: 10px; line-height: 1.35; text-overflow: ellipsis; white-space: nowrap; }
+  .top > .actions { flex: 0 0 auto; }
+  .top > .actions .btn { min-height: 34px; padding: 0 9px; font-size: 10px; }
   .content { padding: 20px 16px 40px; }
   .member-dashboard-kpis, .admin-operations-kpis, .kpis { grid-template-columns: repeat(2, 1fr); }
   .admin-dashboard-heading, .member-trades-heading, .master-position-head, .member-position-head, .panel-title { align-items: flex-start; flex-direction: column; }
   .admin-live-status { align-items: flex-start; flex-direction: column; gap: 12px; }
   .admin-live-status time { margin-left: 19px; }
+  .dashboard-live-status { align-items: flex-start; flex-direction: column; gap: 12px; }
+  .dashboard-live-meta { width: calc(100% - 19px); margin-left: 19px; justify-content: space-between; }
+  .admin-position-controls { width: 100%; align-items: stretch; flex-direction: column; }
+  .admin-position-owner select { width: 100%; }
   .analysis-calendar-head { align-items: stretch; }
   .analysis-month-control input { width: 100%; }
   .admin-period-tabs { max-width: 100%; overflow: auto; }
@@ -413,6 +437,9 @@ tbody tr:hover { background: #141416; }
 }
 
 @media (max-width: 560px) {
+  .top { padding: 0 12px; }
+  .top-leading { gap: 9px; }
+  .top-leading > .mobile { width: 34px; height: 34px; min-height: 34px; flex-basis: 34px; }
   .member-dashboard-kpis, .admin-operations-kpis, .kpis, .master-position-grid, .member-open-position-grid { grid-template-columns: 1fr; }
   .master-filters { width: 100%; }
   .master-filters button { flex: 1; }
@@ -425,4 +452,6 @@ tbody tr:hover { background: #141416; }
   .copy-risk-inputs { grid-template-columns: 1fr; }
   .admin-live-status b + div span { white-space: normal; }
   .admin-live-status time { width: calc(100% - 19px); white-space: normal; }
+  .dashboard-live-meta { align-items: center; }
+  .dashboard-live-meta > span { white-space: normal; }
 }
