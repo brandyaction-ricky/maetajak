@@ -142,9 +142,10 @@ tbody tr:hover { background: #141416; }
 .master-position-title h3, .member-position-head h3 { margin: 0; font-size: 19px; }
 .master-position-title span, .member-position-head h3 span { padding: 3px 7px; border-radius: 6px; background: #26262b; color: #aaa; font-size: 10px; }
 .master-position-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
-.member-open-position-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.member-open-position-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
 .master-position-card, .member-open-position-card { min-width: 0; padding: 14px; border: 1px solid var(--line); border-radius: 11px; background: var(--panel); }
-.master-position-card-head, .master-position-pnl, .master-position-sync, .member-open-position-head, .member-open-position-pnl, .member-open-position-sync { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.member-open-position-card { display: flex; min-height: 246px; flex-direction: column; }
+.master-position-card-head, .master-position-pnl, .master-position-sync, .member-position-card-head, .member-position-pnl { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .master-symbol { display: flex; align-items: center; min-width: 0; gap: 9px; }
 .master-symbol > span { display: grid; width: 30px; height: 30px; flex: 0 0 auto; place-items: center; border-radius: 50%; background: #202024; font-size: 10px; font-weight: 800; }
 .master-symbol b, .master-symbol small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -164,6 +165,29 @@ tbody tr:hover { background: #141416; }
 .master-position-metrics span { margin-bottom: 4px; color: var(--muted); font-size: 9px; }
 .master-position-metrics b { font-size: 11px; }
 .master-position-sync { margin-top: 14px; padding-top: 10px; border-top: 1px solid var(--line); color: var(--muted); font-size: 8px; }
+
+.member-position-card-head { min-width: 0; }
+.member-position-identity { min-width: 0; }
+.member-position-identity > div { min-width: 0; }
+.member-position-identity b, .member-position-identity small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.member-position-identity b { font-size: 12px; }
+.member-position-identity small { margin-top: 3px; color: var(--muted); font-size: 9px; }
+.member-position-card-head > span { flex: 0 0 auto; padding: 5px 8px; border-radius: 999px; font-size: 9px; font-weight: 800; }
+.member-position-card-head > span.long { background: var(--green-bg); color: #73ddb4; }
+.member-position-card-head > span.short { background: var(--red-bg); color: #ff929c; }
+.member-position-pnl { align-items: flex-end; margin: 16px 0; padding-bottom: 14px; border-bottom: 1px solid var(--line); }
+.member-position-pnl small { color: var(--muted); font-size: 9px; }
+.member-position-pnl strong { display: block; margin-top: 5px; font-size: 20px; line-height: 1.1; }
+.member-position-pnl > b { font-size: 13px; }
+.member-position-metrics { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 10px; }
+.member-position-metrics span, .member-position-metrics b { display: block; }
+.member-position-metrics span { margin-bottom: 4px; color: var(--muted); font-size: 9px; }
+.member-position-metrics b { overflow: hidden; color: #d8d8dc; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.member-exposure { margin-top: auto; padding-top: 14px; color: var(--muted); font-size: 9px; }
+.member-exposure > span { display: flex; justify-content: space-between; gap: 8px; }
+.member-exposure b { color: #d8d8dc; }
+.member-exposure > div { height: 5px; margin-top: 7px; overflow: hidden; border-radius: 999px; background: #242429; }
+.member-exposure i { display: block; height: 100%; border-radius: inherit; background: var(--green); }
 
 .admin-pending-members, .admin-member-directory { padding: 16px; }
 .admin-pending-members { margin-bottom: 12px; }
@@ -275,6 +299,12 @@ tbody tr:hover { background: #141416; }
 .analysis-metrics .card { padding: 14px; border: 0; border-radius: 0; }
 .analysis-metrics b { display: block; margin-top: 8px; font-size: 18px; }
 .analysis-lower { display: grid; grid-template-columns: 1fr; gap: 12px; }
+.analysis-calendar-card { padding: 18px; }
+.analysis-calendar-head { align-items: flex-end; margin-bottom: 18px; padding-bottom: 14px; border-bottom: 1px solid var(--line); }
+.analysis-calendar-head h3 { margin-top: 3px; font-size: 13px; }
+.analysis-month-control { display: grid; gap: 6px; color: var(--muted); font-size: 9px; }
+.analysis-month-control input { min-width: 152px; min-height: 38px; padding: 0 10px; border: 1px solid var(--line-strong); border-radius: 9px; outline: 0; background: var(--panel-2); color: var(--text); color-scheme: dark; font-size: 12px; font-weight: 700; }
+.analysis-month-control input:focus { border-color: #666671; box-shadow: 0 0 0 3px rgba(244, 244, 245, .06); }
 .analysis-calendar { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 5px; }
 .analysis-calendar > small { color: var(--muted); font-size: 9px; text-align: center; }
 .analysis-calendar > div { min-height: 54px; padding: 7px; border: 1px solid var(--line); border-radius: 8px; }
@@ -344,6 +374,8 @@ tbody tr:hover { background: #141416; }
   .content { padding: 20px 16px 40px; }
   .member-dashboard-kpis, .admin-operations-kpis, .kpis { grid-template-columns: repeat(2, 1fr); }
   .admin-dashboard-heading, .member-trades-heading, .master-position-head, .member-position-head, .panel-title { align-items: flex-start; flex-direction: column; }
+  .analysis-calendar-head { align-items: stretch; }
+  .analysis-month-control input { width: 100%; }
   .admin-period-tabs { max-width: 100%; overflow: auto; }
   .admin-analysis-range, .admin-analysis-dates { align-items: stretch; flex-direction: column; }
   .analysis-metrics { grid-template-columns: repeat(2, 1fr); }
