@@ -5,6 +5,7 @@ import test from 'node:test';
 const main = readFileSync('src/main.js', 'utf8');
 const index = readFileSync('index.html', 'utf8');
 const theme = readFileSync('src/prototype-theme.css', 'utf8');
+const memberPositionMigration = readFileSync('supabase/migrations/202609020001_admin_member_position_selector.sql', 'utf8');
 
 test('uploaded prototype is the single active visual theme', () => {
   assert.match(main, /import '\.\/prototype-theme\.css'/);
@@ -105,6 +106,39 @@ test('admin custom date range stays compact and stacks on mobile', () => {
   assert.match(theme, /\.admin-date-range input \{[^}]*width: 164px/s);
   assert.match(theme, /\.admin-date-range \.btn \{[^}]*min-height: 38px/s);
   assert.match(theme, /@media \(max-width: 820px\)[\s\S]*\.admin-date-range[^}]*flex-direction: column/s);
+});
+
+test('admin dashboard can switch from Master to member positions', () => {
+  assert.match(main, /id="adminPositionOwner"/);
+  assert.match(main, /data\?\.member_positions/);
+  assert.match(main, /data\?\.position_members/);
+  assert.match(main, /adminPositionOwner = event\.target\.value/);
+  assert.match(theme, /\.admin-position-controls/);
+  assert.match(theme, /\.admin-position-owner select/);
+  assert.match(memberPositionMigration, /if not public\.is_approved_admin\(\)/);
+  assert.match(memberPositionMigration, /'member_positions'/);
+  assert.match(memberPositionMigration, /'position_members'/);
+  assert.match(memberPositionMigration, /position\.account_snapshot_id=snapshot\.id and position\.size<>0/);
+});
+
+test('mobile header keeps the hamburger aligned with title copy', () => {
+  assert.match(theme, /@media \(max-width: 820px\)[\s\S]*\.top-leading > \.mobile \{[^}]*width: 36px/s);
+  assert.match(theme, /\.top-copy h2 \{[^}]*text-overflow: ellipsis/s);
+  assert.match(theme, /\.top-copy small \{[^}]*white-space: nowrap/s);
+});
+
+test('admin operational pages use consistent section spacing', () => {
+  assert.match(theme, /#admin-api\.page\.active, #admin-settings\.page\.active \{[^}]*display: grid;[^}]*gap: 12px/s);
+  assert.match(theme, /\.operations-grid \{[^}]*gap: 12px;[^}]*margin: 0/s);
+  assert.match(theme, /\.operations-emergency, \.operations-note \{[^}]*margin: 0/s);
+  assert.match(main, /class="card section admin-api-connections"/);
+  assert.doesNotMatch(main, /style="margin-top:14px"/);
+});
+
+test('member live status keeps copy metadata and action compact', () => {
+  assert.match(theme, /\.dashboard-live-meta \{[^}]*align-items: center;[^}]*gap: 10px/s);
+  assert.match(theme, /\.dashboard-live-meta \.btn \{[^}]*min-height: 34px/s);
+  assert.match(theme, /@media \(max-width: 820px\)[\s\S]*\.dashboard-live-meta \{[^}]*width: calc\(100% - 19px\)/s);
 });
 
 test('redundant admin operational menus are removed at startup', () => {
