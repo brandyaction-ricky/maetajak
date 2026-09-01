@@ -24,9 +24,8 @@ test('admin profit management supports direct member and date-range selection', 
   assert.match(rangeMigration, /trading_date between range_start and range_end/);
   assert.match(rangeMigration, /realised_pnl - performance\.fees \+ performance\.funding_pnl/);
   assert.match(rangeMigration, /DATE_RANGE_TOO_LARGE/);
-  assert.match(main, /adminAnalysisMemberSort/);
-  assert.match(main, /최근 가입순/);
-  assert.match(main, /오래된 가입순/);
+  assert.doesNotMatch(main, /adminAnalysisMemberSort/);
+  assert.doesNotMatch(main, /회원 순서/);
   assert.match(main, /renderAdminAnalysisMembers/);
 });
 
