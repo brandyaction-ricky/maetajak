@@ -29,12 +29,29 @@ test('redundant member positions page is removed while dashboard positions remai
   assert.match(main, /memberOpenPositionCards/);
 });
 
-test('member copy positions and events use accessible tabs', () => {
-  assert.match(main, /data-member-trade-tab="positions"/);
-  assert.match(main, /data-member-trade-tab="events"/);
-  assert.match(main, /data-member-trade-panel="positions"/);
-  assert.match(main, /aria-selected/);
-  assert.match(theme, /\.member-trade-tabs/);
+test('redundant member copy events are removed while current copy positions remain', () => {
+  assert.match(main, /memberTradePositions/);
+  assert.doesNotMatch(main, /data-member-trade-tab/);
+  assert.doesNotMatch(main, /memberLiveEvents/);
+  assert.doesNotMatch(main, /member-copy-events/);
+  assert.doesNotMatch(theme, /\.member-copy-events/);
+  assert.doesNotMatch(theme, /\.member-trade-tabs/);
+});
+
+test('member details are separated into accessible tabs', () => {
+  for (const tab of ['overview', 'performance', 'security']) {
+    assert.match(main, new RegExp(`data-member-detail-tab="${tab}"`));
+    assert.match(main, new RegExp(`data-member-detail-panel="${tab}"`));
+  }
+  assert.match(main, /function setMemberDetailTab/);
+  assert.match(theme, /\.member-detail-tabs/);
+});
+
+test('audit log is presented in clear Korean labels', () => {
+  assert.match(main, /'admin-audit': \['감사 기록'/);
+  assert.match(main, /회원 승인 상태 변경/);
+  assert.match(main, /상세 변경/);
+  assert.doesNotMatch(main, /<h3>Audit Log<\/h3>/);
 });
 
 test('admin dashboard consolidates full current positions and removes legacy sections', () => {
