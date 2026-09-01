@@ -38,6 +38,9 @@ let gateStatusTimer = null;
 let memberDetailBusy = false;
 let adminMasterPositions = [];
 let adminMasterFilter = 'ALL';
+let adminPositionOwner = 'MASTER';
+let adminMemberPositions = [];
+let adminPositionMembers = [];
 let adminGateApiBusy = false;
 let memberAnalysisBusy = false;
 let memberTradingAnalysisData = null;
@@ -188,7 +191,7 @@ function enhanceLiveDataUi() {
   if (adminDashboard) adminDashboard.innerHTML = `<div class="admin-dashboard-heading"><div><h2>운영 대시보드</h2><p>전체 회원의 카피 상태, 계좌 규모, 장애 여부를 우선순위대로 확인합니다.</p></div><div class="admin-period-tabs" role="group" aria-label="운영 조회 기간">${[['today','오늘'],[7,'7일'],[30,'30일'],['month','이번 달']].map(([range,label]) => `<button type="button" data-admin-range="${range}" class="${range === 30 ? 'active' : ''}">${label}</button>`).join('')}<button type="button" data-admin-range="custom">직접 선택</button></div></div><form id="adminDateRangeForm" class="admin-date-range hidden"><label>시작일<input id="adminDateFrom" type="date" required></label><span>—</span><label>종료일<input id="adminDateTo" type="date" required></label><button class="btn" type="submit">조회</button></form>
     <div class="status admin-live-status"><div><span id="adminSystemDot" class="dot"></span><b id="adminSystemTitle">운영 상태 확인 중</b><div><span id="adminSystemDetail">Worker heartbeat를 확인하고 있습니다.</span></div></div><time id="adminOverviewObserved">실시간 데이터 확인 중</time></div>
     <div class="admin-operations-kpis"><div class="card kpi"><label>전체 회원</label><strong id="adminTotalMembers">0</strong><small id="adminMemberDelta">승인 회원 기준</small></div><div class="card kpi"><label>카피 중</label><strong id="adminCopyingMembers">0</strong><small id="adminCopyingRate">0% 정상 작동</small></div><div class="card kpi"><label>확인 필요</label><strong id="adminLiveActionCount" class="neg">0</strong><small id="adminAttentionBreakdown">API·주문 상태</small></div><div class="card kpi"><label>총 운용 자산</label><strong id="adminTotalAssets">-</strong><small>회원 최신 원장 합산</small></div><div class="card kpi"><label>기간 회원 PNL</label><strong id="adminPeriodPnl">-</strong><small id="adminPeriodLabel">선택 기간 합산</small></div></div>
-    <div class="master-position-section admin-dashboard-positions"><div class="master-position-head"><div><div class="master-position-title"><h3>현재 포지션</h3><span id="masterPositionBadge">0</span></div><p>Gate.io에서 Worker가 확인한 Master 무기한 선물 포지션입니다.</p></div><div class="master-filters" role="group" aria-label="포지션 방향 필터"><button class="active" type="button" data-master-filter="ALL">전체</button><button type="button" data-master-filter="LONG">Long</button><button type="button" data-master-filter="SHORT">Short</button></div></div><div id="adminMasterPositionCards" class="master-position-grid"><div class="master-position-empty">Master 포지션을 불러오는 중입니다.</div></div></div>`;
+    <div class="master-position-section admin-dashboard-positions"><div class="master-position-head"><div><div class="master-position-title"><h3 id="adminPositionTitle">현재 포지션</h3><span id="masterPositionBadge">0</span></div><p id="adminPositionDescription">Gate.io에서 Worker가 확인한 Master 무기한 선물 포지션입니다.</p></div><div class="admin-position-controls"><div class="master-filters" role="group" aria-label="포지션 방향 필터"><button class="active" type="button" data-master-filter="ALL">전체</button><button type="button" data-master-filter="LONG">Long</button><button type="button" data-master-filter="SHORT">Short</button></div><label class="admin-position-owner"><span>계정 선택</span><select id="adminPositionOwner" aria-label="포지션을 확인할 계정"><option value="MASTER">Master 포지션</option></select></label></div></div><div id="adminMasterPositionCards" class="master-position-grid"><div class="master-position-empty">Master 포지션을 불러오는 중입니다.</div></div></div>`;
   const trades = byId('member-trades');
   if (trades) trades.innerHTML = `<div class="member-trades-heading"><div><h2>내 카피 현황</h2><p>마스터 전략이 내 계정에 어떻게 복사되고 있는지 실제 회원 계정 기준으로 확인합니다.</p></div><span id="memberTradeStatus" class="chip yellow">상태 확인 중</span></div><section class="card member-gate-summary"><div class="gate-summary-logo">G</div><div><b>Gate.io 연결 계정</b><small id="memberTradeGateUid">UID 확인 중 · Futures</small></div><div class="gate-summary-equity"><strong id="memberTradeEquity">-</strong><small>현재 자산</small></div></section><section class="card member-copy-position-table"><div class="panel-title"><div><h3>현재 카피 포지션</h3><p>실제 회원 계정 기준</p></div></div><div class="table"><table><thead><tr><th>종목</th><th>방향</th><th>포지션 규모</th><th>진입가</th><th>현재가</th><th>미실현 PNL</th><th>ROI</th><th>증거금 비중</th><th>상태</th></tr></thead><tbody id="memberTradePositions"><tr><td colspan="9" class="empty-cell">실제 포지션을 불러오는 중입니다.</td></tr></tbody></table></div></section>`;
   const auditPage = byId('admin-audit');
@@ -250,7 +253,7 @@ function enhanceAdminApiPage() {
       <div class="card kpi"><label>오류</label><strong id="adminApiErrors" class="warn">0</strong></div>
       <div class="card kpi"><label>미연결</label><strong id="adminApiDisconnected">0</strong></div>
     </div>
-    <div class="card section" style="margin-top:14px">
+    <div class="card section admin-api-connections">
       <div class="section-head"><div><h3>회원 Gate.io API 연결 현황</h3><p>회원별 연결·권한·Worker 검증 상태입니다.</p></div></div>
       <div class="table"><table><thead><tr><th>회원</th><th>UID</th><th>상태</th><th>Futures 권한</th><th>Worker IP</th><th>최근 확인</th><th>관리</th></tr></thead>
       <tbody id="adminGateConnections"><tr><td colspan="7" class="empty-cell">API 연결 현황을 불러오는 중입니다.</td></tr></tbody></table></div>
@@ -747,7 +750,9 @@ function formatMasterPrice(value) {
 }
 
 function renderAdminMasterPositions() {
-  const positions = adminMasterPositions;
+  const selectedMember = adminPositionMembers.find((member) => member.user_id === adminPositionOwner);
+  const isMaster = adminPositionOwner === 'MASTER';
+  const positions = isMaster ? adminMasterPositions : adminMemberPositions.filter((position) => position.user_id === adminPositionOwner);
   const longCount = positions.filter((position) => Number(position.size) > 0).length;
   const shortCount = positions.filter((position) => Number(position.size) < 0).length;
   const latest = positions.reduce((value, position) => Math.max(value, new Date(position.observed_at || 0).getTime()), 0);
@@ -756,6 +761,10 @@ function renderAdminMasterPositions() {
   if (byId('masterLongCount')) byId('masterLongCount').textContent = String(longCount);
   if (byId('masterShortCount')) byId('masterShortCount').textContent = String(shortCount);
   if (byId('masterPositionBadge')) byId('masterPositionBadge').textContent = String(positions.length);
+  if (byId('adminPositionTitle')) byId('adminPositionTitle').textContent = isMaster ? '현재 포지션' : `${selectedMember?.name || selectedMember?.email || '회원'} 보유 포지션`;
+  if (byId('adminPositionDescription')) byId('adminPositionDescription').textContent = isMaster
+    ? 'Gate.io에서 Worker가 확인한 Master 무기한 선물 포지션입니다.'
+    : 'Gate.io Worker가 확인한 선택 회원의 실제 무기한 선물 포지션입니다.';
   if (byId('masterLastObserved')) byId('masterLastObserved').textContent = latest ? new Date(latest).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' }) : '-';
   const filtered = positions.filter((position) => adminMasterFilter === 'ALL' || (Number(position.size) > 0 ? 'LONG' : 'SHORT') === adminMasterFilter);
   const container = byId('adminMasterPositionCards');
@@ -769,14 +778,24 @@ function renderAdminMasterPositions() {
     const priceMove = entry > 0 ? ((mark - entry) / entry) * (size > 0 ? 1 : -1) * 100 : 0;
     const estimatedRoe = priceMove * Math.max(leverage, 1);
     const unrealisedPnl = Number(position.unrealised_pnl ?? ((mark - entry) * size * Number(position.quanto_multiplier || 0)));
+    const notional = Math.abs(Number(position.notional ?? (size * mark * Number(position.quanto_multiplier || 0))));
+    const margin = position.margin == null ? null : Math.abs(Number(position.margin));
     const pnlClass = unrealisedPnl >= 0 ? 'pos' : 'neg';
     return `<article class="master-position-card">
       <div class="master-position-card-head"><div class="master-symbol">${positionLogo(position.contract)}<div><b>${escapeHtml(position.contract)}</b><small>무기한 선물</small></div></div><div class="master-side"><span class="${side === 'LONG' ? 'long' : 'short'}">${side}</span><small>${leverage || '-'}x</small></div></div>
       <div class="master-position-pnl"><div><small>미실현 수익금</small><strong class="${pnlClass}">${formatUsd(unrealisedPnl)}</strong></div><b class="${estimatedRoe >= 0 ? 'pos' : 'neg'}">${estimatedRoe >= 0 ? '+' : ''}${estimatedRoe.toFixed(2)}%</b></div>
-      <div class="master-position-metrics"><div><span>진입가</span><b>${formatMasterPrice(entry)}</b></div><div><span>현재가</span><b>${formatMasterPrice(mark)}</b></div><div><span>계약 수량</span><b>${Math.abs(size).toLocaleString()}</b></div><div><span>방향</span><b class="${side === 'LONG' ? 'pos' : 'neg'}">${side}</b></div></div>
+      <div class="master-position-metrics"><div><span>진입가</span><b>${formatMasterPrice(entry)}</b></div><div><span>현재가</span><b>${formatMasterPrice(mark)}</b></div>${isMaster ? `<div><span>계약 수량</span><b>${Math.abs(size).toLocaleString()}</b></div><div><span>방향</span><b class="${side === 'LONG' ? 'pos' : 'neg'}">${side}</b></div>` : `<div><span>포지션 규모</span><b>${formatUsd(notional)}</b></div><div><span>증거금</span><b>${margin == null ? '-' : formatUsd(margin)}</b></div>`}</div>
       <div class="master-position-sync"><span>마지막 확인</span><time>${position.observed_at ? new Date(position.observed_at).toLocaleString('ko-KR') : '-'}</time></div>
     </article>`;
-  }).join('') : `<div class="master-position-empty">${positions.length ? `${adminMasterFilter} 포지션이 없습니다.` : '현재 열린 Master 포지션이 없습니다.'}</div>`;
+  }).join('') : `<div class="master-position-empty">${adminMasterFilter !== 'ALL' ? `${adminMasterFilter} 포지션이 없습니다.` : isMaster ? '현재 열린 Master 포지션이 없습니다.' : '선택한 회원의 열린 포지션이 없습니다.'}</div>`;
+}
+
+function renderAdminPositionOwnerOptions() {
+  const select = byId('adminPositionOwner');
+  if (!select) return;
+  select.innerHTML = '<option value="MASTER">Master 포지션</option>' + adminPositionMembers.map((member) => `<option value="${escapeHtml(member.user_id)}">${escapeHtml(member.name || member.email || '이름 없는 회원')}</option>`).join('');
+  if (!['MASTER', ...adminPositionMembers.map((member) => member.user_id)].includes(adminPositionOwner)) adminPositionOwner = 'MASTER';
+  select.value = adminPositionOwner;
 }
 
 window.setAdminMasterFilter = (filter, button) => {
@@ -965,6 +984,8 @@ async function loadAdminLiveData() {
   const { data, error } = await supabase.rpc('get_admin_live_trading_data');
   if (error) return window.toast('실제 운영 데이터를 불러오지 못했습니다.');
   const master = Array.isArray(data?.master_positions) ? data.master_positions : [];
+  const memberPositions = Array.isArray(data?.member_positions) ? data.member_positions : [];
+  const positionMembers = Array.isArray(data?.position_members) ? data.position_members : [];
   const states = Array.isArray(data?.member_states) ? data.member_states : [];
   const orders = Array.isArray(data?.orders) ? data.orders : [];
   const unknownOrders = orders.filter((order) => ['UNKNOWN', 'SUBMITTING', 'ACKNOWLEDGED', 'PARTIALLY_FILLED'].includes(order.status));
@@ -1020,6 +1041,9 @@ async function loadAdminLiveData() {
   const latestObserved = master.reduce((latest, position) => Math.max(latest, new Date(position.observed_at || 0).getTime()), 0);
   if (byId('adminOverviewObserved')) byId('adminOverviewObserved').textContent = latestObserved ? `마지막 동기화 ${new Date(latestObserved).toLocaleString('ko-KR')}` : '동기화 기록 없음';
   adminMasterPositions = master;
+  adminMemberPositions = memberPositions;
+  adminPositionMembers = positionMembers;
+  renderAdminPositionOwnerOptions();
   renderAdminMasterPositions();
   if (byId('adminMasterPreview')) byId('adminMasterPreview').innerHTML = master.length ? master.slice(0, 4).map((position) => {
     const size = Number(position.size || 0);
@@ -1868,6 +1892,10 @@ document.addEventListener('change', (event) => {
     renderAdminAnalysisMembers();
   }
   if (event.target.id === 'analysisMonthSelect' && memberTradingAnalysisData) renderTradingAnalysis(memberTradingAnalysisData);
+  if (event.target.id === 'adminPositionOwner') {
+    adminPositionOwner = event.target.value || 'MASTER';
+    renderAdminMasterPositions();
+  }
 });
 
 document.addEventListener('input', (event) => {
