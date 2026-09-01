@@ -106,7 +106,7 @@ DB는 최근 Worker heartbeat, 운영 Gate URL, 고정 IP, 최근 준비 테스�
 5. `DRY_RUN` 고정, Preflight, Worker 재시작
 6. 정상 사이클과 회원 동기화 오류 부재 검증
 
-실패하면 Worker는 중지되고 DB 실행 잠금은 유지됩니다. 자동 배포는 LIVE를 켜지 않습니다. 실제 주문 승격은 DRY_RUN 목표 수량 검토 후 `lightsail-enable-live.sh`의 별도 확인 절차로만 가능합니다.
+실패하면 Worker는 중지되고 DB 실행 잠금은 유지됩니다. 배포 직전 DB와 Worker가 모두 정상인 LIVE 상태였던 경우에만, DRY_RUN 검증을 통과한 뒤 기존 LIVE 상태를 자동 복구합니다. 수동 중단·장애 중단·OBSERVE·DRY_RUN 상태는 자동 복구하지 않습니다. 최초 LIVE 승격은 DRY_RUN 목표 수량 검토 후 `lightsail-enable-live.sh`의 별도 확인 절차가 필요합니다.
 
 최초 한 번 `sudo /opt/maetajak/deploy/install-auto-deploy.sh`를 실행하면 systemd 타이머가 설치됩니다. 인바운드 SSH 키나 GitHub Secret은 필요하지 않습니다. 변경이 없을 때는 짧은 `git fetch`만 수행하고, Worker 관련 변경이 있을 때만 재빌드합니다. UI 전용 변경은 서버 체크아웃만 갱신하며 Worker를 재시작하지 않습니다.
 

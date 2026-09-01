@@ -13,6 +13,7 @@
     "worker:start": "node worker/index.js",
     "worker:preflight": "node scripts/worker-preflight.js",
     "worker:alert-test": "node scripts/test-alert.js",
+    "worker:can-resume-live": "node scripts/check-live-resume.js",
     "worker:activate": "node scripts/activate-live.js",
     "worker:halt": "node scripts/halt-live.js"
   },

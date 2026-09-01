@@ -16,6 +16,7 @@ if [[ ! -f "${ENV_FILE}" ]]; then
 fi
 
 failed=true
+resume_previous_live=false
 keep_safe() {
   if [[ "${failed}" == "true" ]]; then
     systemctl stop maetajak-worker.service >/dev/null 2>&1 || true
@@ -32,6 +33,17 @@ fi
 
 export MAETAJAK_ENV_FILE="${ENV_FILE}"
 previous_sha="$(git rev-parse HEAD)"
+
+# A deployment may automatically resume only the exact production system that
+# was already healthy and executing LIVE immediately before this deployment.
+# A manually halted, unhealthy, DRY_RUN, or OBSERVE system stays fail-closed.
+if grep -Eq '^TRADING_MODE=LIVE$' "${ENV_FILE}" && \
+  docker compose -f docker-compose.worker.yml run --rm copy-worker npm run worker:can-resume-live; then
+  resume_previous_live=true
+  echo "previous_live=verified"
+else
+  echo "previous_live=not_eligible"
+fi
 
 # Stop order-producing processes before changing code or configuration.
 systemctl stop maetajak-worker.service
@@ -50,10 +62,16 @@ systemctl start maetajak-worker.service
 sleep "${VERIFY_WAIT_SECONDS}"
 EXPECTED_MODE=DRY_RUN "${APP_DIR}/deploy/lightsail-verify-deployment.sh"
 
-# A reviewed, expiring request can promote exactly once after the fail-closed
-# DRY_RUN deployment has completed all health checks. The consumed token is
-# stored outside the Git checkout so later deployments cannot replay it.
-"${APP_DIR}/deploy/process-live-promotion-request.sh"
+# Restore LIVE automatically only when the pre-deployment production state was
+# verified healthy. First-time and manually halted promotions still require the
+# reviewed, expiring, single-use request below.
+if [[ "${resume_previous_live}" == "true" ]]; then
+  printf 'ENABLE_LIVE_COPY_TRADING\n' | "${APP_DIR}/deploy/lightsail-enable-live.sh"
+  EXPECTED_MODE=LIVE LOG_WINDOW=3m "${APP_DIR}/deploy/lightsail-verify-deployment.sh"
+  echo "live_resume=completed"
+else
+  "${APP_DIR}/deploy/process-live-promotion-request.sh"
+fi
 
 failed=false
 trap - EXIT

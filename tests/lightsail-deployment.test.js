@@ -22,7 +22,7 @@ test('Lightsail shell scripts have valid Bash syntax', () => {
   }
 });
 
-test('automated deployment fails closed in DRY_RUN and requires database-first verification', () => {
+test('automated deployment verifies DRY_RUN and only resumes a previously healthy LIVE system', () => {
   const deploy = readFileSync('deploy/lightsail-deploy-dry-run.sh', 'utf8');
   const verify = readFileSync('deploy/lightsail-verify-deployment.sh', 'utf8');
   const autoDeploy = readFileSync('deploy/lightsail-auto-deploy.sh', 'utf8');
@@ -33,6 +33,9 @@ test('automated deployment fails closed in DRY_RUN and requires database-first v
   assert.match(deploy, /worker:halt/);
   assert.match(deploy, /set-worker-mode\.sh" DRY_RUN/);
   assert.match(deploy, /lightsail-verify-deployment\.sh/);
+  assert.match(deploy, /worker:can-resume-live/);
+  assert.match(deploy, /resume_previous_live/);
+  assert.match(deploy, /live_resume=completed/);
   assert.match(deploy, /process-live-promotion-request\.sh/);
   assert.match(verify, /member_sync_failed/);
   assert.match(autoDeploy, /blocked_database_migration/);
@@ -42,6 +45,19 @@ test('automated deployment fails closed in DRY_RUN and requires database-first v
   assert.match(timer, /OnUnitActiveSec=3min/);
   assert.match(workflow, /npm test/);
   assert.doesNotMatch(workflow, /LIGHTSAIL_SSH_PRIVATE_KEY/);
+});
+
+test('LIVE resume eligibility checks both global execution and worker health', () => {
+  const resumeCheck = readFileSync('scripts/check-live-resume.js', 'utf8');
+  const migration = readFileSync('supabase/migrations/202609010002_live_resume_safety.sql', 'utf8');
+  assert.match(resumeCheck, /get_copy_live_resume_eligibility/);
+  assert.match(migration, /SERVICE_ROLE_REQUIRED/);
+  assert.match(migration, /c\.execution_enabled/);
+  assert.match(migration, /not c\.emergency_halted/);
+  assert.match(migration, /r\.mode = 'LIVE'/);
+  assert.match(migration, /heartbeat_at > now\(\) - interval '30 seconds'/);
+  assert.match(migration, /r\.consecutive_failures = 0/);
+  assert.match(migration, /revoke all .* authenticated/);
 });
 
 test('LIVE promotion is expiring, single-use, and gated by healthy member planning', () => {
