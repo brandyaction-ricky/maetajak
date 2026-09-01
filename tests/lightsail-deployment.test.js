@@ -6,6 +6,7 @@ import test from 'node:test';
 const deploymentFiles = [
   'deploy/lightsail-bootstrap.sh',
   'deploy/lightsail-configure.sh',
+  'deploy/lightsail-configure-broker.sh',
   'deploy/lightsail-status.sh',
   'deploy/lightsail-update.sh',
   'deploy/set-worker-mode.sh',
@@ -88,6 +89,16 @@ test('Lightsail configuration keeps server secrets outside the Git checkout', ()
   assert.match(configure, /TRADING_MODE=OBSERVE/);
   assert.match(compose, /MAETAJAK_ENV_FILE:-\.env\.worker/);
   assert.doesNotMatch(configure, /echo .*service_role_key/i);
+});
+
+test('Broker credential configuration is hidden, atomic, and verifies a real sync', () => {
+  const configure = readFileSync('deploy/lightsail-configure-broker.sh', 'utf8');
+  assert.match(configure, /read -r -s -p "Gate Broker read-only API key/);
+  assert.match(configure, /read -r -s -p "Gate Broker secret key/);
+  assert.match(configure, /mktemp \/etc\/maetajak\/worker\.env\.broker/);
+  assert.match(configure, /chmod 600/);
+  assert.match(configure, /gate_broker_metrics_synced/);
+  assert.doesNotMatch(configure, /echo .*gate_broker_(api|secret)_key/i);
 });
 
 test('systemd refuses to start a worker that fails preflight', () => {

@@ -44,6 +44,14 @@ sudo /opt/maetajak/deploy/lightsail-status.sh
 sudo /opt/maetajak/deploy/lightsail-update.sh
 ```
 
+Broker UID가 Master UID와 달라 별도 `Commission Details` 읽기 키를 사용하는 경우에는
+전체 환경을 다시 입력하지 말고 아래 명령을 실행합니다. API Key와 Secret은 숨김 입력으로
+`/etc/maetajak/worker.env`에 원자적으로 저장되며, Worker 재시작 후 실제 Broker 동기화 성공까지 확인합니다.
+
+```bash
+sudo /opt/maetajak/deploy/lightsail-configure-broker.sh
+```
+
 서버 업데이트는 자동 배포하지 않습니다. 화면 코드 배포와 달리 Worker 업데이트는 주문 실행에 영향을 줄 수 있으므로 Preflight 통과 후 명시적으로 재시작합니다.
 
 ### 일반 Docker 서버
