@@ -183,13 +183,8 @@ tbody tr:hover { background: #141416; }
 .member-gate-summary small { display: block; margin-top: 4px; color: var(--muted); font-size: 10px; }
 .gate-summary-equity { text-align: right; }
 .gate-summary-equity strong { font-size: 18px; }
-.member-copy-position-table, .member-copy-events { margin-top: 12px; }
-.member-trade-tabs { display: inline-flex; gap: 5px; margin: 6px 0 0; padding: 3px; border: 1px solid var(--line); border-radius: 9px; background: #111113; }
-.member-trade-tabs button { border: 0; padding: 7px 11px; border-radius: 6px; background: transparent; color: var(--muted); font-size: 11px; font-weight: 700; }
-.member-trade-tabs button.active { background: #232328; color: #fff; }
-.member-trade-tabs + .member-copy-position-table,
-.member-trade-tabs + .member-copy-position-table + .member-copy-events { margin-top: 12px; }
-.member-copy-position-table .panel-title, .member-copy-events .panel-title { padding: 15px 16px; margin: 0; border-bottom: 1px solid var(--line); }
+.member-copy-position-table { margin-top: 12px; }
+.member-copy-position-table .panel-title { padding: 15px 16px; margin: 0; border-bottom: 1px solid var(--line); }
 .trade-symbol, .member-position-identity { display: flex; align-items: center; gap: 9px; }
 .position-symbol-logo { width: 30px; height: 30px; display: grid; flex: 0 0 auto; place-items: center; border-radius: 50%; background: #202024; font-size: 10px; font-weight: 800; }
 
@@ -219,6 +214,10 @@ tbody tr:hover { background: #141416; }
 .member-detail-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; padding-bottom: 14px; border-bottom: 1px solid var(--line); }
 .member-detail-head h3 { margin: 4px 0; }
 .member-detail-head p { margin: 0; color: var(--muted); }
+.member-detail-tabs { display: flex; gap: 5px; margin: 14px 0 0; padding: 3px; border: 1px solid var(--line); border-radius: 9px; background: #111113; }
+.member-detail-tabs button { flex: 1; min-height: 34px; border: 0; border-radius: 6px; background: transparent; color: var(--muted); font-size: 11px; font-weight: 700; }
+.member-detail-tabs button.active { background: #232328; color: #fff; }
+.member-detail-panel { padding-top: 2px; }
 .member-detail-summary { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1px; margin: 14px 0; overflow: hidden; border: 1px solid var(--line); border-radius: 11px; background: var(--line); }
 .member-detail-summary > div { padding: 14px; background: var(--panel); }
 .member-detail-summary small { color: var(--muted); font-size: 9px; }
@@ -330,8 +329,7 @@ tbody tr:hover { background: #141416; }
   .copy-settings-primary > .copy-control-card:first-child,
   .copy-settings-secondary > .copy-existing-policy { height: auto; min-height: 0; }
   .member-detail-summary { grid-template-columns: repeat(2, 1fr); }
-  .member-trade-tabs { display: flex; width: 100%; }
-  .member-trade-tabs button { flex: 1; }
+  .member-detail-tabs { width: 100%; overflow-x: auto; }
   .auth { grid-template-columns: 1fr; }
   .hero { display: none; }
 }
@@ -344,6 +342,7 @@ tbody tr:hover { background: #141416; }
   .admin-analysis-member-head { align-items: stretch; flex-direction: column; }
   .admin-analysis-members button { min-width: 0; }
   .admin-member-search { width: 100%; min-width: 0; }
+  .member-detail-tabs { display: grid; grid-template-columns: 1fr; }
   .flow { grid-template-columns: repeat(2, 1fr); }
   .copy-risk-inputs { grid-template-columns: 1fr; }
 }
