@@ -53,16 +53,14 @@ docker compose -f docker-compose.worker.yml run --rm copy-worker npm run worker:
 systemctl restart maetajak-worker.service
 
 for _ in {1..20}; do
-  if journalctl -u maetajak-worker.service --since "30 seconds ago" --no-pager \
-    | grep -q 'gate_broker_metrics_synced'; then
+  broker_logs="$(docker compose -f docker-compose.worker.yml logs --since 2m --no-color copy-worker 2>&1 || true)"
+  if grep -q 'gate_broker_metrics_synced' <<< "${broker_logs}"; then
     echo "Gate Broker metrics sync completed successfully."
     exit 0
   fi
-  if journalctl -u maetajak-worker.service --since "30 seconds ago" --no-pager \
-    | grep -q 'gate_broker_metrics_error'; then
+  if grep -q 'gate_broker_metrics_error' <<< "${broker_logs}"; then
     echo "Gate Broker metrics sync failed. Check the API key permission and IP whitelist." >&2
-    journalctl -u maetajak-worker.service --since "30 seconds ago" --no-pager \
-      | grep 'gate_broker_metrics_error' | tail -n 1 >&2
+    grep 'gate_broker_metrics_error' <<< "${broker_logs}" | tail -n 1 >&2
     exit 1
   fi
   sleep 1
