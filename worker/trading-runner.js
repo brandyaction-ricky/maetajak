@@ -49,7 +49,8 @@ export function planMemberPositions({ cycleId, system, master, member, contracts
   const memberPositions = positionMap(member.positions);
   const previousStates = new Map((member.previous_states || []).map((state) => [positionKey(state), state]));
   const masterBaselines = new Map((member.master_baselines || []).map((position) => [positionKey(position), Number(position.size || 0)]));
-  const symbols = new Set([...masterPositions.keys(), ...memberPositions.keys(), ...previousStates.keys(), ...masterBaselines.keys()]);
+  const memberPositionBaselines = new Map((member.member_position_baselines || []).map((position) => [positionKey(position), Number(position.size || 0)]));
+  const symbols = new Set([...masterPositions.keys(), ...memberPositions.keys(), ...previousStates.keys(), ...masterBaselines.keys(), ...memberPositionBaselines.keys()]);
   const planned = [];
   for (const symbol of symbols) {
     const { contract, positionSide } = parsePositionKey(symbol);
@@ -69,7 +70,16 @@ export function planMemberPositions({ cycleId, system, master, member, contracts
       memberMarkPrice: memberPosition.markPrice || markPrice, memberQuantoMultiplier: contractInfo.quantoMultiplier,
       copyRatio: member.copy_ratio, maxPositionRatio: member.max_position_ratio, sizeStep: contractInfo.sizeStep,
     });
+    const protectedMemberSize = memberPositionBaselines.get(symbol) || 0;
+    target.targetSize += protectedMemberSize;
+    target.targetNotional = Math.abs(target.targetSize) * (memberPosition.markPrice || markPrice) * contractInfo.quantoMultiplier;
     const previous = previousStates.get(symbol);
+    const protectedOppositePosition = !String(member.positionMode || 'single').startsWith('dual')
+      && [...memberPositionBaselines.entries()].some(([baselineKey, size]) => {
+        const baselineLeg = parsePositionKey(baselineKey);
+        return baselineLeg.contract === contract && baselineLeg.positionSide !== positionSide && size !== 0;
+      })
+      && target.targetSize !== 0;
     if (member.close_positions_requested) {
       target.targetSize = 0;
       target.targetNotional = 0;
@@ -83,7 +93,7 @@ export function planMemberPositions({ cycleId, system, master, member, contracts
     const reduceOnly = Boolean(member.reduce_only) || Boolean(member.close_positions_requested);
     const state = deriveCopyState({
       systemHalted: Boolean(system.emergency_halted) && !simulateSystemHalt, memberHalted: Boolean(member.halted),
-      symbolPaused: Boolean(member.copy_paused) && !member.close_positions_requested,
+      symbolPaused: (Boolean(member.copy_paused) || protectedOppositePosition) && !member.close_positions_requested,
       manualOverride: manual.detected || previous?.state === 'MANUAL_OVERRIDE', reduceOnly,
       targetSize: target.targetSize, actualSize: memberPosition.size, driftToleranceSize: contractInfo.sizeStep,
     });
@@ -111,8 +121,11 @@ export function planMemberPositions({ cycleId, system, master, member, contracts
       state, delta_size: delta.deltaSize, previous_actual_size: previous?.actual_size ?? null,
       unexplained_delta: manual.unexplainedDelta,
       master_baseline_size: masterBaselines.get(symbol) || 0,
+      member_baseline_size: protectedMemberSize,
       baseline_clear_requested: baseline.clearBaseline,
-      pause_reason: manual.detected ? 'MEMBER_POSITION_CHANGED_OUTSIDE_PLATFORM' : member.risk_halt_reason || (member.copy_paused ? 'MEMBER_PAUSED' : null),
+      pause_reason: manual.detected ? 'MEMBER_POSITION_CHANGED_OUTSIDE_PLATFORM'
+        : protectedOppositePosition ? 'PROTECTED_EXISTING_POSITION_OPPOSITE_SIDE'
+          : member.risk_halt_reason || (member.copy_paused ? 'MEMBER_PAUSED' : null),
     };
     if (delta.shouldSubmit) {
       plannedPosition.intent = {
@@ -245,11 +258,16 @@ export class TradingRunner {
     let simulatedIntents = 0;
     const dryRunPlans = [];
     for (const memberContext of memberContexts) {
-      let memberStage = 'BASELINE_INIT';
+      let memberStage = 'MEMBER_ACCOUNT_READ';
       try {
-        const baseline = await this.rpc('get_or_initialize_member_copy_baseline', {
+        let member = await this.readAccount(memberContext);
+        memberStage = 'BASELINE_INIT';
+        const baseline = await this.rpc('get_or_initialize_member_copy_baselines', {
           p_trading_account_id: memberContext.trading_account_id,
           p_master_positions: master.positions.map((position) => ({
+            contract: position.contract, position_side: normalizePositionSide(position), size: position.size,
+          })),
+          p_member_positions: member.positions.map((position) => ({
             contract: position.contract, position_side: normalizePositionSide(position), size: position.size,
           })),
         });
@@ -269,22 +287,26 @@ export class TradingRunner {
         }
         const clearedKeys = new Set(contractsToClear.map(positionKey));
         const activeBaselines = baselinePositions.filter((position) => !clearedKeys.has(positionKey(position)));
-        memberStage = 'MEMBER_ACCOUNT_READ';
-        let member = await this.readAccount({ ...memberContext, master_baselines: activeBaselines });
+        member.master_baselines = activeBaselines;
+        member.member_position_baselines = baseline?.member_positions || [];
         const masterUsesDualMode = master.positions.some((position) => String(position.mode || '').startsWith('dual_'));
         if (accountSupportsDual(member)) member.positionMode = 'dual';
         if (masterUsesDualMode && !accountSupportsDual(member)) {
           if (this.mode !== 'LIVE' || member.positions.length) {
-            throw new GateApiError('회원 계정을 양방향 모드로 전환해야 합니다.', { code: 'DUAL_MODE_REQUIRED' });
+            throw new GateApiError('íì ê³ì ì ìë°©í¥ ëª¨ëë¡ ì íí´ì¼ í©ëë¤.', { code: 'DUAL_MODE_REQUIRED' });
           }
           memberStage = 'MEMBER_POSITION_MODE';
           await setFuturesPositionMode({
             ...credentials(memberContext), channelId: this.channelId, baseUrl: this.baseUrl,
             fetchImpl: this.fetchImpl, positionMode: 'dual',
           });
-          member = await this.readAccount({ ...memberContext, master_baselines: activeBaselines });
+          member = await this.readAccount({
+            ...memberContext,
+            master_baselines: activeBaselines,
+            member_position_baselines: baseline?.member_positions || [],
+          });
           if (!accountSupportsDual(member)) {
-            throw new GateApiError('회원 계정 양방향 모드 전환을 확인하지 못했습니다.', { code: 'DUAL_MODE_REQUIRED' });
+            throw new GateApiError('íì ê³ì  ìë°©í¥ ëª¨ë ì íì íì¸íì§ ëª»íìµëë¤.', { code: 'DUAL_MODE_REQUIRED' });
           }
         }
         memberStage = 'MEMBER_PLAN';
