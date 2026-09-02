@@ -1217,7 +1217,7 @@ async function disconnectAdminMasterGateApi() {
 function renderGateConnection(connection) {
   const status = byId('gateConnectionStatus');
   if (!status) return;
-  const disconnected = !connection || connection.status === 'DISABLED';
+  const disconnected = !connection || connection.status === 'DISABLED' || connection.gate_uid === 'DISABLED';
   if (disconnected) {
     status.textContent = '미연결';
     status.className = 'chip yellow';
