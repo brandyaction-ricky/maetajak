@@ -79,6 +79,53 @@ test('new member baseline blocks existing Master positions and follows only late
   assert.equal(increased.intent.delta_size, 10);
 });
 
+test('member positions held before copy starts are preserved while later copy exposure is added', () => {
+  const [protectedOnly] = planMemberPositions({
+    ...base,
+    master: { ...base.master, positions: [] },
+    member: {
+      ...base.member,
+      positions: [{ contract: 'BTC_USDT', size: 20, markPrice: 50_000 }],
+      member_position_baselines: [{ contract: 'BTC_USDT', size: 20 }],
+    },
+  });
+  assert.equal(protectedOnly.target_size, 20);
+  assert.equal(protectedOnly.delta_size, 0);
+  assert.equal(Object.hasOwn(protectedOnly, 'intent'), false);
+
+  const [withCopy] = planMemberPositions({
+    ...base,
+    member: {
+      ...base.member,
+      positions: [{ contract: 'BTC_USDT', size: 50, markPrice: 50_000 }],
+      member_position_baselines: [{ contract: 'BTC_USDT', size: 20 }],
+    },
+  });
+  assert.equal(withCopy.target_size, 50);
+  assert.equal(withCopy.delta_size, 0);
+  assert.equal(withCopy.member_baseline_size, 20);
+});
+
+test('single-mode copy never closes a protected opposite-side member position', () => {
+  const planned = planMemberPositions({
+    ...base,
+    master: { ...base.master, positions: [{ contract: 'BTC_USDT', size: -100, markPrice: 50_000 }] },
+    member: {
+      ...base.member,
+      positionMode: 'single',
+      positions: [{ contract: 'BTC_USDT', size: 20, markPrice: 50_000 }],
+      member_position_baselines: [{ contract: 'BTC_USDT', positionSide: 'LONG', size: 20 }],
+    },
+  });
+  const shortPlan = planned.find((position) => position.position_side === 'SHORT');
+  const longPlan = planned.find((position) => position.position_side === 'LONG');
+  assert.equal(shortPlan.state, 'PAUSED');
+  assert.equal(shortPlan.pause_reason, 'PROTECTED_EXISTING_POSITION_OPPOSITE_SIDE');
+  assert.equal(Object.hasOwn(shortPlan, 'intent'), false);
+  assert.equal(longPlan.target_size, 20);
+  assert.equal(longPlan.delta_size, 0);
+});
+
 test('Master close clears onboarding baseline so a later re-entry is copied', () => {
   const [reentered] = planMemberPositions({
     ...base,
@@ -188,7 +235,7 @@ test('DRY_RUN records target, actual, and delta without an intent key', async ()
       recordedPayload = parameters.p_payload;
       return 'cycle-1';
     }
-    if (name === 'get_or_initialize_member_copy_baseline') return { positions: [] };
+    if (name === 'get_or_initialize_member_copy_baselines') return { positions: [], member_positions: [] };
     throw new Error(`unexpected rpc: ${name}`);
   };
   runner.loadContracts = async () => contracts;
@@ -266,7 +313,7 @@ test('worker refreshes cached contract metadata when Master opens an unknown con
       members: [{ user_id: 'member', api_key: 'key', secret_key: 'secret', copy_ratio: 100, max_position_ratio: 40 }],
     };
     if (name === 'record_copy_worker_cycle') return {};
-    if (name === 'get_or_initialize_member_copy_baseline') return { positions: [] };
+    if (name === 'get_or_initialize_member_copy_baselines') return { positions: [], member_positions: [] };
     throw new Error(`unexpected rpc ${name}`);
   };
   runner.loadContracts = async () => {
@@ -303,7 +350,7 @@ test('member failures expose a safe stage without leaking upstream messages', as
       master: { trading_account_id: 'master-1' },
       members: [{ trading_account_id: 'member-account-1', user_id: 'member-1' }],
     };
-    if (name === 'get_or_initialize_member_copy_baseline') throw new Error('private SQL error');
+    if (name === 'get_or_initialize_member_copy_baselines') throw new Error('private SQL error');
     if (name === 'record_copy_worker_cycle') {
       recordedPayload = parameters.p_payload;
       return 'cycle-1';
