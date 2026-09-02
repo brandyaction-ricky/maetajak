@@ -22,7 +22,7 @@ test('member reverification stays restricted to an approved member and disables 
 });
 
 test('disconnected credentials render as an empty connection without overwriting new UID input', () => {
-  assert.match(main, /const disconnected = !connection \|\| connection\.status === 'DISABLED'/);
+  assert.match(main, /const disconnected = !connection \\|\\| connection\\.status === 'DISABLED' \\|\\| connection\\.gate_uid === 'DISABLED'/);
   const disconnectedBranch = main.match(/if \(disconnected\) \{([\s\S]*?)\n\s*return;\n\s*\}/)?.[1] || '';
   assert.match(disconnectedBranch, /dataset\.hasStoredCredential = 'false'/);
   assert.match(disconnectedBranch, /gateApiKey'\)\.placeholder = 'API Key 입력'/);
