@@ -77,6 +77,9 @@ test('LIVE promotion is expiring, single-use, and gated by deployment verificati
   assert.doesNotMatch(promotion, /blocked_no_member_plan/);
   assert.match(promotion, /lightsail-enable-live\.sh/);
   assert.match(promotion, /EXPECTED_MODE=LIVE/);
+  const enableLive = readFileSync('deploy/lightsail-enable-live.sh', 'utf8');
+  assert.match(enableLive, /alert_test=delivery_warning/);
+  assert.match(enableLive, /worker:preflight/);
   assert.match(request, /^token=[a-zA-Z0-9_-]{16,80}$/m);
   assert.match(request, /^expires_at=\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/m);
 });
