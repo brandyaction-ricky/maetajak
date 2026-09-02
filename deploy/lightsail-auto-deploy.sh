@@ -48,6 +48,7 @@ if ! git diff --quiet "${local_sha}" "${remote_sha}" -- supabase/migrations; the
     const schema = response.ok ? await response.json() : {};
     const requiredRpcs = [
       "/rpc/clear_member_copy_baseline_legs",
+      "/rpc/get_or_initialize_member_copy_baselines",
       "/rpc/get_admin_gate_broker_metrics",
       "/rpc/upsert_gate_broker_metrics",
     ];
