@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
 const migration = readFileSync(new URL('../supabase/migrations/202609020002_auto_approval_and_member_position_baseline.sql', import.meta.url), 'utf8');
+const secretKeyCompatibility = readFileSync(new URL('../supabase/migrations/202609020003_service_role_secret_key_compatibility.sql', import.meta.url), 'utf8');
 const runner = readFileSync(new URL('../worker/trading-runner.js', import.meta.url), 'utf8');
 
 test('confirmed email automatically approves only pending members', () => {
@@ -17,4 +18,11 @@ test('first copy cycle stores and uses member positions as protected exposure', 
   assert.match(migration, /get_or_initialize_member_copy_baselines/);
   assert.match(runner, /p_member_positions: member\.positions\.map/);
   assert.match(runner, /target\.targetSize \+= protectedMemberSize/);
+});
+
+test('baseline RPC supports Supabase secret service-role keys without weakening grants', () => {
+  assert.doesNotMatch(secretKeyCompatibility, /request\.jwt\.claim\.role|SERVICE_ROLE_REQUIRED/i);
+  assert.match(secretKeyCompatibility, /revoke all on function public\.get_or_initialize_member_copy_baselines[\s\S]*from public, anon, authenticated/i);
+  assert.match(secretKeyCompatibility, /grant execute on function public\.get_or_initialize_member_copy_baselines[\s\S]*to service_role/i);
+  assert.match(secretKeyCompatibility, /notify pgrst, 'reload schema'/i);
 });
