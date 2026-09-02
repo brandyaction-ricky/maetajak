@@ -48,8 +48,14 @@ if ! grep -Eq '"event":"cycle_complete".*"observed":[1-9][0-9]*.*"masterObserved
   exit 1
 fi
 if ! grep -Eq '"event":"dry_run_plan"' <<< "${logs}"; then
-  echo "live_promotion=blocked_no_member_plan" >&2
-  exit 1
+  # A maintenance deployment can legitimately have no new copy delta. Accept
+  # only an explicitly clean no-op cycle; any intent or submission still
+  # requires the normal dry-run plan evidence above.
+  if ! grep -Eq '"event":"cycle_complete".*"intents":0.*"reconciled":0.*"submitted":0' <<< "${logs}"; then
+    echo "live_promotion=blocked_no_member_plan" >&2
+    exit 1
+  fi
+  echo "live_promotion=no_op_cycle_verified"
 fi
 
 printf 'ENABLE_LIVE_COPY_TRADING\n' | "${APP_DIR}/deploy/lightsail-enable-live.sh"
