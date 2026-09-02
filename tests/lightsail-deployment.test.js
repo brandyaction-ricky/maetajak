@@ -74,6 +74,8 @@ test('LIVE promotion is expiring, single-use, and gated by healthy member planni
   assert.match(promotion, /live_promotion=expired/);
   assert.match(promotion, /cycle_complete/);
   assert.match(promotion, /dry_run_plan/);
+  assert.match(promotion, /live_promotion=no_op_cycle_verified/);
+  assert.match(promotion, /"intents":0.*"reconciled":0.*"submitted":0/);
   assert.match(promotion, /lightsail-enable-live\.sh/);
   assert.match(promotion, /EXPECTED_MODE=LIVE/);
   assert.match(request, /^token=[a-zA-Z0-9_-]{16,80}$/m);
