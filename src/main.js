@@ -1217,14 +1217,24 @@ async function disconnectAdminMasterGateApi() {
 function renderGateConnection(connection) {
   const status = byId('gateConnectionStatus');
   if (!status) return;
-  if (!connection) {
+  const disconnected = !connection || connection.status === 'DISABLED';
+  if (disconnected) {
     status.textContent = '미연결';
     status.className = 'chip yellow';
     byId('gateVerificationDetail').textContent = 'UID, API Key, Secret Key를 입력해 연결을 검증해 주세요.';
     byId('gateApiForm').dataset.hasStoredCredential = 'false';
+    byId('gateApiKey').placeholder = 'API Key 입력';
     byId('gateApiKey').required = true;
     byId('gateSecretKey').required = true;
     byId('gateApiConnect').textContent = '저장 및 연결 검증';
+    byId('gateFuturesRead').textContent = '확인 대기';
+    byId('gateFuturesRead').className = 'warn';
+    byId('gateFuturesTrade').textContent = '확인 대기';
+    byId('gateFuturesTrade').className = 'warn';
+    byId('gateIpWhitelist').textContent = '검증 대기';
+    byId('gateIpWhitelist').className = 'warn';
+    byId('gateWithdrawal').textContent = '확인 대기';
+    byId('gateWithdrawal').className = 'warn';
     if (byId('memberTradeGateUid')) byId('memberTradeGateUid').textContent = 'Gate.io API 미연결';
     return;
   }
