@@ -20,3 +20,11 @@ test('member reverification stays restricted to an approved member and disables 
   assert.match(migration, /revoke all on function public\.retry_my_gate_api_verification\(boolean\)[\s\S]*from public, anon/);
   assert.match(migration, /grant execute on function public\.retry_my_gate_api_verification\(boolean\)[\s\S]*to authenticated/);
 });
+
+test('disconnected credentials render as an empty connection without overwriting new UID input', () => {
+  assert.match(main, /const disconnected = !connection \|\| connection\.status === 'DISABLED'/);
+  const disconnectedBranch = main.match(/if \(disconnected\) \{([\s\S]*?)\n\s*return;\n\s*\}/)?.[1] || '';
+  assert.match(disconnectedBranch, /dataset\.hasStoredCredential = 'false'/);
+  assert.match(disconnectedBranch, /gateApiKey'\)\.placeholder = 'API Key 입력'/);
+  assert.doesNotMatch(disconnectedBranch, /gateUid'\)\.value/);
+});
