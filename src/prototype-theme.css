@@ -119,6 +119,25 @@ tbody tr:hover { background: #141416; }
 .admin-date-range > span { display: grid; min-height: 38px; place-items: center; color: var(--subtle); font-size: 11px; }
 .admin-date-range .btn { min-height: 38px; padding: 0 14px; }
 
+.admin-log-tabs { display: flex; width: fit-content; gap: 4px; margin-bottom: 12px; padding: 3px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); }
+.admin-log-tabs button { min-height: 36px; padding: 0 16px; border: 0; border-radius: 7px; background: transparent; color: var(--muted); font-size: 11px; font-weight: 750; }
+.admin-log-tabs button.active { background: #232328; color: #fff; }
+.admin-log-tabs button:focus-visible { outline: 2px solid var(--blue); outline-offset: 1px; }
+.admin-execution-filters { display: grid; grid-template-columns: 150px minmax(190px, 1fr) minmax(150px, .7fr) 150px auto; gap: 8px; align-items: end; margin-bottom: 14px; }
+.admin-execution-filters label { display: grid; gap: 6px; color: var(--muted); font-size: 10px; }
+.admin-execution-filters select, .admin-execution-filters input { width: 100%; min-height: 38px; padding: 0 10px; border: 1px solid var(--line); border-radius: 8px; background: #111; color: var(--text); color-scheme: dark; }
+.admin-execution-filters .btn { min-height: 38px; }
+.admin-execution-table { min-width: 1120px; }
+.execution-member-email, .execution-side { display: block; margin-top: 4px; color: var(--muted); font-size: 9px; }
+.execution-reason { min-width: 270px; white-space: normal; line-height: 1.5; }
+
+@media (max-width: 800px) {
+  .admin-log-tabs { width: 100%; }
+  .admin-log-tabs button { flex: 1; }
+  .admin-execution-filters { grid-template-columns: 1fr 1fr; }
+  .admin-execution-filters .btn { grid-column: 1 / -1; }
+}
+
 .member-dashboard-kpis, .admin-operations-kpis { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; margin-bottom: 12px; }
 .admin-live-status { min-height: 72px; padding: 15px 18px; margin-bottom: 12px; }
 .admin-live-status > div:first-child { min-width: 0; }
