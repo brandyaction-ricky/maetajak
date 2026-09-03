@@ -51,6 +51,7 @@ if ! git diff --quiet "${local_sha}" "${remote_sha}" -- supabase/migrations; the
       "/rpc/get_or_initialize_member_copy_baselines",
       "/rpc/get_admin_gate_broker_metrics",
       "/rpc/upsert_gate_broker_metrics",
+      "/rpc/upsert_copy_current_state",
     ];
     if (requiredRpcs.some((path) => !schema.paths?.[path])) process.exit(1);
   ' >/dev/null; then
