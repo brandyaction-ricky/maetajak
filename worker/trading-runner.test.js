@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { planMemberPositions, safeError, suppressExecutableIntents, TradingRunner } from './trading-runner.js';
+import { buildCurrentStatePayload, planMemberPositions, safeError, suppressExecutableIntents, TradingRunner } from './trading-runner.js';
 
 const contracts = new Map([['BTC_USDT', { quantoMultiplier: 0.001, sizeStep: 1, orderSizeMin: 1, orderSizeMax: 0, marketOrderSizeMax: 0, inDelisting: false }]]);
 const base = {
@@ -246,7 +246,13 @@ test('DRY_RUN records target, actual, and delta without an intent key', async ()
   const observation = await runner.syncOnce();
   const [position] = recordedPayload.members[0].planned_positions;
 
-  assert.deepEqual(observation, { observed: 1, masterObserved: 1, intents: 1 });
+  assert.deepEqual(
+    { observed: observation.observed, masterObserved: observation.masterObserved, intents: observation.intents },
+    { observed: 1, masterObserved: 1, intents: 1 },
+  );
+  assert.equal(observation.copyEventId, recordedPayload.cycle_id);
+  assert.equal(observation.currentStatePayload.copy_event_id, recordedPayload.cycle_id);
+  assert.ok(observation.timings.total_ms >= 0);
   assert.equal(position.target_size, 30);
   assert.equal(position.size, 0);
   assert.equal(position.delta_size, 30);
@@ -295,7 +301,10 @@ test('worker snapshots a verified Master before any member API is connected', as
 
   const observation = await runner.syncOnce();
 
-  assert.deepEqual(observation, { observed: 0, masterObserved: 1, intents: 0 });
+  assert.deepEqual(
+    { observed: observation.observed, masterObserved: observation.masterObserved, intents: observation.intents },
+    { observed: 0, masterObserved: 1, intents: 0 },
+  );
   assert.equal(recordedPayload.master.positions[0].contract, 'BTC_USDT');
   assert.deepEqual(recordedPayload.members, []);
 });
@@ -415,4 +424,75 @@ test('LIVE applies Master leverage to the correct hedge leg before submitting an
   assert.match(requests[1].url, /\/futures\/usdt\/orders$/);
   assert.equal(JSON.parse(requests[1].options.body).reduce_only, false);
   assert.equal(completions[0].p_result_status, 'FILLED');
+});
+
+test('current-state shadow payload excludes credentials and preserves hedge legs', () => {
+  const payload = buildCurrentStatePayload({
+    cycleId: 'fcd65a4f-ef1e-4f3c-958b-dac3c12f0b94',
+    observedAt: '2026-09-03T03:00:00.000Z',
+    master: {
+      trading_account_id: 'master-account', user_id: 'master-user', api_key: 'master-key', secret_key: 'master-secret',
+      total: 10_000, available: 9_000, unrealisedPnl: 50,
+      positions: [{ contract: 'BTC_USDT', positionSide: 'SHORT', size: -4, markPrice: 100, entryPrice: 105, leverage: 3, quanto_multiplier: 0.001 }],
+    },
+    members: [{
+      trading_account_id: 'member-account', user_id: 'member-user', api_key: 'member-key', secret_key: 'member-secret',
+      total: 5_000, available: 4_800, unrealisedPnl: 10,
+      planned_positions: [{ contract: 'BTC_USDT', position_side: 'LONG', size: 2, mark_price: 100, target_size: 3, delta_size: 1, state: 'DRIFT' }],
+    }],
+  });
+
+  assert.equal(payload.master.positions[0].position_side, 'SHORT');
+  assert.equal(payload.members[0].positions[0].position_side, 'LONG');
+  assert.equal(payload.members[0].positions[0].target_size, 3);
+  assert.equal(JSON.stringify(payload).includes('master-key'), false);
+  assert.equal(JSON.stringify(payload).includes('member-secret'), false);
+});
+
+test('current-state shadow failure is observable but never fails the copy cycle', async () => {
+  const logs = [];
+  const runner = new TradingRunner({
+    supabase: {}, baseUrl: 'https://api.gateio.ws', workerId: 'worker-test',
+    workerVersion: 'test', publicIp: '3.37.231.51', channelId: 'maetajak', mode: 'LIVE',
+    logger: (event, details) => logs.push({ event, details }),
+  });
+  runner.rpc = async () => { throw new Error('private database detail'); };
+
+  const result = await runner.syncCurrentState({ copy_event_id: 'fcd65a4f-ef1e-4f3c-958b-dac3c12f0b94' });
+
+  assert.equal(result.synced, false);
+  assert.equal(result.error_code, 'CURRENT_STATE_SHADOW_WRITE_FAILED');
+  assert.equal(logs[0].event, 'current_state_shadow_write_failed');
+  assert.equal(logs[0].details.copy_event_id, 'fcd65a4f-ef1e-4f3c-958b-dac3c12f0b94');
+  assert.equal(JSON.stringify(logs).includes('private database detail'), false);
+});
+
+test('order observability contains safe intent correlation without credentials', async () => {
+  const logs = [];
+  const runner = new TradingRunner({
+    supabase: {}, baseUrl: 'https://api.gateio.ws', workerId: 'worker-test',
+    workerVersion: 'test', publicIp: '3.37.231.51', channelId: 'maetajak', mode: 'LIVE',
+    logger: (event, details) => logs.push({ event, details }),
+    fetchImpl: async (url) => {
+      if (url.includes('/positions/BTC_USDT/leverage')) return new Response('{}', { status: 200 });
+      if (url.endsWith('/futures/usdt/orders')) return new Response(JSON.stringify({ id: '1234', size: 1, left: 0, status: 'finished', finish_as: 'filled' }), { status: 201 });
+      throw new Error(`unexpected URL: ${url}`);
+    },
+  });
+  runner.rpc = async (name) => {
+    if (name === 'claim_copy_order_intents') return [{
+      intent_id: 'intent-safe-1', user_id: 'member-1', api_key: 'private-key', secret_key: 'private-secret',
+      contract: 'BTC_USDT', position_side: 'LONG', position_mode: 'single', delta_size: 1,
+      reduce_only: false, target_leverage: 0, margin_mode: 'cross', gate_order_text: 't-mtj-safe', slippage_ratio: 0.005,
+    }];
+    if (name === 'complete_copy_order_attempt') return null;
+    throw new Error(`unexpected rpc: ${name}`);
+  };
+
+  assert.equal(await runner.submitOrders(), 1);
+  assert.equal(logs[0].event, 'order_attempt_completed');
+  assert.equal(logs[0].details.intent_id, 'intent-safe-1');
+  assert.equal(logs[0].details.contract, 'BTC_USDT');
+  assert.equal(JSON.stringify(logs).includes('private-key'), false);
+  assert.equal(JSON.stringify(logs).includes('private-secret'), false);
 });
