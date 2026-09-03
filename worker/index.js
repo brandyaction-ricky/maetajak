@@ -97,20 +97,42 @@ export async function runTradingCycle() {
     await runner.heartbeat(false);
     const observation = await runner.syncOnce();
     if (readinessCheck && tradingMode === 'DRY_RUN' && observation.observed > 0 && observation.intents > 0) await runner.heartbeat(true);
+    const reconcileStartedAt = Date.now();
     const reconciled = await runner.reconcileOrders();
+    const reconcileMs = Date.now() - reconcileStartedAt;
+    const submitStartedAt = Date.now();
     const submitted = await runner.submitOrders();
+    const submitMs = Date.now() - submitStartedAt;
     await runner.reportCycle(true);
-    if (observation.masterObserved || observation.observed || reconciled || submitted) log('cycle_complete', { ...observation, reconciled, submitted });
+    // The shadow projection is intentionally written only after reconciliation,
+    // order submission, and the authoritative cycle report have completed. Its
+    // failure cannot delay or halt live copy execution.
+    const currentState = await runner.syncCurrentState(observation.currentStatePayload);
+    if (observation.masterObserved || observation.observed || reconciled || submitted) log('cycle_complete', {
+      copy_event_id: observation.copyEventId,
+      observed: observation.observed,
+      masterObserved: observation.masterObserved,
+      intents: observation.intents,
+      reconciled,
+      submitted,
+      current_state_synced: currentState.synced,
+      timings: {
+        ...observation.timings,
+        reconcile_ms: reconcileMs,
+        submit_ms: submitMs,
+        current_state_ms: currentState.duration_ms,
+      },
+    });
   } catch (error) {
     const code = error instanceof Error ? error.message : 'unknown';
     try {
       const failure = await runner.reportCycle(false, code);
       if (shouldSendFailureAlert(failure?.consecutive_failures)) {
-        await sendAlert({ event: Number(failure?.consecutive_failures) >= 3 ? 'COPY_SYSTEM_AUTO_HALTED' : 'WORKER_CYCLE_FAILED', severity: 'CRITICAL', details: { failures: failure?.consecutive_failures, error_code: failure?.last_error_code || code } });
+        await sendAlert({ event: Number(failure?.consecutive_failures) >= 3 ? 'COPY_SYSTEM_AUTO_HALTED' : 'WORKER_CYCLE_FAILED', severity: 'CRITICAL', details: { copy_event_id: runner.currentCopyEventId, failures: failure?.consecutive_failures, error_code: failure?.last_error_code || code } });
       }
     }
     catch (reportError) { log('worker_failure_report_error', { code: reportError instanceof Error ? reportError.message : 'unknown' }); }
-    log('trading_cycle_error', { code });
+    log('trading_cycle_error', { copy_event_id: runner.currentCopyEventId, code });
   } finally { state.trading = false; }
 }
 
