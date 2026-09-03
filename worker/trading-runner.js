@@ -38,6 +38,37 @@ function accountSupportsDual(account) {
     || (account?.positions || []).some((position) => String(position.mode || '').startsWith('dual_'));
 }
 function credentials(account) { return { apiKey: account.api_key, secretKey: account.secret_key }; }
+function elapsedMs(startedAt) { return Math.max(0, Date.now() - startedAt); }
+
+export function buildCurrentStatePayload({ cycleId, observedAt, master, members }) {
+  const accountPayload = (account, accountRole, positions) => ({
+    trading_account_id: account.trading_account_id,
+    user_id: account.user_id || null,
+    account_role: accountRole,
+    total_equity: account.total,
+    available_equity: account.available,
+    unrealised_pnl: account.unrealisedPnl ?? null,
+    error_code: account.error_code || null,
+    positions: (positions || []).map((position) => ({
+      contract: position.contract,
+      position_side: normalizePositionSide(position),
+      size: Number(position.size || 0),
+      mark_price: position.mark_price ?? position.markPrice ?? null,
+      entry_price: position.entry_price ?? position.entryPrice ?? null,
+      leverage: position.leverage ?? null,
+      quanto_multiplier: position.quanto_multiplier ?? null,
+      state: position.state ?? null,
+      target_size: position.target_size ?? null,
+      delta_size: position.delta_size ?? null,
+    })),
+  });
+  return {
+    copy_event_id: cycleId,
+    observed_at: observedAt,
+    master: accountPayload(master, 'MASTER', master.positions),
+    members: members.map((member) => accountPayload(member, 'MEMBER', member.planned_positions)),
+  };
+}
 
 export function suppressExecutableIntents(positions, mode) {
   if (mode === 'LIVE') return positions;
@@ -149,6 +180,7 @@ export class TradingRunner {
     this.lastDryRunPlanHash = null;
     this.lastDryRunMasterHash = null;
     this.performanceSyncedAt = new Map();
+    this.currentCopyEventId = null;
   }
   async rpc(name, parameters = {}) {
     const { data, error } = await this.supabase.rpc(name, parameters);
@@ -160,6 +192,22 @@ export class TradingRunner {
   }
   async reportCycle(success, errorCode = null) {
     return this.rpc('report_copy_worker_cycle', { p_success: Boolean(success), p_error_code: errorCode ? String(errorCode).slice(0, 80) : null });
+  }
+  async syncCurrentState(payload) {
+    if (!payload) return { synced: false, duration_ms: 0 };
+    const startedAt = Date.now();
+    try {
+      await this.rpc('upsert_copy_current_state', { p_payload: payload });
+      return { synced: true, duration_ms: elapsedMs(startedAt) };
+    } catch (error) {
+      const errorCode = safeError(error, 'CURRENT_STATE_SHADOW_WRITE');
+      if (this.logger) this.logger('current_state_shadow_write_failed', {
+        copy_event_id: payload.copy_event_id,
+        error_code: errorCode,
+        duration_ms: elapsedMs(startedAt),
+      });
+      return { synced: false, error_code: errorCode, duration_ms: elapsedMs(startedAt) };
+    }
   }
   async loadContracts() {
     if (!this.contracts || Date.now() - this.contractsLoadedAt > 3_600_000) {
@@ -221,13 +269,24 @@ export class TradingRunner {
     this.performanceSyncedAt.set(member.user_id, Date.now());
   }
   async syncOnce() {
-    const context = await this.rpc('get_copy_worker_context');
-    if (!context?.master) return { observed: 0, masterObserved: 0, intents: 0 };
-    const memberContexts = Array.isArray(context.members) ? context.members : [];
-    let contracts = memberContexts.length ? await this.loadContracts() : new Map();
+    const cycleStartedAt = Date.now();
     const cycleId = randomUUID();
+    this.currentCopyEventId = cycleId;
+    const contextStartedAt = Date.now();
+    const context = await this.rpc('get_copy_worker_context');
+    const timings = { context_ms: elapsedMs(contextStartedAt) };
+    if (!context?.master) return {
+      observed: 0, masterObserved: 0, intents: 0, copyEventId: cycleId,
+      currentStatePayload: null, timings: { ...timings, total_ms: elapsedMs(cycleStartedAt) },
+    };
+    const memberContexts = Array.isArray(context.members) ? context.members : [];
+    const contractsStartedAt = Date.now();
+    let contracts = memberContexts.length ? await this.loadContracts() : new Map();
+    timings.contracts_ms = elapsedMs(contractsStartedAt);
     const observedAt = new Date().toISOString();
+    const masterReadStartedAt = Date.now();
     const master = await this.readAccount(context.master);
+    timings.master_exchange_ms = elapsedMs(masterReadStartedAt);
     // A newly listed or newly traded contract may appear after the hourly
     // contract metadata cache was built. Refresh immediately instead of
     // silently dropping that Master position from every member plan.
@@ -257,6 +316,7 @@ export class TradingRunner {
     const members = [];
     let simulatedIntents = 0;
     const dryRunPlans = [];
+    const membersStartedAt = Date.now();
     for (const memberContext of memberContexts) {
       let memberStage = 'MEMBER_ACCOUNT_READ';
       try {
@@ -346,6 +406,7 @@ export class TradingRunner {
         members.push({ ...memberContext, error_code: errorCode, positions: [], planned_positions: [] });
       }
     }
+    timings.members_ms = elapsedMs(membersStartedAt);
     const recordedMaster = {
       ...master,
       positions: master.positions.map((position) => ({
@@ -353,7 +414,10 @@ export class TradingRunner {
         quanto_multiplier: contracts.get(position.contract)?.quantoMultiplier || null,
       })),
     };
-    await this.rpc('record_copy_worker_cycle', { p_payload: { cycle_id: cycleId, source_version: sourceHash({ observedAt, master: master.positions }), observed_at: observedAt, master: recordedMaster, members } });
+    const legacyPayload = { cycle_id: cycleId, source_version: sourceHash({ observedAt, master: master.positions }), observed_at: observedAt, master: recordedMaster, members };
+    const legacyWriteStartedAt = Date.now();
+    await this.rpc('record_copy_worker_cycle', { p_payload: legacyPayload });
+    timings.legacy_write_ms = elapsedMs(legacyWriteStartedAt);
     if (this.mode === 'DRY_RUN' && this.logger && dryRunPlans.length) {
       const planHash = sourceHash(dryRunPlans);
       if (planHash !== this.lastDryRunPlanHash) {
@@ -361,7 +425,15 @@ export class TradingRunner {
         this.logger('dry_run_plan', { positions: dryRunPlans });
       }
     }
-    return { observed: members.length, masterObserved: 1, intents: simulatedIntents };
+    timings.total_ms = elapsedMs(cycleStartedAt);
+    return {
+      observed: members.length,
+      masterObserved: 1,
+      intents: simulatedIntents,
+      copyEventId: cycleId,
+      currentStatePayload: buildCurrentStatePayload({ cycleId, observedAt, master: recordedMaster, members }),
+      timings,
+    };
   }
   async submitOrders(limit = 10) {
     const jobs = await this.rpc('claim_copy_order_intents', { p_limit: limit });
@@ -378,9 +450,27 @@ export class TradingRunner {
         const response = await placeFuturesOrder({ ...auth, contract: job.contract, size: job.delta_size, reduceOnly: job.reduce_only, pid: job.pid, text: job.gate_order_text, slippageRatio: job.slippage_ratio });
         const summary = summarizeGateOrder(response.payload);
         await this.rpc('complete_copy_order_attempt', { p_intent_id: job.intent_id, p_result_status: summary.finalStatus, p_gate_order_id: summary.gateOrderId, p_filled_size: summary.filledSize, p_average_fill_price: summary.averageFillPrice, p_http_status: response.status, p_gate_label: summary.finishAs, p_error_code: null, p_safe_response: { finish_as: summary.finishAs, left: summary.left } });
+        if (this.logger) this.logger('order_attempt_completed', {
+          intent_id: job.intent_id,
+          user_id: job.user_id || null,
+          contract: job.contract,
+          position_side: job.position_side || null,
+          result_status: summary.finalStatus,
+          gate_order_id: summary.gateOrderId,
+          filled_size: summary.filledSize,
+        });
       } catch (error) {
         const unknown = error instanceof GateApiError && error.outcomeUnknown;
-        await this.rpc('complete_copy_order_attempt', { p_intent_id: job.intent_id, p_result_status: unknown ? 'UNKNOWN' : 'REJECTED', p_gate_order_id: null, p_filled_size: 0, p_average_fill_price: null, p_http_status: error instanceof GateApiError ? error.status : 0, p_gate_label: safeGateErrorLabel(error), p_error_code: safeError(error), p_safe_response: {} });
+        const errorCode = safeError(error);
+        await this.rpc('complete_copy_order_attempt', { p_intent_id: job.intent_id, p_result_status: unknown ? 'UNKNOWN' : 'REJECTED', p_gate_order_id: null, p_filled_size: 0, p_average_fill_price: null, p_http_status: error instanceof GateApiError ? error.status : 0, p_gate_label: safeGateErrorLabel(error), p_error_code: errorCode, p_safe_response: {} });
+        if (this.logger) this.logger('order_attempt_failed', {
+          intent_id: job.intent_id,
+          user_id: job.user_id || null,
+          contract: job.contract,
+          position_side: job.position_side || null,
+          result_status: unknown ? 'UNKNOWN' : 'REJECTED',
+          error_code: errorCode,
+        });
       }
     }
     return jobs?.length || 0;
@@ -399,8 +489,24 @@ export class TradingRunner {
         const trades = await getOrderTrades({ ...auth, orderId, contract: job.contract });
         const summary = summarizeGateOrder(order, trades);
         await this.rpc('complete_copy_reconciliation', { p_job_id: job.job_id, p_status: summary.finalStatus, p_gate_order_id: orderId, p_filled_size: summary.filledSize, p_average_fill_price: summary.averageFillPrice, p_safe_response: { finish_as: summary.finishAs, left: summary.left, trade_count: trades.length } });
+        if (this.logger) this.logger('order_reconciliation_completed', {
+          intent_id: job.intent_id,
+          job_id: job.job_id,
+          contract: job.contract,
+          result_status: summary.finalStatus,
+          gate_order_id: orderId,
+          filled_size: summary.filledSize,
+        });
       } catch (error) {
-        await this.rpc('complete_copy_reconciliation', { p_job_id: job.job_id, p_status: 'UNKNOWN', p_gate_order_id: job.gate_order_id, p_filled_size: 0, p_average_fill_price: null, p_safe_response: { error_code: safeError(error) } });
+        const errorCode = safeError(error, 'RECONCILIATION');
+        await this.rpc('complete_copy_reconciliation', { p_job_id: job.job_id, p_status: 'UNKNOWN', p_gate_order_id: job.gate_order_id, p_filled_size: 0, p_average_fill_price: null, p_safe_response: { error_code: errorCode } });
+        if (this.logger) this.logger('order_reconciliation_failed', {
+          intent_id: job.intent_id,
+          job_id: job.job_id,
+          contract: job.contract,
+          result_status: 'UNKNOWN',
+          error_code: errorCode,
+        });
       }
     }
     return jobs?.length || 0;
