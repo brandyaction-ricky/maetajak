@@ -224,4 +224,3 @@ $$;
 
 revoke all on function public.upsert_copy_current_state(jsonb) from public, anon, authenticated;
 grant execute on function public.upsert_copy_current_state(jsonb) to service_role;
-
