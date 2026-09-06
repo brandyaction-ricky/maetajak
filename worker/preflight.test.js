@@ -21,7 +21,7 @@ test('worker preflight rejects placeholders, wrong channels, and LIVE without al
   assert.equal(result.ok, false);
   assert.ok(result.errors.some((message) => message.includes('fixed public IPv4')));
   assert.ok(result.errors.some((message) => message.includes('approved Channel ID')));
-  assert.ok(result.errors.some((message) => message.includes('Telegram or webhook')));
+  assert.ok(result.errors.some((message) => message.includes('Telegram')));
 });
 
 test('worker preflight accepts complete Telegram alerts for LIVE', () => {
@@ -43,4 +43,14 @@ test('worker preflight rejects incomplete Telegram alert credentials', () => {
   });
   assert.equal(result.ok, false);
   assert.ok(result.errors.some((message) => message.includes('configured together')));
+});
+
+test('worker preflight rejects webhook-only LIVE because critical alerts require Telegram', () => {
+  const result = validatePreflightEnvironment({
+    ...base,
+    TRADING_MODE: 'LIVE',
+    ALERT_WEBHOOK_URL: 'https://alerts.example.test/hook',
+  });
+  assert.equal(result.ok, false);
+  assert.ok(result.errors.some((message) => message.includes('Telegram')));
 });
