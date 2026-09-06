@@ -22,7 +22,7 @@ declare
   control public.copy_system_control%rowtype;
   anomaly record;
 begin
-  if coalesce(current_setting('request.jwt.claim.role', true), '') <> 'service_role' then
+  if auth.role() <> 'service_role' then
     raise exception 'SERVICE_ROLE_REQUIRED';
   end if;
 
