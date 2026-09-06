@@ -232,6 +232,9 @@ export class TradingRunner {
   async reportCycle(success, errorCode = null) {
     return this.rpc('report_copy_worker_cycle', { p_success: Boolean(success), p_error_code: errorCode ? String(errorCode).slice(0, 80) : null });
   }
+  async detectAndHaltOrderAnomaly() {
+    return this.rpc('detect_and_halt_copy_order_anomaly');
+  }
   async syncCurrentState(payload) {
     if (!payload) return { synced: false, duration_ms: 0 };
     const startedAt = Date.now();
