@@ -231,6 +231,7 @@ test('DRY_RUN records target, actual, and delta without an intent key', async ()
         }],
       };
     }
+    if (name === 'get_copy_order_observation_guards') return [];
     if (name === 'record_copy_worker_cycle') {
       recordedPayload = parameters.p_payload;
       return 'cycle-1';
@@ -284,6 +285,7 @@ test('worker snapshots a verified Master before any member API is connected', as
     if (name === 'get_copy_worker_context') {
       return { system: {}, master: { trading_account_id: 'master-1' }, members: [] };
     }
+    if (name === 'get_copy_order_observation_guards') return [];
     if (name === 'record_copy_worker_cycle') {
       recordedPayload = parameters.p_payload;
       return 'cycle-1';
@@ -321,6 +323,7 @@ test('worker refreshes cached contract metadata when Master opens an unknown con
       master: { user_id: 'master', api_key: 'key', secret_key: 'secret' },
       members: [{ user_id: 'member', api_key: 'key', secret_key: 'secret', copy_ratio: 100, max_position_ratio: 40 }],
     };
+    if (name === 'get_copy_order_observation_guards') return [];
     if (name === 'record_copy_worker_cycle') return {};
     if (name === 'get_or_initialize_member_copy_baselines') return { positions: [], member_positions: [] };
     throw new Error(`unexpected rpc ${name}`);
@@ -359,6 +362,7 @@ test('member failures expose a safe stage without leaking upstream messages', as
       master: { trading_account_id: 'master-1' },
       members: [{ trading_account_id: 'member-account-1', user_id: 'member-1' }],
     };
+    if (name === 'get_copy_order_observation_guards') return [];
     if (name === 'get_or_initialize_member_copy_baselines') throw new Error('private SQL error');
     if (name === 'record_copy_worker_cycle') {
       recordedPayload = parameters.p_payload;
