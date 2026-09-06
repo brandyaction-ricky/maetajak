@@ -105,6 +105,10 @@ export function planMemberPositions({ cycleId, system, master, member, contracts
     target.targetSize += protectedMemberSize;
     target.targetNotional = Math.abs(target.targetSize) * (memberPosition.markPrice || markPrice) * contractInfo.quantoMultiplier;
     const previous = previousStates.get(symbol);
+    // An outstanding order may already have filled at Gate even when the
+    // account read has not caught up. Do not create a fresh cycle/order key
+    // until reconciliation resolves it and a later observation replans.
+    const hasUnresolvedOrder = Boolean(previous?.has_unresolved_order);
     const protectedOppositePosition = !String(member.positionMode || 'single').startsWith('dual')
       && [...memberPositionBaselines.entries()].some(([baselineKey, size]) => {
         const baselineLeg = parsePositionKey(baselineKey);
@@ -118,13 +122,14 @@ export function planMemberPositions({ cycleId, system, master, member, contracts
     const manual = detectManualOverride({
       previousActualSize: Number(previous?.actual_size || 0), currentActualSize: memberPosition.size,
       knownPlatformFillDelta: Number(previous?.known_fill_delta || 0), sizeStep: contractInfo.sizeStep,
-      hasUnresolvedPlatformOrder: Boolean(previous?.has_unresolved_order),
+      hasUnresolvedPlatformOrder: hasUnresolvedOrder,
       hasBaseline: Boolean(previous) && !['HALTED', 'PAUSED'].includes(previous.state),
     });
     const reduceOnly = Boolean(member.reduce_only) || Boolean(member.close_positions_requested);
     const state = deriveCopyState({
       systemHalted: Boolean(system.emergency_halted) && !simulateSystemHalt, memberHalted: Boolean(member.halted),
-      symbolPaused: (Boolean(member.copy_paused) || protectedOppositePosition) && !member.close_positions_requested,
+      symbolPaused: hasUnresolvedOrder
+        || ((Boolean(member.copy_paused) || protectedOppositePosition) && !member.close_positions_requested),
       manualOverride: manual.detected || previous?.state === 'MANUAL_OVERRIDE', reduceOnly,
       targetSize: target.targetSize, actualSize: memberPosition.size, driftToleranceSize: contractInfo.sizeStep,
     });
@@ -155,8 +160,9 @@ export function planMemberPositions({ cycleId, system, master, member, contracts
       member_baseline_size: protectedMemberSize,
       baseline_clear_requested: baseline.clearBaseline,
       pause_reason: manual.detected ? 'MEMBER_POSITION_CHANGED_OUTSIDE_PLATFORM'
-        : protectedOppositePosition ? 'PROTECTED_EXISTING_POSITION_OPPOSITE_SIDE'
-          : member.risk_halt_reason || (member.copy_paused ? 'MEMBER_PAUSED' : null),
+        : hasUnresolvedOrder ? 'UNRESOLVED_PLATFORM_ORDER'
+          : protectedOppositePosition ? 'PROTECTED_EXISTING_POSITION_OPPOSITE_SIDE'
+            : member.risk_halt_reason || (member.copy_paused ? 'MEMBER_PAUSED' : null),
     };
     if (delta.shouldSubmit) {
       plannedPosition.intent = {
@@ -438,6 +444,8 @@ export class TradingRunner {
   async submitOrders(limit = 10) {
     const jobs = await this.rpc('claim_copy_order_intents', { p_limit: limit });
     for (const job of jobs || []) {
+      let response;
+      let summary;
       try {
         const auth = { apiKey: job.api_key, secretKey: job.secret_key, channelId: this.channelId, baseUrl: this.baseUrl, fetchImpl: this.fetchImpl };
         if (!job.reduce_only && Number(job.target_leverage) > 0) {
@@ -447,18 +455,17 @@ export class TradingRunner {
             positionSide: String(job.position_mode || '').startsWith('dual') ? job.position_side : undefined,
           });
         }
-        const response = await placeFuturesOrder({ ...auth, contract: job.contract, size: job.delta_size, reduceOnly: job.reduce_only, pid: job.pid, text: job.gate_order_text, slippageRatio: job.slippage_ratio });
-        const summary = summarizeGateOrder(response.payload);
-        await this.rpc('complete_copy_order_attempt', { p_intent_id: job.intent_id, p_result_status: summary.finalStatus, p_gate_order_id: summary.gateOrderId, p_filled_size: summary.filledSize, p_average_fill_price: summary.averageFillPrice, p_http_status: response.status, p_gate_label: summary.finishAs, p_error_code: null, p_safe_response: { finish_as: summary.finishAs, left: summary.left } });
-        if (this.logger) this.logger('order_attempt_completed', {
-          intent_id: job.intent_id,
-          user_id: job.user_id || null,
-          contract: job.contract,
-          position_side: job.position_side || null,
-          result_status: summary.finalStatus,
-          gate_order_id: summary.gateOrderId,
-          filled_size: summary.filledSize,
-        });
+        response = await placeFuturesOrder({ ...auth, contract: job.contract, size: job.delta_size, reduceOnly: job.reduce_only, pid: job.pid, text: job.gate_order_text, slippageRatio: job.slippage_ratio });
+        // A successful HTTP status without usable order data is not proof of
+        // either rejection or a fill. Reconcile it by the original order text.
+        if (response.payload?.id == null
+          || !['size', 'left'].every((key) => response.payload[key] != null
+            && Number.isFinite(Number(response.payload[key])))) {
+          throw new GateApiError('Gate order response could not be verified.', {
+            code: 'INVALID_ORDER_RESPONSE', status: response.status, outcomeUnknown: true,
+          });
+        }
+        summary = summarizeGateOrder(response.payload);
       } catch (error) {
         const unknown = error instanceof GateApiError && error.outcomeUnknown;
         const errorCode = safeError(error);
@@ -471,7 +478,22 @@ export class TradingRunner {
           result_status: unknown ? 'UNKNOWN' : 'REJECTED',
           error_code: errorCode,
         });
+        continue;
       }
+      // Keep persistence failures outside the Gate rejection handler. A lost
+      // RPC response may mean FILLED was already committed; overwriting that
+      // with REJECTED would erase the fill. Abort this batch and let the
+      // existing SUBMITTING/reconciliation recovery resolve unrecorded orders.
+      await this.rpc('complete_copy_order_attempt', { p_intent_id: job.intent_id, p_result_status: summary.finalStatus, p_gate_order_id: summary.gateOrderId, p_filled_size: summary.filledSize, p_average_fill_price: summary.averageFillPrice, p_http_status: response.status, p_gate_label: summary.finishAs, p_error_code: null, p_safe_response: { finish_as: summary.finishAs, left: summary.left } });
+      if (this.logger) this.logger('order_attempt_completed', {
+        intent_id: job.intent_id,
+        user_id: job.user_id || null,
+        contract: job.contract,
+        position_side: job.position_side || null,
+        result_status: summary.finalStatus,
+        gate_order_id: summary.gateOrderId,
+        filled_size: summary.filledSize,
+      });
     }
     return jobs?.length || 0;
   }
