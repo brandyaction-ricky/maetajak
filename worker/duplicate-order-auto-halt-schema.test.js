@@ -7,6 +7,10 @@ const migration = readFileSync(
   'utf8',
 );
 const worker = readFileSync(new URL('./index.js', import.meta.url), 'utf8');
+const liveActivation = readFileSync(
+  new URL('../deploy/lightsail-enable-live.sh', import.meta.url),
+  'utf8',
+);
 
 test('repeated stale-position intents atomically halt live copying', () => {
   assert.match(migration, /actual_size_at_plan/);
@@ -31,4 +35,9 @@ test('the worker halts and alerts before claiming another order', () => {
   assert.ok(alertIndex > detectIndex);
   assert.ok(submitIndex > alertIndex);
   assert.match(worker, /LIVE mode requires Telegram for critical copy safety alerts/);
+});
+
+test('LIVE activation stops when the Telegram delivery test fails', () => {
+  assert.match(liveActivation, /npm run worker:alert-test/);
+  assert.doesNotMatch(liveActivation, /alert_test=delivery_warning/);
 });
