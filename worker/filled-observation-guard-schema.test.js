@@ -25,3 +25,9 @@ test('the observation guard has a partial index for the worker hot path', () => 
   assert.match(migration, /copy_order_intents_filled_observation_guard_idx/);
   assert.match(migration, /where status = 'FILLED' and filled_size <> 0/);
 });
+
+test('the guard RPC exposes no exchange credentials', () => {
+  assert.match(migration, /get_copy_order_observation_guards/);
+  assert.doesNotMatch(migration, /api_key|secret_key|decrypted_secret|pgp_sym_decrypt/);
+  assert.match(migration, /grant execute on function public\.get_copy_order_observation_guards\(\) to service_role/);
+});
