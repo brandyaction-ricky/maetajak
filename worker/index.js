@@ -20,6 +20,7 @@ const alertWebhookUrl = process.env.ALERT_WEBHOOK_URL || '';
 const alertWebhookBearer = process.env.ALERT_WEBHOOK_BEARER || '';
 const telegramBotToken = process.env.TELEGRAM_BOT_TOKEN || '';
 const telegramChatId = process.env.TELEGRAM_CHAT_ID || '';
+const telegramConfigured = Boolean(telegramBotToken && telegramChatId);
 const alertsConfigured = Boolean(alertWebhookUrl || (telegramBotToken && telegramChatId));
 const brokerUid = process.env.GATE_BROKER_UID || '49084031';
 const brokerApiKey = process.env.GATE_BROKER_API_KEY || '';
@@ -35,6 +36,7 @@ if (tradingMode === 'LIVE' && (!workerPublicIp || baseUrl !== 'https://api.gatei
   throw new Error('LIVE mode requires WORKER_PUBLIC_IP and the production Gate API base URL');
 }
 if (tradingMode === 'LIVE' && !alertsConfigured) throw new Error('LIVE mode requires a Telegram or webhook alert destination');
+if (tradingMode === 'LIVE' && !telegramConfigured) throw new Error('LIVE mode requires Telegram for critical copy safety alerts');
 
 const supabase = createClient(supabaseUrl, serviceRoleKey, { auth: { persistSession: false, autoRefreshToken: false } });
 const state = { verification: false, trading: false, broker: false, stopping: false };
@@ -97,6 +99,29 @@ export async function runTradingCycle() {
     await runner.heartbeat(false);
     const observation = await runner.syncOnce();
     if (readinessCheck && tradingMode === 'DRY_RUN' && observation.observed > 0 && observation.intents > 0) await runner.heartbeat(true);
+    const orderAnomaly = await runner.detectAndHaltOrderAnomaly();
+    if (orderAnomaly?.newly_halted) {
+      await sendAlert({
+        event: 'COPY_DUPLICATE_ORDER_AUTO_HALTED',
+        severity: 'CRITICAL',
+        details: {
+          reason: orderAnomaly.reason,
+          contract: orderAnomaly.contract,
+          position_side: orderAnomaly.position_side,
+          duplicate_count: orderAnomaly.duplicate_count,
+          copy_event_id: observation.copyEventId,
+        },
+      });
+    }
+    if (orderAnomaly?.anomaly_detected) {
+      log('duplicate_order_auto_halted', {
+        copy_event_id: observation.copyEventId,
+        contract: orderAnomaly.contract,
+        position_side: orderAnomaly.position_side,
+        duplicate_count: orderAnomaly.duplicate_count,
+      });
+      return;
+    }
     const reconcileStartedAt = Date.now();
     const reconciled = await runner.reconcileOrders();
     const reconcileMs = Date.now() - reconcileStartedAt;
