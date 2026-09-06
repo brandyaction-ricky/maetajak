@@ -50,7 +50,7 @@ export function validatePreflightEnvironment(env) {
   if (Boolean(telegramBotToken) !== Boolean(telegramChatId)) errors.push('TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID must be configured together');
   if (telegramBotToken && !/^\d+:[A-Za-z0-9_-]{20,}$/.test(telegramBotToken)) errors.push('TELEGRAM_BOT_TOKEN has an invalid format');
   if (telegramChatId && !/^(?:-?\d+|@[A-Za-z0-9_]{5,})$/.test(telegramChatId)) errors.push('TELEGRAM_CHAT_ID has an invalid format');
-  if (mode === 'LIVE' && !telegramConfigured && !webhookConfigured) errors.push('A Telegram or webhook alert destination is required before accepting real members in LIVE');
+  if (mode === 'LIVE' && !telegramConfigured) errors.push('Telegram is required before accepting real members in LIVE');
   return {
     ok: errors.length === 0,
     errors,
