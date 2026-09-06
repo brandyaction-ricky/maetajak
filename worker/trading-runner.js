@@ -75,6 +75,39 @@ export function suppressExecutableIntents(positions, mode) {
   return positions.map(({ intent: _intent, ...observation }) => observation);
 }
 
+export function applyOrderObservationGuards(context, guards = []) {
+  const guardKeys = new Set((guards || []).map((guard) =>
+    `${guard.trading_account_id}:${guard.contract}:${guard.position_side}`));
+  return {
+    ...context,
+    members: (context?.members || []).map((member) => {
+      const states = [...(member.previous_states || [])];
+      const stateKeys = new Set(states.map((state) => `${state.contract}:${state.position_side}`));
+      for (const guard of guards || []) {
+        if (guard.trading_account_id !== member.trading_account_id) continue;
+        const stateKey = `${guard.contract}:${guard.position_side}`;
+        if (!stateKeys.has(stateKey)) {
+          states.push({
+            contract: guard.contract,
+            position_side: guard.position_side,
+            state: 'PAUSED',
+            has_unresolved_order: true,
+          });
+          stateKeys.add(stateKey);
+        }
+      }
+      return {
+        ...member,
+        previous_states: states.map((state) => ({
+          ...state,
+          has_unresolved_order: Boolean(state.has_unresolved_order)
+            || guardKeys.has(`${member.trading_account_id}:${state.contract}:${state.position_side}`),
+        })),
+      };
+    }),
+  };
+}
+
 export function planMemberPositions({ cycleId, system, master, member, contracts, simulateSystemHalt = false }) {
   const masterPositions = positionMap(master.positions);
   const memberPositions = positionMap(member.positions);
@@ -279,7 +312,11 @@ export class TradingRunner {
     const cycleId = randomUUID();
     this.currentCopyEventId = cycleId;
     const contextStartedAt = Date.now();
-    const context = await this.rpc('get_copy_worker_context');
+    const [rawContext, observationGuards] = await Promise.all([
+      this.rpc('get_copy_worker_context'),
+      this.rpc('get_copy_order_observation_guards'),
+    ]);
+    const context = applyOrderObservationGuards(rawContext, observationGuards);
     const timings = { context_ms: elapsedMs(contextStartedAt) };
     if (!context?.master) return {
       observed: 0, masterObserved: 0, intents: 0, copyEventId: cycleId,
