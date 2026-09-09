@@ -710,6 +710,21 @@ async function loadCopySystemStatus() {
   const { data, error } = await supabase.rpc('get_copy_system_status');
   if (error) return;
   renderCopySystemStatus(data);
+  if (currentProfile.role === 'MEMBER') {
+    const { data: resumes, error: resumeError } = await supabase.rpc('get_member_copy_resume_status', { p_user_id: currentProfile.id });
+    if (!resumeError && resumes?.length) {
+      const waiting = resumes.find((row) => row.state !== 'ACTIVE');
+      if (waiting) {
+        const labels = { REQUIRED: '재개 확인 필요', REQUESTED: '재개 안전 확인 중', VALIDATED: '확인 완료 · 실행 대기',
+          PAUSED: '회원 카피 일시중지', BLOCKED: '재개 확인 필요', CLOSING: '요청한 포지션 정리 대기' };
+        const detail = byId('memberSystemDetail');
+        if (detail) detail.textContent += ' · ' + (labels[waiting.state] || '재개 확인 중');
+        if (waiting.reason === 'RESUME_UNRESOLVED_ORDERS' && detail) detail.textContent += ' · 이전 주문 결과 확인 대기';
+        if (!data?.emergency_halted && byId('memberSystemTitle')) byId('memberSystemTitle').textContent = labels[waiting.state] || '재개 안전 확인 중';
+        byId('memberSystemDot')?.classList.add('offline');
+      }
+    }
+  }
 }
 
 function startCopySystemPolling() {
@@ -727,7 +742,8 @@ async function setCopyPause(mode) {
   const { error } = await supabase.rpc('set_my_copy_pause', { p_mode: mode });
   if (error) return window.toast('카피 상태 변경에 실패했습니다.');
   window.closePause();
-  window.toast(mode === 'RESUME' ? '카피 재개를 요청했습니다.' : mode === 'CLOSE' ? '신규 카피 중지와 포지션 정리를 요청했습니다.' : '신규 카피를 중지했습니다.');
+  window.toast(mode === 'RESUME' ? '기존 보유 포지션을 유지하며 재개 안전 확인을 요청했습니다.' : mode === 'CLOSE' ? '신규 카피 중지와 포지션 정리를 요청했습니다.' : '신규 카피를 중지했습니다.');
+  await loadCopySystemStatus();
 }
 
 async function emergencyHalt() {
@@ -1262,7 +1278,7 @@ async function setAdminMemberControl(mode) {
   if (!window.confirm(`이 회원의 카피 상태를 ${labels[mode]}로 변경할까요?`)) return;
   const { error } = await supabase.rpc('set_member_copy_control', { p_user_id: selectedMemberId, p_mode: mode, p_reason: `ADMIN_${mode}` });
   if (error) return window.toast('회원 카피 상태를 변경하지 못했습니다.');
-  window.toast(`회원 카피 상태를 ${labels[mode]}로 변경했습니다.`);
+  window.toast(mode === 'RESUME' ? '회원의 기존 포지션 보호와 재개 안전 확인을 요청했습니다.' : `회원 카피 상태를 ${labels[mode]}로 변경했습니다.`);
   closeMemberDetail();
   await loadAdminMembers();
 }

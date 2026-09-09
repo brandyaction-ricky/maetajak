@@ -1,7 +1,7 @@
 {
   "name": "maetajak",
   "private": true,
-  "version": "0.3.1",
+  "version": "0.4.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -18,9 +18,10 @@
     "worker:halt": "node scripts/halt-live.js"
   },
   "dependencies": {
-    "@supabase/supabase-js": "^2.57.4"
+    "@supabase/supabase-js": "2.112.3"
   },
   "devDependencies": {
-    "vite": "^7.1.3"
+    "@electric-sql/pglite": "0.5.8",
+    "vite": "7.3.6"
   }
 }

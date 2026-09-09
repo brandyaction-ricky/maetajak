@@ -54,7 +54,7 @@ const job = {
   intent_id: 'intent-1', user_id: 'member', api_key: 'test-key', secret_key: 'test-secret',
   contract: 'BTC_USDT', position_side: 'LONG', position_mode: 'dual', delta_size: 20,
   reduce_only: false, target_leverage: null, gate_order_text: 't-mtj-12345678901234567890',
-  slippage_ratio: 0.005,
+  slippage_ratio: 0.005, resume_version: 'test-resume', source_observed_at: new Date().toISOString(),
 };
 
 function runnerFor({ body, status = 201, failCompletion = false, failFetch = false, jobs = [job] }) {
@@ -70,6 +70,7 @@ function runnerFor({ body, status = 201, failCompletion = false, failFetch = fal
   });
   runner.rpc = async (name, parameters) => {
     if (name === 'claim_copy_order_intents') return jobs;
+    if (name === 'authorize_copy_order_submission') return true;
     if (name === 'complete_copy_order_attempt') {
       completions.push(parameters);
       // Emulate a timeout after a successful DB write: a second write could

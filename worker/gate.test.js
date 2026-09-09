@@ -257,7 +257,7 @@ test('Gate 5xx after an order request is UNKNOWN and must be reconciled', async 
 
 test('partial fills preserve signed fill size for reconciliation', () => {
   assert.deepEqual(summarizeGateOrder({ id: '10', size: -10, left: -4, status: 'finished', finish_as: 'ioc' }), {
-    gateOrderId: '10', filledSize: -6, averageFillPrice: null, finalStatus: 'PARTIALLY_FILLED', finishAs: 'ioc', left: -4,
+    gateOrderId: '10', filledSize: -6, averageFillPrice: null, finalStatus: 'PARTIALLY_FILLED', finishAs: 'ioc', left: -4, terminal: true,
   });
 });
 

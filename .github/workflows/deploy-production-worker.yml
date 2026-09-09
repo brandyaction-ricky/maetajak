@@ -1,6 +1,7 @@
 name: Verify production worker changes
 
 on:
+  pull_request:
   push:
     branches: [main]
     paths:

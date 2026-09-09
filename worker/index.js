@@ -1,7 +1,7 @@
 import { createClient } from '@supabase/supabase-js';
 import { randomUUID } from 'node:crypto';
 import { validateGateChannelId, verifyGateAccount } from './gate.js';
-import { TradingRunner } from './trading-runner.js';
+import { TradingRunner, safeError } from './trading-runner.js';
 import { sendWorkerAlert, shouldSendFailureAlert } from './alerts.js';
 import { syncGateBrokerMetrics } from './broker-metrics.js';
 
@@ -39,7 +39,7 @@ if (tradingMode === 'LIVE' && !alertsConfigured) throw new Error('LIVE mode requ
 if (tradingMode === 'LIVE' && !telegramConfigured) throw new Error('LIVE mode requires Telegram for critical copy safety alerts');
 
 const supabase = createClient(supabaseUrl, serviceRoleKey, { auth: { persistSession: false, autoRefreshToken: false } });
-const state = { verification: false, trading: false, broker: false, stopping: false };
+const state = { verification: false, trading: false, broker: false, stopping: false, lastDatabaseAlertAt: 0 };
 
 function log(event, details = {}) {
   console.log(JSON.stringify({ at: new Date().toISOString(), worker_id: workerId, event, ...details }));
@@ -48,6 +48,7 @@ function log(event, details = {}) {
 const runner = new TradingRunner({
   supabase, baseUrl, workerId, workerVersion, publicIp: workerPublicIp,
   channelId: gateChannelId, mode: tradingMode, logger: log,
+  onSafetyEvent: sendAlert,
 });
 
 function sendAlert(options) {
@@ -98,7 +99,7 @@ export async function runTradingCycle() {
   try {
     await runner.heartbeat(false);
     const observation = await runner.syncOnce();
-    if (readinessCheck && tradingMode === 'DRY_RUN' && observation.observed > 0 && observation.intents > 0) await runner.heartbeat(true);
+    if (readinessCheck && tradingMode === 'DRY_RUN' && observation.validatedResumes > 0) await runner.heartbeat(true);
     const orderAnomaly = await runner.detectAndHaltOrderAnomaly();
     if (orderAnomaly?.newly_halted) {
       await sendAlert({
@@ -156,7 +157,16 @@ export async function runTradingCycle() {
         await sendAlert({ event: Number(failure?.consecutive_failures) >= 3 ? 'COPY_SYSTEM_AUTO_HALTED' : 'WORKER_CYCLE_FAILED', severity: 'CRITICAL', details: { copy_event_id: runner.currentCopyEventId, failures: failure?.consecutive_failures, error_code: failure?.last_error_code || code } });
       }
     }
-    catch (reportError) { log('worker_failure_report_error', { code: reportError instanceof Error ? reportError.message : 'unknown' }); }
+    catch (reportError) {
+      const reportCode = safeError(reportError, 'FAILURE_REPORT');
+      log('worker_failure_report_error', { code: reportCode });
+      // Telegram must remain usable when the database itself is unreachable.
+      if (Date.now() - state.lastDatabaseAlertAt > 300_000) {
+        const alert = await sendAlert({ event: 'WORKER_DATABASE_UNREACHABLE', severity: 'CRITICAL',
+          details: { copy_event_id: runner.currentCopyEventId, error_code: reportCode, mode: tradingMode, action: '현재 주문 처리 회차 중단' } });
+        if (alert?.sent) state.lastDatabaseAlertAt = Date.now();
+      }
+    }
     log('trading_cycle_error', { copy_event_id: runner.currentCopyEventId, code });
   } finally { state.trading = false; }
 }
