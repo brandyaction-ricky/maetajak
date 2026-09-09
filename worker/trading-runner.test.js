@@ -107,6 +107,54 @@ test('member positions held before copy starts are preserved while later copy ex
   assert.equal(withCopy.member_baseline_size, 20);
 });
 
+test('unchanged Master quantity cannot create micro-orders from equity drift', () => {
+  const [position] = planMemberPositions({
+    ...base,
+    master: { total: 9_800, positions: [{ contract: 'BTC_USDT', size: 100, markPrice: 50_000 }] },
+    member: {
+      ...base.member,
+      total: 5_200,
+      resume_version: 'resume-1',
+      positions: [{ contract: 'BTC_USDT', size: 30, markPrice: 50_000 }],
+      target_anchors: [{ contract: 'BTC_USDT', position_side: 'LONG', resume_version: 'resume-1', master_copyable_size: 100, target_size: 30 }],
+    },
+  });
+  assert.equal(position.target_size, 30);
+  assert.equal(position.delta_size, 0);
+  assert.equal(position.target_lock_reason, 'MASTER_QUANTITY_UNCHANGED');
+  assert.equal(Object.hasOwn(position, 'intent'), false);
+});
+
+test('a real Master quantity change releases the target lock', () => {
+  const [position] = planMemberPositions({
+    ...base,
+    master: { total: 10_000, positions: [{ contract: 'BTC_USDT', size: 120, markPrice: 50_000 }] },
+    member: {
+      ...base.member,
+      max_position_ratio: 100,
+      resume_version: 'resume-1',
+      positions: [{ contract: 'BTC_USDT', size: 30, markPrice: 50_000 }],
+      target_anchors: [{ contract: 'BTC_USDT', position_side: 'LONG', resume_version: 'resume-1', master_copyable_size: 100, target_size: 30 }],
+    },
+  });
+  assert.equal(position.target_size, 60);
+  assert.equal(position.intent.delta_size, 30);
+  assert.equal(position.target_lock_reason, 'MASTER_QUANTITY_CHANGED');
+});
+
+test('an anchor from an old resume generation is ignored', () => {
+  const [position] = planMemberPositions({
+    ...base,
+    member: {
+      ...base.member,
+      resume_version: 'resume-2',
+      target_anchors: [{ contract: 'BTC_USDT', position_side: 'LONG', resume_version: 'resume-1', master_copyable_size: 100, target_size: 5 }],
+    },
+  });
+  assert.equal(position.target_size, 30);
+  assert.equal(position.target_lock_reason, 'TARGET_ANCHOR_INITIALIZED');
+});
+
 test('single-mode copy never closes a protected opposite-side member position', () => {
   const planned = planMemberPositions({
     ...base,
@@ -234,8 +282,9 @@ test('DRY_RUN records target, actual, and delta without an intent key', async ()
     }
     if (name === 'get_copy_order_observation_guards') return [];
     if (name === 'get_copy_resume_context') return [{ trading_account_id: 'member-account-1', state: 'ACTIVE', version: 'test-resume', baseline_version: 'test-resume', positions: [], member_positions: [] }];
+    if (name === 'get_copy_target_anchors') return [];
     if (name === 'confirm_copy_order_observation') return 0;
-    if (name === 'record_copy_worker_cycle') {
+    if (name === 'record_copy_worker_cycle_with_target_anchors') {
       recordedPayload = parameters.p_payload;
       return 'cycle-1';
     }
@@ -290,8 +339,9 @@ test('worker snapshots a verified Master before any member API is connected', as
     }
     if (name === 'get_copy_order_observation_guards') return [];
     if (name === 'get_copy_resume_context') return [{ trading_account_id: 'member-account-1', state: 'ACTIVE', version: 'test-resume', baseline_version: 'test-resume', positions: [], member_positions: [] }];
+    if (name === 'get_copy_target_anchors') return [];
     if (name === 'confirm_copy_order_observation') return 0;
-    if (name === 'record_copy_worker_cycle') {
+    if (name === 'record_copy_worker_cycle_with_target_anchors') {
       recordedPayload = parameters.p_payload;
       return 'cycle-1';
     }
@@ -330,8 +380,9 @@ test('worker refreshes cached contract metadata when Master opens an unknown con
     };
     if (name === 'get_copy_order_observation_guards') return [];
     if (name === 'get_copy_resume_context') return [{ trading_account_id: 'member-account-1', state: 'ACTIVE', version: 'test-resume', baseline_version: 'test-resume', positions: [], member_positions: [] }];
+    if (name === 'get_copy_target_anchors') return [];
     if (name === 'confirm_copy_order_observation') return 0;
-    if (name === 'record_copy_worker_cycle') return {};
+    if (name === 'record_copy_worker_cycle_with_target_anchors') return {};
     if (name === 'get_or_initialize_member_copy_baselines') return { positions: [], member_positions: [] };
     throw new Error(`unexpected rpc ${name}`);
   };
@@ -371,8 +422,9 @@ test('member failures expose a safe stage without leaking upstream messages', as
     };
     if (name === 'get_copy_order_observation_guards') return [];
     if (name === 'get_copy_resume_context') return [{ trading_account_id: 'member-account-1', state: 'ACTIVE', version: 'test-resume', baseline_version: 'test-resume', positions: [], member_positions: [] }];
+    if (name === 'get_copy_target_anchors') return [];
     if (name === 'confirm_copy_order_observation') throw new Error('private SQL error');
-    if (name === 'record_copy_worker_cycle') {
+    if (name === 'record_copy_worker_cycle_with_target_anchors') {
       recordedPayload = parameters.p_payload;
       return 'cycle-1';
     }

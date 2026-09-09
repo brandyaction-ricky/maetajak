@@ -91,6 +91,34 @@ export function calculateTargetPosition({
   };
 }
 
+// A copy target is an execution decision, not a live mark-to-market display.
+// Once a Master quantity has been observed, keep that decision stable while
+// only prices/equities move. The sole exception is a stricter current risk cap:
+// it may reduce copied exposure, but a later recovery must not buy it back
+// unless the Master quantity changes again.
+export function capLockedTargetToCurrentRisk({
+  lockedTargetSize,
+  protectedSize = 0,
+  memberEquity,
+  memberMarkPrice,
+  memberQuantoMultiplier,
+  maxPositionRatio = 30,
+  sizeStep = 1,
+}) {
+  const locked = finiteNumber(lockedTargetSize, 'lockedTargetSize');
+  const protectedTarget = finiteNumber(protectedSize, 'protectedSize');
+  const equity = Math.max(0, finiteNumber(memberEquity, 'memberEquity'));
+  const price = positiveNumber(memberMarkPrice, 'memberMarkPrice');
+  const multiplier = positiveNumber(memberQuantoMultiplier, 'memberQuantoMultiplier');
+  const capRatio = Math.max(0, finiteNumber(maxPositionRatio, 'maxPositionRatio')) / 100;
+  const capSize = Math.abs(roundTowardZeroToStep(equity * capRatio / (price * multiplier), sizeStep));
+  // Existing member positions captured at resume are never force-closed by a
+  // risk cap. Only the copied amount above that protected quantity is bounded.
+  const allowedAbsoluteSize = Math.max(Math.abs(protectedTarget), capSize);
+  if (Math.abs(locked) <= allowedAbsoluteSize) return locked;
+  return Math.sign(locked) * allowedAbsoluteSize;
+}
+
 export function detectManualOverride({
   previousActualSize,
   currentActualSize,
