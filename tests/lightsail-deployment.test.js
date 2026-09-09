@@ -23,7 +23,7 @@ test('Lightsail shell scripts have valid Bash syntax', () => {
   }
 });
 
-test('automated deployment verifies DRY_RUN and only resumes a previously healthy LIVE system', () => {
+test('automated deployment verifies DRY_RUN and never automatically resumes copying', () => {
   const deploy = readFileSync('deploy/lightsail-deploy-dry-run.sh', 'utf8');
   const verify = readFileSync('deploy/lightsail-verify-deployment.sh', 'utf8');
   const autoDeploy = readFileSync('deploy/lightsail-auto-deploy.sh', 'utf8');
@@ -34,10 +34,10 @@ test('automated deployment verifies DRY_RUN and only resumes a previously health
   assert.match(deploy, /worker:halt/);
   assert.match(deploy, /set-worker-mode\.sh" DRY_RUN/);
   assert.match(deploy, /lightsail-verify-deployment\.sh/);
-  assert.match(deploy, /worker:can-resume-live/);
-  assert.match(deploy, /resume_previous_live/);
-  assert.match(deploy, /live_resume=completed/);
-  assert.match(deploy, /process-live-promotion-request\.sh/);
+  assert.doesNotMatch(deploy, /worker:can-resume-live/);
+  assert.doesNotMatch(deploy, /resume_previous_live/);
+  assert.match(deploy, /live_resume=disabled/);
+  assert.doesNotMatch(deploy, /process-live-promotion-request\.sh/);
   assert.match(verify, /member_sync_failed/);
   assert.match(autoDeploy, /blocked_database_migration/);
   assert.match(autoDeploy, /clear_member_copy_baseline_legs/);
@@ -67,7 +67,6 @@ test('LIVE resume eligibility checks both global execution and worker health', (
 
 test('LIVE promotion is expiring, single-use, and gated by deployment verification', () => {
   const promotion = readFileSync('deploy/process-live-promotion-request.sh', 'utf8');
-  const request = readFileSync('deploy/live-promotion.request', 'utf8');
 
   assert.match(promotion, /STATE_DIR="\/var\/lib\/maetajak\/live-promotions"/);
   assert.match(promotion, /live_promotion=already_completed/);
@@ -81,8 +80,6 @@ test('LIVE promotion is expiring, single-use, and gated by deployment verificati
   assert.match(enableLive, /alert_test=passed/);
   assert.doesNotMatch(enableLive, /alert_test=delivery_warning/);
   assert.match(enableLive, /worker:preflight/);
-  assert.match(request, /^token=[a-zA-Z0-9_-]{16,80}$/m);
-  assert.match(request, /^expires_at=\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/m);
 });
 
 test('Lightsail configuration keeps server secrets outside the Git checkout', () => {

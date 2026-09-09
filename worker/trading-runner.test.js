@@ -101,8 +101,9 @@ test('member positions held before copy starts are preserved while later copy ex
       member_position_baselines: [{ contract: 'BTC_USDT', size: 20 }],
     },
   });
-  assert.equal(withCopy.target_size, 50);
-  assert.equal(withCopy.delta_size, 0);
+  assert.equal(withCopy.target_size, 30);
+  assert.equal(withCopy.delta_size, -20);
+  assert.equal(withCopy.intent.reduce_only, true);
   assert.equal(withCopy.member_baseline_size, 20);
 });
 
@@ -232,6 +233,8 @@ test('DRY_RUN records target, actual, and delta without an intent key', async ()
       };
     }
     if (name === 'get_copy_order_observation_guards') return [];
+    if (name === 'get_copy_resume_context') return [{ trading_account_id: 'member-account-1', state: 'ACTIVE', version: 'test-resume', baseline_version: 'test-resume', positions: [], member_positions: [] }];
+    if (name === 'confirm_copy_order_observation') return 0;
     if (name === 'record_copy_worker_cycle') {
       recordedPayload = parameters.p_payload;
       return 'cycle-1';
@@ -286,6 +289,8 @@ test('worker snapshots a verified Master before any member API is connected', as
       return { system: {}, master: { trading_account_id: 'master-1' }, members: [] };
     }
     if (name === 'get_copy_order_observation_guards') return [];
+    if (name === 'get_copy_resume_context') return [{ trading_account_id: 'member-account-1', state: 'ACTIVE', version: 'test-resume', baseline_version: 'test-resume', positions: [], member_positions: [] }];
+    if (name === 'confirm_copy_order_observation') return 0;
     if (name === 'record_copy_worker_cycle') {
       recordedPayload = parameters.p_payload;
       return 'cycle-1';
@@ -324,6 +329,8 @@ test('worker refreshes cached contract metadata when Master opens an unknown con
       members: [{ user_id: 'member', api_key: 'key', secret_key: 'secret', copy_ratio: 100, max_position_ratio: 40 }],
     };
     if (name === 'get_copy_order_observation_guards') return [];
+    if (name === 'get_copy_resume_context') return [{ trading_account_id: 'member-account-1', state: 'ACTIVE', version: 'test-resume', baseline_version: 'test-resume', positions: [], member_positions: [] }];
+    if (name === 'confirm_copy_order_observation') return 0;
     if (name === 'record_copy_worker_cycle') return {};
     if (name === 'get_or_initialize_member_copy_baselines') return { positions: [], member_positions: [] };
     throw new Error(`unexpected rpc ${name}`);
@@ -363,7 +370,8 @@ test('member failures expose a safe stage without leaking upstream messages', as
       members: [{ trading_account_id: 'member-account-1', user_id: 'member-1' }],
     };
     if (name === 'get_copy_order_observation_guards') return [];
-    if (name === 'get_or_initialize_member_copy_baselines') throw new Error('private SQL error');
+    if (name === 'get_copy_resume_context') return [{ trading_account_id: 'member-account-1', state: 'ACTIVE', version: 'test-resume', baseline_version: 'test-resume', positions: [], member_positions: [] }];
+    if (name === 'confirm_copy_order_observation') throw new Error('private SQL error');
     if (name === 'record_copy_worker_cycle') {
       recordedPayload = parameters.p_payload;
       return 'cycle-1';
@@ -409,8 +417,9 @@ test('LIVE applies Master leverage to the correct hedge leg before submitting an
     },
   });
   runner.rpc = async (name, parameters = {}) => {
+    if (name === 'authorize_copy_order_submission') return true;
     if (name === 'claim_copy_order_intents') return [{
-      intent_id: 'intent-1', api_key: 'key', secret_key: 'secret', contract: 'BTC_USDT',
+      resume_version: 'test-resume', source_observed_at: new Date().toISOString(), intent_id: 'intent-1', api_key: 'key', secret_key: 'secret', contract: 'BTC_USDT',
       position_side: 'LONG', position_mode: 'dual', delta_size: 3, reduce_only: false,
       target_leverage: 7, margin_mode: 'cross', gate_order_text: 't-mtj-12345678901234567890',
       slippage_ratio: 0.005,
@@ -484,8 +493,9 @@ test('order observability contains safe intent correlation without credentials',
     },
   });
   runner.rpc = async (name) => {
+    if (name === 'authorize_copy_order_submission') return true;
     if (name === 'claim_copy_order_intents') return [{
-      intent_id: 'intent-safe-1', user_id: 'member-1', api_key: 'private-key', secret_key: 'private-secret',
+      resume_version: 'test-resume', source_observed_at: new Date().toISOString(), intent_id: 'intent-safe-1', user_id: 'member-1', api_key: 'private-key', secret_key: 'private-secret',
       contract: 'BTC_USDT', position_side: 'LONG', position_mode: 'single', delta_size: 1,
       reduce_only: false, target_leverage: 0, margin_mode: 'cross', gate_order_text: 't-mtj-safe', slippage_ratio: 0.005,
     }];

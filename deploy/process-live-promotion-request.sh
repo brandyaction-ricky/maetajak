@@ -6,6 +6,12 @@ readonly REQUEST_FILE="${APP_DIR}/deploy/live-promotion.request"
 readonly STATE_DIR="/var/lib/maetajak/live-promotions"
 readonly ENV_FILE="/etc/maetajak/worker.env"
 
+# Automatic deployments never authorize LIVE, including legacy request files.
+if [[ "${MAETAJAK_ALLOW_LIVE_PROMOTION:-false}" != "true" ]]; then
+  echo "live_promotion=operator_action_required"
+  exit 0
+fi
+
 if [[ "${EUID}" -ne 0 ]]; then
   echo "Run this promotion processor as root." >&2
   exit 1

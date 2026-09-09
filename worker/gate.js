@@ -283,6 +283,9 @@ export async function getFuturesAccount(options) {
 }
 
 export function normalizeGatePositions(payload) {
+  if (!Array.isArray(payload) || payload.some((p) => !p || !p.contract || p.size == null || !Number.isFinite(Number(p.size)))) {
+    throw new GateApiError('포지션 조회 결과가 올바르지 않습니다.', { code: 'INVALID_POSITIONS_RESPONSE' });
+  }
   const positions = (Array.isArray(payload) ? payload : []).map((position) => ({
     contract: String(position.contract || ''),
     size: Number(position.size || 0),
@@ -307,29 +310,34 @@ export function normalizeGatePositions(payload) {
   return positions;
 }
 
-export async function getFuturesPositions(options) {
+export async function getFuturesPositions({ expectedContracts = [], ...options }) {
   // Gate's official API defines `holding=true` as the explicit real/open
   // position query. Omitting it can return an empty list for unified accounts
   // even while the account has an open perpetual position.
-  const { payload } = await gateRequest({
-    ...options,
-    path: FUTURES_POSITIONS_PATH,
-    query: { holding: true, limit: 100, offset: 0 },
-  });
-  const positions = normalizeGatePositions(payload);
-  if (positions.length) return positions;
+  const rows = [];
+  for (let page = 0; page < 20; page++) {
+    const { payload } = await gateRequest({ ...options, path: FUTURES_POSITIONS_PATH,
+      query: { holding: true, limit: 100, offset: page * 100 } });
+    normalizeGatePositions(payload);
+    rows.push(...payload);
+    if (payload.length < 100) break;
+    if (page === 19) throw new GateApiError('포지션 목록이 완전하지 않습니다.', { code: 'POSITIONS_PAGINATION_LIMIT' });
+  }
+  const positions = normalizeGatePositions(rows);
+  const known = new Set(positions.map((p) => p.contract));
+  const missingContracts = [...new Set(expectedContracts)].filter((c) => !known.has(c));
+  if (positions.length && !missingContracts.length) return positions;
 
   // Some unified accounts return an empty list here even with open positions.
   // Discover recently traded contracts, then use Gate's authoritative
   // single-contract endpoint for each candidate instead of special-casing BTC.
-  const recent = await gateRequest({
-    ...options,
-    path: FUTURES_TRADES_PATH,
-    query: { limit: 100, offset: 0 },
+  const recent = positions.length ? { payload: [] } : await gateRequest({
+    ...options, path: FUTURES_TRADES_PATH, query: { limit: 100, offset: 0 },
   });
-  const candidates = [...new Set((Array.isArray(recent.payload) ? recent.payload : [])
+  if (!Array.isArray(recent.payload)) throw new GateApiError('최근 거래 조회 결과가 올바르지 않습니다.', { code: 'INVALID_TRADES_RESPONSE' });
+  const candidates = [...new Set([...missingContracts, ...recent.payload
     .map((trade) => String(trade.contract || ''))
-    .filter(Boolean))].slice(0, 20);
+    .filter(Boolean)])];
   const singles = [];
   for (const contract of candidates) {
     try {
@@ -342,7 +350,7 @@ export async function getFuturesPositions(options) {
       if (!notFound) throw error;
     }
   }
-  return normalizeGatePositions(singles);
+  return normalizeGatePositions([...rows, ...singles]);
 }
 
 export async function setFuturesPositionMode({ positionMode = 'dual', ...options }) {
@@ -409,10 +417,11 @@ export async function getFuturesContracts({ fetchImpl = fetch, baseUrl = GATE_AP
   }));
 }
 
-export async function placeFuturesOrder({ contract, size, reduceOnly = false, text, slippageRatio = 0.005, pid = null, ...options }) {
+export async function placeFuturesOrder({ contract, size, reduceOnly = false, text, slippageRatio = 0.005, pid = null, expiresAtMs = Date.now() + 5_000, ...options }) {
+  if (!Number.isFinite(expiresAtMs) || expiresAtMs <= Date.now()) throw new GateApiError('주문 계획이 만료되었습니다.', { code: 'ORDER_PLAN_STALE' });
   const requestBody = { contract, size: String(size), price: '0', tif: 'ioc', reduce_only: Boolean(reduceOnly), text, market_order_slip_ratio: String(slippageRatio) };
   if (pid != null && pid !== '') requestBody.pid = String(pid);
-  const { payload, status } = await gateRequest({ ...options, method: 'POST', path: FUTURES_ORDERS_PATH, body: requestBody, expiresAtMs: Date.now() + 5_000 });
+  const { payload, status } = await gateRequest({ ...options, method: 'POST', path: FUTURES_ORDERS_PATH, body: requestBody, expiresAtMs: Math.min(expiresAtMs, Date.now() + 5_000) });
   return { payload, status, requestBody };
 }
 
@@ -423,7 +432,8 @@ export async function getFuturesOrder({ orderId, ...options }) {
 
 export async function listFuturesOrders({ status = 'finished', contract, limit = 100, ...options }) {
   const { payload } = await gateRequest({ ...options, path: FUTURES_ORDERS_PATH, query: { status, contract, limit } });
-  return Array.isArray(payload) ? payload : [];
+  if (!Array.isArray(payload)) throw new GateApiError('주문 목록 조회 결과가 올바르지 않습니다.', { code: 'INVALID_ORDERS_RESPONSE' });
+  return payload;
 }
 
 export async function findFuturesOrderByText({ text, contract, ...options }) {
@@ -457,21 +467,24 @@ export async function getMyFuturesTradesInRange({ from, to, limit = 1000, offset
 }
 
 export function summarizeGateOrder(order, trades = []) {
-  const originalSize = Number(order?.size || 0);
-  const left = Number(order?.left || 0);
-  let filledSize = originalSize - left;
+  const originalSize = Number(order?.size);
+  const left = Number(order?.left);
+  if (order?.id == null || order?.size == null || order?.left == null
+    || !Number.isFinite(originalSize) || !Number.isFinite(left) || originalSize === 0
+    || Math.abs(left) > Math.abs(originalSize)) {
+    throw new GateApiError('주문 체결 수량을 검증할 수 없습니다.', { code: 'INVALID_ORDER_RESPONSE', outcomeUnknown: true });
+  }
+  const filledSize = Math.sign(originalSize) * (Math.abs(originalSize) - Math.abs(left));
   let averageFillPrice = Number(order?.fill_price || 0) || null;
   if (trades.length) {
-    const signed = Math.sign(originalSize || Number(trades[0]?.size || 0)) || 1;
     const absoluteSize = trades.reduce((sum, trade) => sum + Math.abs(Number(trade.size || 0)), 0);
     const notional = trades.reduce((sum, trade) => sum + Math.abs(Number(trade.size || 0)) * Number(trade.price || 0), 0);
-    filledSize = signed * absoluteSize;
-    averageFillPrice = absoluteSize ? notional / absoluteSize : averageFillPrice;
+    if (Math.abs(absoluteSize - Math.abs(filledSize)) < 1e-9 && absoluteSize > 0) averageFillPrice = notional / absoluteSize;
   }
   const status = String(order?.status || '').toLowerCase();
   const finishAs = String(order?.finish_as || '').toLowerCase();
   const final = status === 'finished';
   const fullyFilled = final && left === 0 && Math.abs(filledSize) > 0;
   const partiallyFilled = Math.abs(filledSize) > 0 && !fullyFilled;
-  return { gateOrderId: order?.id == null ? null : String(order.id), filledSize, averageFillPrice, finalStatus: fullyFilled ? 'FILLED' : partiallyFilled ? 'PARTIALLY_FILLED' : final ? (finishAs === 'cancelled' ? 'CANCELLED' : 'REJECTED') : 'ACKNOWLEDGED', finishAs: finishAs || null, left };
+  return { gateOrderId: String(order.id), filledSize, averageFillPrice, finalStatus: fullyFilled ? 'FILLED' : partiallyFilled ? 'PARTIALLY_FILLED' : final ? (finishAs === 'cancelled' ? 'CANCELLED' : 'REJECTED') : 'ACKNOWLEDGED', finishAs: finishAs || null, left, terminal: final };
 }
