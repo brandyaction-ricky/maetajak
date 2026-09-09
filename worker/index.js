@@ -98,6 +98,7 @@ export async function runTradingCycle() {
   state.trading = true;
   try {
     await runner.heartbeat(false);
+    await runner.cancelRequestedOpenOrders();
     const observation = await runner.syncOnce();
     if (readinessCheck && tradingMode === 'DRY_RUN' && observation.validatedResumes > 0) await runner.heartbeat(true);
     const orderAnomaly = await runner.detectAndHaltOrderAnomaly();
