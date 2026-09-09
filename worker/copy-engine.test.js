@@ -6,6 +6,7 @@ import {
   calculateCopyableMasterSize,
   calculateDeltaOrder,
   calculateTargetPosition,
+  capLockedTargetToCurrentRisk,
   deriveCopyState,
   detectManualOverride,
   roundTowardZeroToStep,
@@ -17,6 +18,22 @@ test('onboarding baseline ignores existing exposure but copies later additions',
   assert.deepEqual(calculateCopyableMasterSize({ masterSize: 8, baselineSize: 12 }), { copyableSize: 0, clearBaseline: false });
   assert.deepEqual(calculateCopyableMasterSize({ masterSize: 0, baselineSize: 12 }), { copyableSize: 0, clearBaseline: true });
   assert.deepEqual(calculateCopyableMasterSize({ masterSize: -4, baselineSize: 12 }), { copyableSize: -4, clearBaseline: true });
+});
+
+test('a locked target never grows from equity or price recovery alone', () => {
+  assert.equal(capLockedTargetToCurrentRisk({
+    lockedTargetSize: 87, protectedSize: 0, memberEquity: 2_000,
+    memberMarkPrice: 164, memberQuantoMultiplier: 0.01,
+    maxPositionRatio: 40, sizeStep: 1,
+  }), 87);
+});
+
+test('a locked target can only shrink when the current risk cap tightens', () => {
+  assert.equal(capLockedTargetToCurrentRisk({
+    lockedTargetSize: 100, protectedSize: 20, memberEquity: 100,
+    memberMarkPrice: 10, memberQuantoMultiplier: 1,
+    maxPositionRatio: 40, sizeStep: 1,
+  }), 20);
 });
 
 test('target position follows master exposure and member copy ratio', () => {

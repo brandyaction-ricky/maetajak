@@ -7,7 +7,8 @@ import {
 } from './gate.js';
 import {
   buildGateOrderText, buildIdempotencyKey, calculateDeltaOrder,
-  calculateCopyableMasterSize, calculateTargetPosition, deriveCopyState, detectManualOverride,
+  calculateCopyableMasterSize, calculateTargetPosition, capLockedTargetToCurrentRisk,
+  deriveCopyState, detectManualOverride,
 } from './copy-engine.js';
 import { aggregateMemberPerformance, kstDayRange } from './performance.js';
 import { resumePositions, sameResumePositions, validateResumeSnapshot, validateResumePreview, RESUME_MAX_AGE_MS } from './member-resume.js';
@@ -115,7 +116,8 @@ export function planMemberPositions({ cycleId, system, master, member, contracts
   const previousStates = new Map((member.previous_states || []).map((state) => [positionKey(state), state]));
   const masterBaselines = new Map((member.master_baselines || []).map((position) => [positionKey(position), Number(position.size || 0)]));
   const memberPositionBaselines = new Map((member.member_position_baselines || []).map((position) => [positionKey(position), Number(position.size || 0)]));
-  const symbols = new Set([...masterPositions.keys(), ...memberPositions.keys(), ...previousStates.keys(), ...masterBaselines.keys(), ...memberPositionBaselines.keys()]);
+  const targetAnchors = new Map((member.target_anchors || []).map((anchor) => [positionKey(anchor), anchor]));
+  const symbols = new Set([...masterPositions.keys(), ...memberPositions.keys(), ...previousStates.keys(), ...masterBaselines.keys(), ...memberPositionBaselines.keys(), ...targetAnchors.keys()]);
   const planned = [];
   for (const symbol of symbols) {
     const { contract, positionSide } = parsePositionKey(symbol);
@@ -139,6 +141,27 @@ export function planMemberPositions({ cycleId, system, master, member, contracts
       copyRatio: member.copy_ratio, maxPositionRatio: Math.max(0, member.max_position_ratio - protectedRatio), sizeStep: contractInfo.sizeStep,
     });
     target.targetSize += protectedMemberSize;
+    const anchor = targetAnchors.get(symbol);
+    const anchorMatchesResume = Boolean(anchor?.resume_version && member.resume_version
+      && anchor.resume_version === member.resume_version);
+    const masterQuantityUnchanged = anchorMatchesResume
+      && Number(anchor.master_copyable_size) === Number(masterPosition.size);
+    if (masterQuantityUnchanged) {
+      target.targetSize = capLockedTargetToCurrentRisk({
+        lockedTargetSize: Number(anchor.target_size),
+        protectedSize: protectedMemberSize,
+        memberEquity: member.total,
+        memberMarkPrice: memberPosition.markPrice || markPrice,
+        memberQuantoMultiplier: contractInfo.quantoMultiplier,
+        maxPositionRatio: member.max_position_ratio,
+        sizeStep: contractInfo.sizeStep,
+      });
+      target.targetLockReason = target.targetSize === Number(anchor.target_size)
+        ? 'MASTER_QUANTITY_UNCHANGED'
+        : 'CURRENT_RISK_CAP_REDUCTION';
+    } else {
+      target.targetLockReason = anchorMatchesResume ? 'MASTER_QUANTITY_CHANGED' : 'TARGET_ANCHOR_INITIALIZED';
+    }
     target.targetNotional = Math.abs(target.targetSize) * (memberPosition.markPrice || markPrice) * contractInfo.quantoMultiplier;
     const previous = previousStates.get(symbol);
     // An outstanding order may already have filled at Gate even when the
@@ -200,7 +223,10 @@ export function planMemberPositions({ cycleId, system, master, member, contracts
       state, delta_size: delta.deltaSize, previous_actual_size: previous?.actual_size ?? null,
       unexplained_delta: manual.unexplainedDelta,
       master_baseline_size: masterBaselines.get(symbol) || 0,
+      master_copyable_size: masterPosition.size,
       member_baseline_size: protectedMemberSize,
+      target_resume_version: member.resume_version || null,
+      target_lock_reason: target.targetLockReason,
       baseline_clear_requested: baseline.clearBaseline,
       pause_reason: member.resume_required ? 'MEMBER_RESUME_VALIDATION_REQUIRED'
         : manual.detected ? 'MEMBER_POSITION_CHANGED_OUTSIDE_PLATFORM'
@@ -393,10 +419,11 @@ export class TradingRunner {
     const cycleId = randomUUID();
     this.currentCopyEventId = cycleId;
     const contextStartedAt = Date.now();
-    const [rawContext, observationGuards, resumeContext] = await Promise.all([
+    const [rawContext, observationGuards, resumeContext, targetAnchors] = await Promise.all([
       this.rpc('get_copy_worker_context'),
       this.rpc('get_copy_order_observation_guards'),
       this.rpc('get_copy_resume_context'),
+      this.rpc('get_copy_target_anchors'),
     ]);
     const context = applyOrderObservationGuards(rawContext, observationGuards);
     const timings = { context_ms: elapsedMs(contextStartedAt) };
@@ -406,6 +433,12 @@ export class TradingRunner {
     };
     const memberContexts = Array.isArray(context.members) ? context.members : [];
     const sessions = new Map((resumeContext || []).map((s) => [s.trading_account_id, s]));
+    const anchorsByAccount = new Map();
+    for (const anchor of targetAnchors || []) {
+      const anchors = anchorsByAccount.get(anchor.trading_account_id) || [];
+      anchors.push(anchor);
+      anchorsByAccount.set(anchor.trading_account_id, anchors);
+    }
     const contractsStartedAt = Date.now();
     let contracts = memberContexts.length ? await this.loadContracts() : new Map();
     timings.contracts_ms = elapsedMs(contractsStartedAt);
@@ -457,6 +490,7 @@ export class TradingRunner {
         memberContext.resume_required = session?.state === 'CLOSING' ? !memberContext.close_positions_requested
           : session?.state !== 'ACTIVE' || session?.baseline_version !== session?.version;
         memberContext.resume_version = session?.version || null;
+        memberContext.target_anchors = anchorsByAccount.get(memberContext.trading_account_id) || [];
         if (['REQUESTED', 'VALIDATED'].includes(session?.state)) {
           const resume = await this.processMemberResume({ session, masterContext: context.master, memberContext, contracts, system: context.system });
           if (resume?.validated) validatedResumes++;
@@ -568,7 +602,7 @@ export class TradingRunner {
     };
     const legacyPayload = { cycle_id: cycleId, source_version: sourceHash({ observedAt, master: master.positions }), observed_at: observedAt, master: recordedMaster, members };
     const legacyWriteStartedAt = Date.now();
-    await this.rpc('record_copy_worker_cycle', { p_payload: legacyPayload });
+    await this.rpc('record_copy_worker_cycle_with_target_anchors', { p_payload: legacyPayload });
     timings.legacy_write_ms = elapsedMs(legacyWriteStartedAt);
     if (this.mode === 'DRY_RUN' && this.logger && dryRunPlans.length) {
       const planHash = sourceHash(dryRunPlans);
