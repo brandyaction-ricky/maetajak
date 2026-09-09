@@ -12,6 +12,8 @@ const EVENT_MESSAGES = {
   COPY_ORDER_QUANTITY_AUTO_HALTED: { title: '주문 수량 불일치 감지', state: '전체 카피 중단', description: '계획한 수량과 거래소가 접수한 수량이 달라 신규 주문을 차단했습니다.', action: '해당 주문과 실제 포지션 수량을 확인한 뒤 재개해 주세요.' },
   MEMBER_COPY_RESUME_WAITING: { title: '회원 카피 재개 대기', state: '해당 회원 대기', description: '안전 확인 조건이 아직 충족되지 않아 회원 카피를 재개하지 않았습니다.', action: '표시된 대기 사유를 확인해 주세요. 조건이 정상화되면 다시 검증합니다.' },
   COPY_POSITION_ENTRY_FILLED: { title: '포지션 진입 체결', state: '체결 완료', description: '회원 계정의 신규 진입 또는 증액 주문이 체결되었습니다.', action: '워커가 실제 포지션 반영을 다시 확인한 뒤 다음 주문을 계산합니다.' },
+  OPEN_ORDERS_CANCELLED: { title: '미체결 주문 취소 완료', state: '회원 카피 중단 유지', description: 'Gate.io의 일반 무기한 선물 미체결 주문을 모두 취소하고 0건을 재확인했습니다.', action: '현재 포지션은 유지됩니다. 해당 회원을 다시 안전 검증한 뒤 재개해 주세요.' },
+  OPEN_ORDER_CANCEL_FAILED: { title: '미체결 주문 취소 실패', state: '회원 카피 중단 유지', description: 'Gate.io 미체결 주문을 모두 취소했는지 확인하지 못했습니다.', action: '해당 계정은 자동 재개하지 않습니다. 오류와 Gate.io 주문 화면을 확인해 주세요.' },
 };
 
 const DETAIL_LABELS = {
@@ -19,6 +21,7 @@ const DETAIL_LABELS = {
   target_leverage: '레버리지', margin_mode: '증거금 모드', result_status: '체결 상태', failures: '연속 실패',
   error_code: '오류 원인', reason: '감지 사유', duplicate_count: '중복 주문 수', mode: '실행 모드', action: '현재 처리',
   gate_uid: 'Gate UID', copy_event_id: '추적 ID', intent_id: '주문 추적 ID',
+  cancelled_count: '취소 주문 수', remaining_count: '남은 미체결 주문 수',
 };
 
 const VALUE_LABELS = {
@@ -27,6 +30,7 @@ const VALUE_LABELS = {
   GATE_TIMEOUT: 'Gate.io 응답 시간 초과', ORDER_QUANTITY_MISMATCH: '계획 수량과 거래소 주문 수량 불일치',
   RESUME_UNRESOLVED_ORDERS: '확인되지 않은 이전 주문이 남아 있음', RESUME_OPEN_EXCHANGE_ORDERS: '거래소에 미체결 주문이 남아 있음',
   RESUME_SNAPSHOT_STALE: '포지션 조회 시간이 오래됨', RESUME_SNAPSHOT_CHANGED: '재확인 중 포지션 수량이 변경됨',
+  OPEN_FUTURES_ORDERS_REMAIN: '취소 후에도 거래소에 미체결 주문이 남아 있음',
 };
 
 function koreanTime(value) {

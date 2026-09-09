@@ -436,6 +436,19 @@ export async function listFuturesOrders({ status = 'finished', contract, limit =
   return payload;
 }
 
+export async function cancelAllOpenFuturesOrders(options = {}) {
+  const before = await listFuturesOrders({ ...options, status: 'open', limit: 100 });
+  if (!before.length) return { cancelledCount: 0, remainingCount: 0 };
+  await gateRequest({ ...options, method: 'DELETE', path: FUTURES_ORDERS_PATH });
+  const remaining = await listFuturesOrders({ ...options, status: 'open', limit: 100 });
+  if (remaining.length) {
+    throw new GateApiError('미체결 주문 취소 후 열린 주문이 남아 있습니다.', {
+      code: 'OPEN_FUTURES_ORDERS_REMAIN',
+    });
+  }
+  return { cancelledCount: before.length, remainingCount: 0 };
+}
+
 export async function findFuturesOrderByText({ text, contract, ...options }) {
   for (const status of ['open', 'finished']) {
     const orders = await listFuturesOrders({ ...options, status, contract });

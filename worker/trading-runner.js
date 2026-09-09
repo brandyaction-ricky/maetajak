@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import {
-  GateApiError, findFuturesOrderByText, getFuturesAccount, getFuturesAccountBook, getFuturesContracts, listFuturesOrders,
+  GateApiError, cancelAllOpenFuturesOrders, findFuturesOrderByText, getFuturesAccount, getFuturesAccountBook, getFuturesContracts, listFuturesOrders,
   getMyFuturesTradesInRange,
   getFuturesOrder, getFuturesPositions, getOrderTrades, placeFuturesOrder, setFuturesLeverage,
   safeGateErrorLabel, setFuturesPositionMode, summarizeGateOrder,
@@ -693,6 +693,50 @@ export class TradingRunner {
           error_code: errorCode,
         });
       }
+    }
+    return jobs?.length || 0;
+  }
+  async cancelRequestedOpenOrders(limit = 5) {
+    const jobs = await this.rpc('claim_open_order_cancel_jobs', { p_limit: limit });
+    for (const job of jobs || []) {
+      let result;
+      let errorCode = null;
+      try {
+        result = await cancelAllOpenFuturesOrders({
+          apiKey: job.api_key,
+          secretKey: job.secret_key,
+          baseUrl: this.baseUrl,
+          fetchImpl: this.fetchImpl,
+          channelId: this.channelId,
+        });
+      } catch (error) {
+        errorCode = safeError(error, 'OPEN_ORDER_CANCEL');
+        result = { cancelledCount: 0, remainingCount: -1 };
+      }
+      await this.rpc('complete_open_order_cancel_job', {
+        p_job_id: job.job_id,
+        p_success: errorCode == null,
+        p_cancelled_count: result.cancelledCount,
+        p_remaining_count: result.remainingCount,
+        p_error_code: errorCode,
+      });
+      if (this.onSafetyEvent) {
+        await this.onSafetyEvent({
+          event: errorCode ? 'OPEN_ORDER_CANCEL_FAILED' : 'OPEN_ORDERS_CANCELLED',
+          severity: errorCode ? 'CRITICAL' : 'WARNING',
+          details: {
+            cancelled_count: result.cancelledCount,
+            remaining_count: result.remainingCount,
+            error_code: errorCode,
+          },
+        });
+      }
+      if (this.logger) this.logger(errorCode ? 'open_order_cancel_failed' : 'open_orders_cancelled', {
+        job_id: job.job_id,
+        cancelled_count: result.cancelledCount,
+        remaining_count: result.remainingCount,
+        error_code: errorCode,
+      });
     }
     return jobs?.length || 0;
   }
