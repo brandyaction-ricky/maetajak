@@ -125,7 +125,19 @@ tbody tr:hover { background: #141416; }
 .admin-log-tabs button:focus-visible { outline: 2px solid var(--blue); outline-offset: 1px; }
 .admin-execution-filters { display: grid; grid-template-columns: 150px minmax(190px, 1fr) minmax(150px, .7fr) 150px auto; gap: 8px; align-items: end; margin-bottom: 14px; }
 .admin-execution-filters label { display: grid; gap: 6px; color: var(--muted); font-size: 10px; }
-.admin-execution-filters select, .admin-execution-filters input { width: 100%; min-height: 38px; padding: 0 10px; border: 1px solid var(--line); border-radius: 8px; background: #111; color: var(--text); color-scheme: dark; }
+.admin-execution-filters select, .admin-execution-filters input { width: 100%; min-width: 0; min-height: 38px; padding: 0 10px; border: 1px solid var(--line); border-radius: 8px; outline: 0; background-color: #111; color: var(--text); color-scheme: dark; }
+.admin-execution-filters select,
+.admin-position-owner select {
+  padding-right: 34px;
+  appearance: none;
+  -webkit-appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 14 14' fill='none'%3E%3Cpath d='m3.5 5.25 3.5 3.5 3.5-3.5' stroke='%239a9aa3' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-position: right 11px center;
+  background-repeat: no-repeat;
+  background-size: 14px;
+}
+.admin-execution-filters select:focus, .admin-execution-filters input:focus { border-color: #666671; box-shadow: 0 0 0 3px rgba(244, 244, 245, .06); }
+.admin-execution-filters select:disabled, .admin-execution-filters input:disabled { opacity: .55; }
 .admin-execution-filters .btn { min-height: 38px; }
 .admin-execution-table { min-width: 1120px; }
 .execution-member-email, .execution-side { display: block; margin-top: 4px; color: var(--muted); font-size: 9px; }
@@ -135,7 +147,10 @@ tbody tr:hover { background: #141416; }
   .admin-log-tabs { width: 100%; }
   .admin-log-tabs button { flex: 1; }
   .admin-execution-filters { grid-template-columns: 1fr 1fr; }
+  .admin-execution-filters select, .admin-execution-filters input { min-height: 44px; font-size: 16px; }
   .admin-execution-filters .btn { grid-column: 1 / -1; }
+  [data-admin-log-panel="executions"] > .section-head { align-items: flex-start; }
+  [data-admin-log-panel="executions"] > .section-head .btn { flex: 0 0 auto; white-space: nowrap; }
 }
 
 .member-dashboard-kpis, .admin-operations-kpis { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; margin-bottom: 12px; }
@@ -156,7 +171,7 @@ tbody tr:hover { background: #141416; }
 .admin-dashboard-positions .master-position-card { min-height: 226px; }
 .admin-position-controls { display: flex; align-items: flex-end; gap: 8px; }
 .admin-position-owner { display: grid; gap: 5px; color: var(--muted); font-size: 9px; }
-.admin-position-owner select { min-width: 172px; min-height: 36px; padding: 0 30px 0 10px; border: 1px solid var(--line); border-radius: 9px; outline: 0; background: var(--panel); color: var(--text); font-size: 11px; font-weight: 700; }
+.admin-position-owner select { min-width: 172px; min-height: 36px; padding-left: 10px; border: 1px solid var(--line); border-radius: 9px; outline: 0; background-color: var(--panel); color: var(--text); color-scheme: dark; font-size: 11px; font-weight: 700; }
 .admin-position-owner select:focus { border-color: #666671; box-shadow: 0 0 0 3px rgba(244, 244, 245, .06); }
 .member-dashboard-kpis .kpi { min-height: 106px; padding: 14px; }
 .member-dashboard-kpis .kpi label { font-size: 10px; }
@@ -477,7 +492,22 @@ tbody tr:hover { background: #141416; }
   .top { padding: 0 12px; }
   .top-leading { gap: 9px; }
   .top-leading > .mobile { width: 34px; height: 34px; min-height: 34px; flex-basis: 34px; }
-  .member-dashboard-kpis, .admin-operations-kpis, .kpis, .master-position-grid, .member-open-position-grid { grid-template-columns: 1fr; }
+  .member-dashboard-kpis, .kpis, .member-open-position-grid { grid-template-columns: 1fr; }
+  .admin-operations-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; }
+  .admin-operations-kpis .kpi { min-height: 112px; padding: 14px 12px; }
+  .admin-operations-kpis .kpi:last-child:nth-child(odd) { grid-column: 1 / -1; }
+  .admin-operations-kpis .kpi strong { font-size: 20px; }
+  .admin-operations-kpis .kpi small { white-space: normal; }
+  .master-position-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; }
+  .admin-dashboard-positions .master-position-card { min-height: 0; padding: 12px; }
+  .master-position-card-head { align-items: flex-start; flex-direction: column; }
+  .master-side { width: 100%; justify-content: space-between; }
+  .master-position-pnl { min-height: 74px; align-items: flex-start; flex-direction: column; gap: 7px; margin: 13px 0; padding-bottom: 12px; }
+  .master-position-pnl strong { font-size: 17px; }
+  .master-position-metrics { grid-template-columns: 1fr; gap: 9px; }
+  .master-position-metrics b { overflow-wrap: anywhere; font-size: 10px; }
+  .master-position-sync { align-items: flex-start; flex-direction: column; gap: 4px; }
+  .master-position-sync time { line-height: 1.4; }
   .master-filters { width: 100%; }
   .master-filters button { flex: 1; }
   .admin-analysis-members { display: grid; grid-template-columns: 1fr 1fr; }
