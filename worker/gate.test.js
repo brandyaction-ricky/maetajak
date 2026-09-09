@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   buildGateHeaders, FUTURES_ACCOUNT_PATH, GateApiError, gateRequest, getFuturesAccount, getFuturesContracts, getFuturesPositions,
-  mapGateError, matchingKeyInfo, normalizeGatePermissions, normalizeGatePositions, parseGateJson, placeFuturesOrder,
+  cancelAllOpenFuturesOrders, mapGateError, matchingKeyInfo, normalizeGatePermissions, normalizeGatePositions, parseGateJson, placeFuturesOrder,
   safeGateErrorLabel,
   setFuturesLeverage, setFuturesPositionMode, summarizeGateOrder,
   validateGateChannelId, verifyGateAccount,
@@ -236,6 +236,28 @@ test('live write is blocked when API Broker Channel ID is missing', async () => 
     placeFuturesOrder({ apiKey: 'api-key', secretKey: 'secret-key', contract: 'BTC_USDT', size: 1, text: 't-mtj-12345678901234567890' }),
     (error) => error instanceof GateApiError && error.code === 'INVALID_GATE_CHANNEL_ID',
   );
+});
+
+test('open futures orders are cancelled and verified empty before success', async () => {
+  const calls = [];
+  const result = await cancelAllOpenFuturesOrders({
+    apiKey: 'api-key', secretKey: 'secret-key', channelId: 'maetajak',
+    fetchImpl: async (url, options) => {
+      calls.push({ url, method: options.method });
+      if (options.method === 'DELETE') return new Response(JSON.stringify([{ id: '1' }]), { status: 200 });
+      return new Response(JSON.stringify(calls.length === 1 ? [{ id: '1', status: 'open' }] : []), { status: 200 });
+    },
+  });
+  assert.deepEqual(result, { cancelledCount: 1, remainingCount: 0 });
+  assert.deepEqual(calls.map((call) => call.method), ['GET', 'DELETE', 'GET']);
+  assert.equal(calls[1].url, 'https://api.gateio.ws/api/v4/futures/usdt/orders');
+});
+
+test('open futures order cancellation fails closed when an order remains', async () => {
+  await assert.rejects(cancelAllOpenFuturesOrders({
+    apiKey: 'api-key', secretKey: 'secret-key', channelId: 'maetajak',
+    fetchImpl: async (_url, options) => new Response(JSON.stringify(options.method === 'DELETE' ? [] : [{ id: '1' }]), { status: 200 }),
+  }), (error) => error instanceof GateApiError && error.code === 'OPEN_FUTURES_ORDERS_REMAIN');
 });
 
 test('write timeout is UNKNOWN and must not be blindly retried', async () => {
