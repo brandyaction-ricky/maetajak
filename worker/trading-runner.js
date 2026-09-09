@@ -696,4 +696,36 @@ export class TradingRunner {
     }
     return jobs?.length || 0;
   }
+  async deliverEntryAlerts(limit = 10) {
+    const jobs = await this.rpc('claim_copy_entry_alerts', { p_limit: limit });
+    let delivered = 0;
+    for (const job of jobs || []) {
+      let sent = false;
+      let errorCode = null;
+      try {
+        const result = this.onSafetyEvent
+          ? await this.onSafetyEvent({ event: job.event_type, severity: 'INFO', details: job.details || {} })
+          : { sent: false, reason: 'ALERT_DESTINATION_NOT_CONFIGURED' };
+        sent = result?.sent === true;
+        errorCode = sent ? null : safeError(new Error(result?.reason || 'ALERT_DELIVERY_FAILED'), 'ENTRY_ALERT');
+      } catch (error) {
+        errorCode = safeError(error, 'ENTRY_ALERT');
+      }
+      try {
+        await this.rpc('complete_copy_entry_alert', {
+          p_alert_id: job.alert_id, p_sent: sent, p_error_code: errorCode,
+        });
+      } catch (error) {
+        if (this.logger) this.logger('entry_alert_completion_failed', {
+          alert_id: job.alert_id, error_code: safeError(error, 'ENTRY_ALERT_COMPLETION'),
+        });
+        continue;
+      }
+      if (sent) delivered++;
+      if (this.logger) this.logger(sent ? 'entry_alert_delivered' : 'entry_alert_delivery_deferred', {
+        alert_id: job.alert_id, error_code: errorCode,
+      });
+    }
+    return delivered;
+  }
 }

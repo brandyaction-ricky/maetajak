@@ -129,18 +129,20 @@ export async function runTradingCycle() {
     const submitStartedAt = Date.now();
     const submitted = await runner.submitOrders();
     const submitMs = Date.now() - submitStartedAt;
+    const alertsDelivered = await runner.deliverEntryAlerts();
     await runner.reportCycle(true);
     // The shadow projection is intentionally written only after reconciliation,
     // order submission, and the authoritative cycle report have completed. Its
     // failure cannot delay or halt live copy execution.
     const currentState = await runner.syncCurrentState(observation.currentStatePayload);
-    if (observation.masterObserved || observation.observed || reconciled || submitted) log('cycle_complete', {
+    if (observation.masterObserved || observation.observed || reconciled || submitted || alertsDelivered) log('cycle_complete', {
       copy_event_id: observation.copyEventId,
       observed: observation.observed,
       masterObserved: observation.masterObserved,
       intents: observation.intents,
       reconciled,
       submitted,
+      alerts_delivered: alertsDelivered,
       current_state_synced: currentState.synced,
       timings: {
         ...observation.timings,

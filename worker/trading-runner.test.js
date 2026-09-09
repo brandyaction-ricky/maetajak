@@ -439,6 +439,25 @@ test('LIVE applies Master leverage to the correct hedge leg before submitting an
   assert.equal(completions[0].p_result_status, 'FILLED');
 });
 
+test('entry alert delivery reports the durable job result without affecting order processing', async () => {
+  const alerts = [];
+  const completions = [];
+  const runner = new TradingRunner({
+    supabase: {}, baseUrl: 'https://api.gateio.ws', workerId: 'worker-test', workerVersion: '0.4.0',
+    publicIp: '192.0.2.1', channelId: 'maetajak', mode: 'LIVE',
+    onSafetyEvent: async (alert) => { alerts.push(alert); return { sent: true, provider: 'telegram' }; },
+  });
+  runner.rpc = async (name, parameters = {}) => {
+    if (name === 'claim_copy_entry_alerts') return [{ alert_id: 7, event_type: 'COPY_POSITION_ENTRY_FILLED',
+      details: { member: '테스트 회원', contract: 'BTC_USDT', position_side: 'LONG', filled_size: 2 } }];
+    if (name === 'complete_copy_entry_alert') { completions.push(parameters); return null; }
+    throw new Error(`unexpected rpc: ${name}`);
+  };
+  assert.equal(await runner.deliverEntryAlerts(), 1);
+  assert.equal(alerts[0].event, 'COPY_POSITION_ENTRY_FILLED');
+  assert.deepEqual(completions[0], { p_alert_id: 7, p_sent: true, p_error_code: null });
+});
+
 test('current-state shadow payload excludes credentials and preserves hedge legs', () => {
   const payload = buildCurrentStatePayload({
     cycleId: 'fcd65a4f-ef1e-4f3c-958b-dac3c12f0b94',

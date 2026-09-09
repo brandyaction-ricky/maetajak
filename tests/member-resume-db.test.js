@@ -18,6 +18,7 @@ before(async () => {
   await db.exec('insert into public.copy_system_control default values');
   await db.exec(readFileSync('supabase/migrations/20260909011308_safe_member_resume.sql', 'utf8'));
   await db.exec(readFileSync('supabase/migrations/20260909011702_fix_resume_reconciliation_alias.sql', 'utf8'));
+  await db.exec(readFileSync('supabase/migrations/20260909014924_copy_entry_alert_outbox.sql', 'utf8'));
   await db.exec('delete from public.copy_system_control');
 });
 after(async () => db.close());
@@ -83,6 +84,22 @@ test('reconciliation cancels only expired claims that never received submission 
   await sql("update private.copy_order_intents set submitted_at=now()-interval '1 minute' where id=$1", [id]);
   await sql('select * from public.claim_copy_reconciliation_jobs(10)');
   assert.equal((await one('select status from private.copy_order_intents where id=$1', [id])).status, 'CANCELLED');
+});
+
+test('a completed entry fill creates one durable Korean alert delivery job', async () => {
+  const { version } = await activated();
+  const id = await intent(version);
+  const [job] = await claim();
+  await sql("select public.complete_copy_order_attempt($1,'FILLED','qa-entry',2,101.25,201,'filled',null,$2)",
+    [job.intent_id, { terminal: true }]);
+  await worker();
+  const alerts = (await sql('select * from public.claim_copy_entry_alerts(10)')).rows;
+  assert.equal(alerts.length, 1);
+  assert.equal(alerts[0].details.contract, 'BTC_USDT');
+  assert.equal(Number(alerts[0].details.filled_size), 2);
+  await sql('select public.complete_copy_entry_alert($1,true,null)', [alerts[0].alert_id]);
+  assert.deepEqual((await sql('select * from public.claim_copy_entry_alerts(10)')).rows, []);
+  assert.equal((await one('select count(*)::int n from private.copy_entry_alert_outbox where intent_id=$1', [id])).n, 1);
 });
 
 test('resume requests are idempotent, paused, and invalidate old unsubmitted plans', async () => {

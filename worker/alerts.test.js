@@ -40,9 +40,29 @@ test('worker alert sends Telegram messages without leaking the bot token into th
   assert.equal(request.url, `https://api.telegram.org/bot${botToken}/sendMessage`);
   const body = JSON.parse(request.options.body);
   assert.equal(body.chat_id, '-1001234567890');
-  assert.match(body.text, /\[CRITICAL\] maetajak copy worker/);
-  assert.match(body.text, /GATE_TIMEOUT retry stopped/);
+  assert.match(body.text, /매타작 · 카피트레이딩 자동 중단/);
+  assert.match(body.text, /상태: 전체 카피 중단/);
+  assert.match(body.text, /오류 원인: GATE_TIMEOUT retry stopped/);
+  assert.match(body.text, /대응:/);
   assert.doesNotMatch(request.options.body, new RegExp(botToken.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+});
+
+test('position entry alert explains the fill in Korean', async () => {
+  let request;
+  await sendWorkerAlert({
+    telegramBotToken: '123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcdef', telegramChatId: '-1001234567890',
+    event: 'COPY_POSITION_ENTRY_FILLED', severity: 'INFO',
+    details: { member: '테스트 회원', contract: 'BTC_USDT', position_side: 'LONG', filled_size: 12,
+      average_fill_price: 100000, target_leverage: 5, margin_mode: 'cross', result_status: 'FILLED' },
+    fetchImpl: async (url, options) => { request = { url, options }; return { ok: true, status: 200 }; },
+  });
+  const message = JSON.parse(request.options.body).text;
+  assert.match(message, /포지션 진입 체결/);
+  assert.match(message, /회원: 테스트 회원/);
+  assert.match(message, /방향: 롱/);
+  assert.match(message, /레버리지: 5배/);
+  assert.match(message, /증거금 모드: 교차/);
+  assert.match(message, /체결 상태: 전체 체결/);
 });
 
 test('worker alert fails closed for incomplete or invalid Telegram configuration', async () => {
