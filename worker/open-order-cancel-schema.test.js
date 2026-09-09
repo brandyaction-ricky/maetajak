@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
 const migration = readFileSync(new URL('../supabase/migrations/20260909023500_open_order_cancellation_jobs.sql', import.meta.url), 'utf8');
+const eventMigration = readFileSync(new URL('../supabase/migrations/20260909025000_allow_open_order_cancel_events.sql', import.meta.url), 'utf8');
 const runner = readFileSync(new URL('./trading-runner.js', import.meta.url), 'utf8');
 
 test('open-order cancellation is admin requested, worker claimed, and fail closed', () => {
@@ -13,4 +14,6 @@ test('open-order cancellation is admin requested, worker claimed, and fail close
   assert.match(migration, /remaining_count/);
   assert.match(runner, /cancelAllOpenFuturesOrders/);
   assert.match(runner, /complete_open_order_cancel_job/);
+  assert.match(eventMigration, /OPEN_ORDERS_CANCELLED/);
+  assert.match(eventMigration, /OPEN_ORDER_CANCEL_FAILED/);
 });
