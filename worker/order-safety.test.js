@@ -120,3 +120,51 @@ test('transport failures remain unknown and explicit Gate rejections stay reject
     assert.equal(fixture.completions[0].p_result_status, expected);
   }
 });
+
+test('reconciliation accepts Gate official is_reduce_only evidence for a filled hedge close', async () => {
+  const completions = [];
+  const closeJob = {
+    ...job,
+    job_id: 659,
+    intent_id: 'close-intent',
+    delta_size: -867,
+    reduce_only: true,
+    actual_size_at_plan: 867,
+    target_size: 0,
+    gate_order_id: null,
+    filled_size: 0,
+    gate_order_text: 't-mtj-1713b9a2d8890ab2979a',
+  };
+  const order = {
+    id: 'close-order-1',
+    contract: closeJob.contract,
+    text: closeJob.gate_order_text,
+    size: -867,
+    left: 0,
+    status: 'finished',
+    finish_as: 'filled',
+    is_reduce_only: true,
+    fill_price: '0.086',
+  };
+  const runner = new TradingRunner({
+    supabase: {}, baseUrl: 'https://api.gateio.ws', mode: 'LIVE',
+    fetchImpl: async (url) => new Response(JSON.stringify(url.includes('/my_trades')
+      ? [{ id:'trade-close-1', order_id:order.id, contract:order.contract, size:-867, price:'0.086' }]
+      : order)),
+  });
+  runner.rpc = async (name, parameters) => {
+    if (name === 'claim_copy_reconciliation_jobs') return [closeJob];
+    if (name === 'complete_copy_reconciliation') { completions.push(parameters); return null; }
+    throw new Error(`unexpected RPC: ${name}`);
+  };
+
+  assert.equal(await runner.reconcileOrders(), 1);
+  assert.deepEqual(completions, [{
+    p_job_id: 659,
+    p_status: 'FILLED',
+    p_gate_order_id: 'close-order-1',
+    p_filled_size: -867,
+    p_average_fill_price: 0.086,
+    p_safe_response: { finish_as:'filled', left:0, trade_count:1, terminal:true },
+  }]);
+});
