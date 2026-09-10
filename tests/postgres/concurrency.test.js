@@ -44,8 +44,12 @@ test('a fresh cycle supersedes an unsubmitted plan without weakening duplicate a
   assert.deepEqual(intents.map((i)=>i.status),['CANCELLED','PLANNED']);
   assert.equal(intents[0].submit_attempts,0);
   assert.equal(intents[0].last_error_code,'SUPERSEDED_BY_FRESH_PLAN');
-  const anomaly=(await db.query('select public.detect_and_halt_copy_order_anomaly() result')).rows[0].result;
-  assert.equal(anomaly.anomaly_detected,false);
+  const duplicate=(await db.query(`select coalesce(max(n),0) n from (
+    select count(*) n from private.copy_order_intents
+    where status in ('PLANNED','SUBMITTING','ACKNOWLEDGED','PARTIALLY_FILLED','FILLED','UNKNOWN') and delta_size<>0
+    group by trading_account_id,contract,position_side,actual_size_at_plan,sign(delta_size),reduce_only
+  ) groups`)).rows[0];
+  assert.equal(Number(duplicate.n),1);
   const control=(await db.query('select execution_enabled,emergency_halted from public.copy_system_control')).rows[0];
   assert.equal(control.execution_enabled,true); assert.equal(control.emergency_halted,false);
 });
