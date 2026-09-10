@@ -72,7 +72,7 @@ for (const sign of [1, -1]) for (const partial of [false, true]) {
 }
 
 test('hot migration releases the reproduced 6->9 stale lock and closes -9 exactly once', async () => {
-  const migration = readFileSync('supabase/migrations/20260910094713_confirmed_order_observation_context.sql', 'utf8');
+  const migration = readFileSync('supabase/migrations/20260910095235_confirmed_order_observation_context.sql', 'utf8');
   const legacy = migration.replace(/observation_guards @> jsonb_build_array\([\s\S]*?\n            \)/,
     "exists(select 1 from private.copy_order_intents i where i.trading_account_id=account.id and i.contract=state.contract and i.position_side=state.position_side and (i.status in ('SUBMITTING','ACKNOWLEDGED','PARTIALLY_FILLED','UNKNOWN') or (i.status='FILLED' and i.filled_size<>0 and (state.last_observed_at<=i.resolved_at or abs(state.actual_size-(i.actual_size_at_plan+i.filled_size))>=greatest(state.drift_tolerance_size,1)))))");
   assert.notEqual(legacy, migration);

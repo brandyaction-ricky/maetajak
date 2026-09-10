@@ -1,4 +1,5 @@
 -- A confirmed fill is historical evidence, not a permanent position target.
+-- Version matches the migration recorded by the production migration tool.
 -- Read the existing resume-aware guard once per context, so context and runner
 -- use the same definition of unresolved orders. Genuine in-flight orders and
 -- fills awaiting two fresh observations remain blocked, across LIVE restarts.
