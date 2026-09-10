@@ -58,7 +58,7 @@ trap 'rm -f "${temp_env:-}"' EXIT
   printf 'GATE_BROKER_SECRET_KEY=%s\n' "${gate_broker_secret_key}"
   printf 'BROKER_SYNC_INTERVAL_MS=3600000\n'
   printf 'WORKER_ID=maetajak-lightsail-seoul-01\n'
-  printf 'WORKER_VERSION=0.3.0\n'
+  printf 'WORKER_VERSION=0.5.0\n'
   printf 'WORKER_PUBLIC_IP=%s\n' "${worker_public_ip}"
   printf 'TRADING_MODE=OBSERVE\n'
   printf 'RUN_READINESS_CHECK=false\n'

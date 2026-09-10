@@ -1,4 +1,4 @@
-# Safe member resume (worker 0.4.0)
+# Safe member resume (worker 0.5.0 / schema 3)
 
 Resuming a member now preserves that member's existing signed contract quantities and follows subsequent changes in the master's exposure. A resume request starts validation; it does not immediately enable orders. USDT display values and mark-price changes do not define position identity. Contract, LONG/SHORT side and contract quantity do.
 
@@ -16,12 +16,14 @@ Resuming a member now preserves that member's existing signed contract quantitie
 
 | Condition | Response |
 | --- | --- |
-| Price or displayed USDT value changes without quantity changes | Keep the same protected quantity; do not treat the display difference as a new position. Normal target calculations still use current equity and configured exposure limits. |
+| Price or displayed USDT value changes without quantity changes | Keep the anchored target and protected quantity. A stricter current risk cap may reduce copied exposure; equity recovery alone cannot buy it back. |
+| The Master reduces copied exposure | Reduce the copied quantity actually held, bounded by the anchor, by the same remaining-quantity ratio. Partial or missed original fills cannot become late entries. Current equities do not reprice the reduction. |
+| The Master fully closes copied exposure | Close every tradable copied lot, including a single remaining contract, while preserving holdings protected at resume. Below-minimum exchange dust remains non-executable. |
 | The master reduces pre-resume exposure, then adds again | Decrease the remaining master baseline; never increase it. For example, a baseline of 100 falling to 50 then rising to 80 makes the subsequent 30 eligible for proportional copying. |
 | The member reduces protected holdings manually | Pause the affected position as a manual override. Do not repurchase the protected holding automatically. |
 | Existing holdings already consume the position limit | Count them toward the limit and allow no additional copied exposure beyond it. Do not liquidate protected holdings to make room. |
 | Opposing protected position in single-direction mode | Hold the affected position. Do not offset the protected holding by opening the opposite side. |
-| Unsupported/delisting contract, malformed or incomplete positions, mode mismatch | Wait for this member or affected position; do not submit using assumed empty positions. |
+| Unsupported contract, malformed or incomplete positions, mode mismatch | Wait for this member or affected position; do not submit using assumed empty positions. Delisting permits reductions only while Gate still supports them. |
 | Open exchange order, unknown submission or active partial fill | Keep the member/position locked and reconcile. A timeout is not proof that the exchange rejected the order. |
 | Terminal partial fill | Preserve the authoritative filled quantity, confirm it in fresh positions, then replan the remaining difference. |
 | The database response fails after an exchange fill | Preserve uncertainty and reconcile; do not overwrite a successful fill as a rejection. |
@@ -35,7 +37,7 @@ The exchange may fill an order already accepted before a pause or network failur
 
 ## Deployment and operation
 
-Apply the migration while execution is disabled and the emergency halt is set. The migration asserts those conditions and initializes existing accounts as requiring validation. Deploy the worker and UI afterward. Worker version 0.4.0 and the new database guards are required to claim orders.
+Apply the migrations while execution is disabled and the emergency halt is set. The initial resume migration initializes existing accounts as requiring validation. The schema-3 migration preserves those sessions and never enables execution. Deploy the worker and UI afterward. Worker version 0.5.0, schema 3 and verified Current State are required to claim orders.
 
 Automated deployment ends in DRY_RUN and verifies the worker before testing its configured alert destination. It does not restore LIVE mode. The legacy promotion processor also requires explicit operator opt-in. Starting real copying remains a separate operator decision; no resume is part of this change's deployment.
 
@@ -45,4 +47,4 @@ Snapshot reads are concurrent, contract metadata is cached, settled performance 
 
 Run `npm test`, `npm run check` and `npm run build`. The suite includes an isolated PostgreSQL database executing the same migration used for deployment with synthetic fixtures. It covers resume version changes, old orders, protected baselines, settings changes, access control, repeated claims/authorization, terminal partial fills, observation confirmation and invalid fill halts. The embedded database tests use one connection; repeated-claim coverage is not a multi-connection load test. Gate requests are mocked; no test sends a live order.
 
-At implementation review, 242 tests passed, zero failed and two existing historical-schema checks were skipped. Those skips do not verify the missing historical migration. Final operational verification must separately check the deployed version, fresh heartbeat, DRY_RUN mode, halt controls and absence of new exchange submissions.
+The current implementation and verification evidence are recorded in [COPY_QA_20260910.md](COPY_QA_20260910.md). The separate `test:postgres` CI gate uses PostgreSQL 17, independent connections and SIGKILL at submission checkpoints. Synthetic Gate transports cannot verify production account credentials, current positions or notification receipt. Final operational verification must separately check the deployed version, fresh heartbeat, DRY_RUN mode, halt controls and absence of new exchange submissions.

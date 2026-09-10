@@ -86,7 +86,7 @@ export function parseGateJson(text) {
 
 export async function gateRequest({
   apiKey, secretKey, method = 'GET', path, query = {}, body,
-  fetchImpl = fetch, baseUrl = GATE_API_BASE_URL, timeoutMs = 10_000, expiresAtMs, channelId = '',
+  fetchImpl = fetch, baseUrl = GATE_API_BASE_URL, timeoutMs = 5_000, expiresAtMs, channelId = '',
 }) {
   const normalizedMethod = method.toUpperCase();
   const isWrite = normalizedMethod !== 'GET';
@@ -112,7 +112,7 @@ export async function gateRequest({
     const mapped = mapGateError(response.status, payload, path);
     throw new GateApiError(mapped.message, {
       code: mapped.code, status: response.status, payload, path,
-      outcomeUnknown: isWrite && (response.status >= 500 || response.status === 408),
+      outcomeUnknown: isWrite && (response.status >= 500 || response.status === 408 || response.status === 429),
     });
   }
   return { payload, status: response.status };
@@ -270,7 +270,8 @@ export async function getFuturesAccount(options) {
     total = classicTotal > 0 ? classicTotal : crossMarginBalance;
   }
   const available = Number(payload?.available ?? payload?.cross_available ?? 0);
-  if (!(total > 0) || (available > 0 && total < available * 0.5)) {
+  if (!Number.isFinite(total) || !(total > 0) || !Number.isFinite(available) || available < 0
+    || (available > 0 && total < available * 0.5)) {
     throw new GateApiError('Gate.io 계정 자산 값을 안전하게 확인할 수 없습니다.', { code: 'INVALID_ACCOUNT_EQUITY', path: FUTURES_ACCOUNT_PATH });
   }
   return {
@@ -301,6 +302,11 @@ export function normalizeGatePositions(payload) {
   })).filter((position) => position.contract && Number.isFinite(position.size) && position.size !== 0);
   const legs = new Set();
   for (const position of positions) {
+    if (!(position.markPrice > 0) || !Number.isFinite(position.markPrice)
+      || (position.positionSide === 'LONG' && position.size < 0)
+      || (position.positionSide === 'SHORT' && position.size > 0)) {
+      throw new GateApiError('포지션 방향 또는 가격을 확인할 수 없습니다.', { code: 'INVALID_POSITIONS_RESPONSE' });
+    }
     const leg = `${position.contract}:${position.positionSide}`;
     if (legs.has(leg)) {
       throw new GateApiError('같은 방향의 분할 포지션은 아직 안전하게 복사할 수 없습니다.', { code: 'SPLIT_POSITION_UNSUPPORTED' });
@@ -405,14 +411,18 @@ export async function getFuturesContracts({ fetchImpl = fetch, baseUrl = GATE_AP
   const response = await fetchImpl(`${baseUrl || GATE_API_BASE_URL}${FUTURES_CONTRACTS_PATH}`, { method: 'GET', headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(10_000) });
   if (!response.ok) throw new GateApiError('Gate.io 계약 정보를 불러오지 못했습니다.', { status: response.status });
   const payload = await response.json();
-  return new Map((Array.isArray(payload) ? payload : []).map((contract) => {
+  if (!Array.isArray(payload) || !payload.length) {
+    throw new GateApiError('계약 목록을 확인할 수 없습니다.', { code: 'INVALID_CONTRACTS_RESPONSE' });
+  }
+  return new Map(payload.map((contract) => {
     const orderSizeMin = Math.max(Number.EPSILON, Number(contract.order_size_min || 1));
     const orderSizeMax = Math.max(0, Number(contract.order_size_max || 0));
     const marketOrderSizeMax = Math.max(0, Number(contract.market_order_size_max || 0));
     return [String(contract.name), {
       name: String(contract.name), quantoMultiplier: Number(contract.quanto_multiplier || 0),
       sizeStep: contract.enable_decimal ? orderSizeMin : 1, orderSizeMin, orderSizeMax,
-      marketOrderSizeMax, inDelisting: Boolean(contract.in_delisting),
+      marketOrderSizeMax, inDelisting: Boolean(contract.in_delisting), leverageMax: Number(contract.leverage_max ?? 100),
+      takerFeeRate: Number(contract.taker_fee_rate ?? 0.001),
     }];
   }));
 }
@@ -430,9 +440,11 @@ export async function getFuturesOrder({ orderId, ...options }) {
   return payload;
 }
 
-export async function listFuturesOrders({ status = 'finished', contract, limit = 100, ...options }) {
-  const { payload } = await gateRequest({ ...options, path: FUTURES_ORDERS_PATH, query: { status, contract, limit } });
-  if (!Array.isArray(payload)) throw new GateApiError('주문 목록 조회 결과가 올바르지 않습니다.', { code: 'INVALID_ORDERS_RESPONSE' });
+export async function listFuturesOrders({ status = 'finished', contract, limit = 100, offset = 0, ...options }) {
+  const { payload } = await gateRequest({ ...options, path: FUTURES_ORDERS_PATH, query: { status, contract, limit, offset } });
+  if (!Array.isArray(payload) || payload.some((order) => !order || !order.contract || order.id == null)) {
+    throw new GateApiError('주문 목록 조회 결과가 올바르지 않습니다.', { code: 'INVALID_ORDERS_RESPONSE' });
+  }
   return payload;
 }
 
@@ -450,17 +462,46 @@ export async function cancelAllOpenFuturesOrders(options = {}) {
 }
 
 export async function findFuturesOrderByText({ text, contract, ...options }) {
+  // Query by the original custom text before paging history. Not found is
+  // uncertainty, never permission to submit the same order again.
+  try {
+    const order = await getFuturesOrder({ ...options, orderId: text });
+    if (order?.id != null && String(order.text) === String(text) && order.contract === contract) return order;
+    throw new GateApiError('주문 조회 응답이 요청과 다릅니다.', { code: 'ORDER_IDENTITY_MISMATCH', outcomeUnknown: true });
+  } catch (error) {
+    if (!(error instanceof GateApiError) || !(error.status === 404
+      || ['ORDER_NOT_FOUND', 'ORDER_NOT_EXIST'].includes(String(error.payload?.label)))) throw error;
+  }
   for (const status of ['open', 'finished']) {
-    const orders = await listFuturesOrders({ ...options, status, contract });
-    const match = orders.find((order) => String(order.text || '') === String(text));
-    if (match) return match;
+    for (let page = 0; page < 20; page++) {
+      const orders = await listFuturesOrders({ ...options, status, contract, limit: 100, offset: page * 100 });
+      const matches = orders.filter((order) => String(order.text || '') === String(text) && order.contract === contract);
+      if (matches.length > 1) throw new GateApiError('같은 식별자의 주문이 여러 건입니다.', { code: 'ORDER_IDENTITY_MISMATCH', outcomeUnknown: true });
+      if (matches.length) return matches[0];
+      if (orders.length < 100) break;
+      if (page === 19) throw new GateApiError('주문 목록이 완전하지 않습니다.', { code: 'ORDERS_PAGINATION_LIMIT', outcomeUnknown: true });
+    }
   }
   return null;
 }
 
 export async function getOrderTrades({ orderId, contract, ...options }) {
-  const { payload } = await gateRequest({ ...options, path: FUTURES_TRADES_PATH, query: { order: orderId, contract, limit: 100 } });
-  return Array.isArray(payload) ? payload : [];
+  const trades = []; const ids = new Set();
+  for (let page = 0; page < 20; page++) {
+    const { payload } = await gateRequest({ ...options, path: FUTURES_TRADES_PATH,
+      query: { order: orderId, contract, limit: 100, offset: page * 100 } });
+    if (!Array.isArray(payload) || payload.some((trade) => trade?.id == null
+      || String(trade.order_id) !== String(orderId) || trade.contract !== contract
+      || !Number.isFinite(Number(trade.size)) || !(Number(trade.price) > 0))) {
+      throw new GateApiError('체결 목록을 확인할 수 없습니다.', { code: 'INVALID_TRADES_RESPONSE' });
+    }
+    for (const trade of payload) {
+      if (ids.has(String(trade.id))) throw new GateApiError('중복 체결 행을 확인해야 합니다.', { code: 'INVALID_TRADES_RESPONSE' });
+      ids.add(String(trade.id)); trades.push(trade);
+    }
+    if (payload.length < 100) return trades;
+  }
+  throw new GateApiError('체결 목록이 완전하지 않습니다.', { code: 'TRADES_PAGINATION_LIMIT' });
 }
 
 export async function getFuturesAccountBook({ from, to, limit = 1000, offset = 0, ...options }) {

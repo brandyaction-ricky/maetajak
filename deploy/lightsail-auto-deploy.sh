@@ -55,8 +55,17 @@ if ! git diff --quiet "${local_sha}" "${remote_sha}" -- supabase/migrations; the
       "/rpc/get_copy_safety_version",
       "/rpc/get_copy_resume_context",
       "/rpc/authorize_copy_order_submission",
+      "/rpc/record_verified_copy_worker_cycle",
+      "/rpc/get_copy_state_reconciliation",
     ];
     if (requiredRpcs.some((path) => !schema.paths?.[path])) process.exit(1);
+    const versionResponse = await fetch(`${process.env.SUPABASE_URL}/rest/v1/rpc/get_copy_safety_version`, {
+      method: "POST", headers: { apikey: process.env.SUPABASE_SERVICE_ROLE_KEY,
+        Authorization: `Bearer ${process.env.SUPABASE_SERVICE_ROLE_KEY}`, "Content-Type": "application/json" }, body: "{}",
+    });
+    const version = versionResponse.ok ? await versionResponse.json() : {};
+    if (version.schema_version !== 3 || version.worker_version !== "0.5.0"
+      || !version.current_state_atomic || !version.trade_alert_exchange_verification) process.exit(1);
   ' >/dev/null; then
     echo "auto_deploy=blocked_database_migration" >&2
     exit 1

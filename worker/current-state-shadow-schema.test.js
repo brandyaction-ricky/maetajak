@@ -22,13 +22,14 @@ test('shadow projection is service-role only and leaves authoritative tables unt
   assert.doesNotMatch(migration, /(insert into|update|delete from) public\.copy_position_states/i);
 });
 
-test('shadow writes happen after live order work and cannot throw into the halt counter', () => {
-  assert.match(runner, /async syncCurrentState\(payload\)[\s\S]*try[\s\S]*upsert_copy_current_state[\s\S]*catch/);
+test('verified state commits before order work and propagates write failures', () => {
+  assert.match(runner, /await this\.rpc\('record_verified_copy_worker_cycle'/);
+  const syncIndex = worker.indexOf('await runner.syncOnce()');
   const reconcileIndex = worker.indexOf('await runner.reconcileOrders()');
   const submitIndex = worker.indexOf('await runner.submitOrders()');
   const reportIndex = worker.indexOf('await runner.reportCycle(true)');
-  const shadowIndex = worker.indexOf('await runner.syncCurrentState(observation.currentStatePayload)');
-  assert.ok(reconcileIndex > 0 && submitIndex > reconcileIndex && reportIndex > submitIndex && shadowIndex > reportIndex);
+  assert.ok(syncIndex > 0 && reconcileIndex > syncIndex && submitIndex > reconcileIndex && reportIndex > submitIndex);
+  assert.doesNotMatch(worker, /runner\.syncCurrentState/);
 });
 
 test('worker deployment is blocked until the shadow RPC exists', () => {

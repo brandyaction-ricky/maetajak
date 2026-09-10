@@ -26,7 +26,13 @@ export function roundTowardZeroToStep(value, step = 1) {
   const amount = finiteNumber(value, 'value');
   const increment = positiveNumber(step, 'step');
   const units = amount / increment;
-  const rounded = units < 0 ? Math.ceil(units) : Math.floor(units);
+  // Decimal contract quantities can land a few ULPs below an integer after
+  // subtraction (for example, (0.3 - 0.2) / 0.1). Preserve that complete lot
+  // without rounding a genuinely fractional lot into an executable order.
+  const nearest = Math.round(units);
+  const normalized = Math.abs(units - nearest) <= Number.EPSILON * Math.max(1, Math.abs(units)) * 4
+    ? nearest : units;
+  const rounded = normalized < 0 ? Math.ceil(normalized) : Math.floor(normalized);
   return Number((rounded * increment).toPrecision(15));
 }
 
@@ -119,6 +125,24 @@ export function capLockedTargetToCurrentRisk({
   return Math.sign(locked) * allowedAbsoluteSize;
 }
 
+export function calculateReducedCopyTarget({
+  previousMasterSize, masterSize, lockedTargetSize, protectedSize = 0, sizeStep = 1,
+}) {
+  const previous = finiteNumber(previousMasterSize, 'previousMasterSize');
+  const current = finiteNumber(masterSize, 'masterSize');
+  const locked = finiteNumber(lockedTargetSize, 'lockedTargetSize');
+  const protectedTarget = finiteNumber(protectedSize, 'protectedSize');
+  if (previous === 0 || Math.abs(current) >= Math.abs(previous)
+    || (current !== 0 && Math.sign(current) !== Math.sign(previous))) {
+    throw new RangeError('Master quantity must decrease on the same position side');
+  }
+  // Equity changes must not turn a Master reduction into a member increase.
+  // Scale only copied exposure; holdings protected at resume remain intact.
+  const copiedSize = locked - protectedTarget;
+  const remainingRatio = Math.abs(current / previous);
+  return protectedTarget + roundTowardZeroToStep(copiedSize * remainingRatio, sizeStep);
+}
+
 export function detectManualOverride({
   previousActualSize,
   currentActualSize,
@@ -166,7 +190,9 @@ export function deriveCopyState({
   if (reduceOnly) return 'REDUCE_ONLY';
 
   const delta = finiteNumber(targetSize, 'targetSize') - finiteNumber(actualSize, 'actualSize');
-  return Math.abs(delta) <= Math.max(0, finiteNumber(driftToleranceSize, 'driftToleranceSize'))
+  const tolerance = Math.max(0, finiteNumber(driftToleranceSize, 'driftToleranceSize'));
+  // A full order step is actionable, including the last contract on a close.
+  return delta === 0 || (tolerance > 0 && roundTowardZeroToStep(delta, tolerance) === 0)
     ? 'SYNCED'
     : 'DRIFT';
 }

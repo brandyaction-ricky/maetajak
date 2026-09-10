@@ -7,11 +7,12 @@ import {
 } from './gate.js';
 import {
   buildGateOrderText, buildIdempotencyKey, calculateDeltaOrder,
-  calculateCopyableMasterSize, calculateTargetPosition, capLockedTargetToCurrentRisk,
-  deriveCopyState, detectManualOverride,
+  calculateCopyableMasterSize, calculateTargetPosition, capLockedTargetToCurrentRisk, calculateReducedCopyTarget,
+  deriveCopyState, detectManualOverride, roundTowardZeroToStep,
 } from './copy-engine.js';
 import { aggregateMemberPerformance, kstDayRange } from './performance.js';
 import { resumePositions, sameResumePositions, validateResumeSnapshot, validateResumePreview, RESUME_MAX_AGE_MS } from './member-resume.js';
+import { assertFreshAccount, assertOrderIdentity, assertSubmissionSnapshot, exchangeTradeAlert } from './execution-safety.js';
 
 export function safeError(error, stage = 'WORKER') {
   const safeStage = String(stage).toUpperCase().replace(/[^A-Z0-9_]/g, '_').slice(0, 40) || 'WORKER';
@@ -68,7 +69,15 @@ export function buildCurrentStatePayload({ cycleId, observedAt, master, members 
     copy_event_id: cycleId,
     observed_at: observedAt,
     master: accountPayload(master, 'MASTER', master.positions),
-    members: members.map((member) => accountPayload(member, 'MEMBER', member.planned_positions)),
+    members: members.map((member) => {
+      const positions = positionMap(member.positions || []);
+      const merged = (member.planned_positions || []).map((plan) => ({
+        ...plan, ...(positions.get(positionKey(plan)) || { size: 0 }),
+      }));
+      const plannedKeys = new Set(merged.map(positionKey));
+      merged.push(...(member.positions || []).filter((position) => !plannedKeys.has(positionKey(position))));
+      return accountPayload(member, 'MEMBER', merged);
+    }),
   };
 }
 
@@ -119,25 +128,38 @@ export function planMemberPositions({ cycleId, system, master, member, contracts
   const targetAnchors = new Map((member.target_anchors || []).map((anchor) => [positionKey(anchor), anchor]));
   const symbols = new Set([...masterPositions.keys(), ...memberPositions.keys(), ...previousStates.keys(), ...masterBaselines.keys(), ...memberPositionBaselines.keys(), ...targetAnchors.keys()]);
   const planned = [];
+  const reservedNotional = new Map();
+  let remainingMargin = Math.max(0, Number(member.available ?? member.total));
   for (const symbol of symbols) {
     const { contract, positionSide } = parsePositionKey(symbol);
     const contractInfo = contracts.get(contract);
-    if (!contractInfo || contractInfo.inDelisting) continue;
+    if (!contractInfo) {
+      throw new GateApiError('계약 정보를 안전하게 확인할 수 없습니다.', { code: 'CONTRACT_METADATA_UNAVAILABLE' });
+    }
     const observedMasterPosition = masterPositions.get(symbol) || {
-      contract, positionSide, size: 0, markPrice: memberPositions.get(symbol)?.markPrice || 0,
+      contract, positionSide, size: 0, markPrice: memberPositions.get(symbol)?.markPrice || contractInfo.markPrice || 0,
     };
     const baseline = calculateCopyableMasterSize({ masterSize: observedMasterPosition.size, baselineSize: masterBaselines.get(symbol) || 0 });
     const masterPosition = { ...observedMasterPosition, size: baseline.copyableSize };
     const memberPosition = memberPositions.get(symbol) || { contract, positionSide, size: 0, markPrice: masterPosition.markPrice || 0 };
-    const markPrice = masterPosition.markPrice || memberPosition.markPrice;
-    if (!(markPrice > 0) || !(contractInfo.quantoMultiplier > 0)) continue;
+    // Flat legs still need a zero observation to clear old engine/DB state.
+    // A neutral arithmetic reference is used only when both actual sizes are
+    // zero; it is never reported as an exchange quote or used for an entry.
+    const reportedMarkPrice = masterPosition.markPrice || memberPosition.markPrice || 0;
+    const markPrice = reportedMarkPrice || (!observedMasterPosition.size && !memberPosition.size ? 1 : 0);
+    if (!(markPrice > 0) || !Number.isFinite(markPrice) || !(contractInfo.quantoMultiplier > 0)
+      || !Number.isFinite(contractInfo.quantoMultiplier)) {
+      throw new GateApiError('계약 가격 또는 단위를 확인할 수 없습니다.', { code: 'ORDER_RISK_METADATA_INVALID' });
+    }
     const protectedMemberSize = memberPositionBaselines.get(symbol) || 0;
     const protectedRatio = member.total > 0
       ? Math.abs(protectedMemberSize) * (memberPosition.markPrice || markPrice) * contractInfo.quantoMultiplier / member.total * 100 : 0;
     const target = calculateTargetPosition({
       masterSize: masterPosition.size, masterEquity: master.total, masterMarkPrice: markPrice,
       masterQuantoMultiplier: contractInfo.quantoMultiplier, memberEquity: member.total,
-      memberMarkPrice: memberPosition.markPrice || markPrice, memberQuantoMultiplier: contractInfo.quantoMultiplier,
+      // Both legs trade the same Gate contract. Use one reference price so a
+      // read/entry-price difference cannot manufacture additional contracts.
+      memberMarkPrice: markPrice, memberQuantoMultiplier: contractInfo.quantoMultiplier,
       copyRatio: member.copy_ratio, maxPositionRatio: Math.max(0, member.max_position_ratio - protectedRatio), sizeStep: contractInfo.sizeStep,
     });
     target.targetSize += protectedMemberSize;
@@ -146,9 +168,24 @@ export function planMemberPositions({ cycleId, system, master, member, contracts
       && anchor.resume_version === member.resume_version);
     const masterQuantityUnchanged = anchorMatchesResume
       && Number(anchor.master_copyable_size) === Number(masterPosition.size);
-    if (masterQuantityUnchanged) {
+    const masterQuantityReduced = anchorMatchesResume
+      && Math.abs(Number(masterPosition.size)) < Math.abs(Number(anchor.master_copyable_size))
+      && (Number(masterPosition.size) === 0
+        || Math.sign(Number(masterPosition.size)) === Math.sign(Number(anchor.master_copyable_size)));
+    if (masterQuantityUnchanged || masterQuantityReduced) {
+      const lockedTargetSize = masterQuantityReduced
+        ? calculateReducedCopyTarget({
+          previousMasterSize: anchor.master_copyable_size,
+          masterSize: masterPosition.size,
+          lockedTargetSize: protectedMemberSize + Math.sign(Number(anchor.target_size) - protectedMemberSize)
+            * Math.min(Math.abs(Number(anchor.target_size) - protectedMemberSize),
+              Math.max(0, Math.abs(memberPosition.size) - Math.abs(protectedMemberSize))),
+          protectedSize: protectedMemberSize,
+          sizeStep: contractInfo.sizeStep,
+        })
+        : Number(anchor.target_size);
       target.targetSize = capLockedTargetToCurrentRisk({
-        lockedTargetSize: Number(anchor.target_size),
+        lockedTargetSize,
         protectedSize: protectedMemberSize,
         memberEquity: member.total,
         memberMarkPrice: memberPosition.markPrice || markPrice,
@@ -156,18 +193,22 @@ export function planMemberPositions({ cycleId, system, master, member, contracts
         maxPositionRatio: member.max_position_ratio,
         sizeStep: contractInfo.sizeStep,
       });
-      target.targetLockReason = target.targetSize === Number(anchor.target_size)
-        ? 'MASTER_QUANTITY_UNCHANGED'
+      target.targetLockReason = target.targetSize === lockedTargetSize
+        ? (masterQuantityReduced ? 'MASTER_QUANTITY_REDUCED_PROPORTIONALLY' : 'MASTER_QUANTITY_UNCHANGED')
         : 'CURRENT_RISK_CAP_REDUCTION';
     } else {
       target.targetLockReason = anchorMatchesResume ? 'MASTER_QUANTITY_CHANGED' : 'TARGET_ANCHOR_INITIALIZED';
     }
     target.targetNotional = Math.abs(target.targetSize) * (memberPosition.markPrice || markPrice) * contractInfo.quantoMultiplier;
     const previous = previousStates.get(symbol);
+    const targetLeverage = Number(observedMasterPosition.leverage || previous?.target_leverage || memberPosition.leverage || 0);
+    const riskLeverage = protectedMemberSize ? Number(memberPosition.leverage || 0) : targetLeverage;
+    const marginMode = String(observedMasterPosition.posMarginMode || previous?.margin_mode || memberPosition.posMarginMode || 'cross');
     // An outstanding order may already have filled at Gate even when the
     // account read has not caught up. Do not create a fresh cycle/order key
     // until reconciliation resolves it and a later observation replans.
     const hasUnresolvedOrder = Boolean(previous?.has_unresolved_order);
+    const hasOpenExchangeOrder = (member.open_orders || []).some((order) => order.contract === contract);
     const protectedOppositePosition = !String(member.positionMode || 'single').startsWith('dual')
       && [...memberPositionBaselines.entries()].some(([baselineKey, size]) => {
         const baselineLeg = parsePositionKey(baselineKey);
@@ -191,10 +232,52 @@ export function planMemberPositions({ cycleId, system, master, member, contracts
       manual.detected = true;
       manual.unexplainedDelta = memberPosition.size - protectedMemberSize;
     }
-    const reduceOnly = Boolean(member.reduce_only) || Boolean(member.close_positions_requested);
+    if (member.resume_version && !previous && !anchor && memberPosition.size !== protectedMemberSize
+      && !hasUnresolvedOrder && !member.close_positions_requested) {
+      manual.detected = true;
+      manual.unexplainedDelta = memberPosition.size - protectedMemberSize;
+    }
+    let budgetReason = null;
+    if (!member.close_positions_requested && !hasUnresolvedOrder && !hasOpenExchangeOrder
+      && !member.resume_required && !manual.detected) {
+      const price = memberPosition.markPrice || markPrice;
+      const unitNotional = price * contractInfo.quantoMultiplier;
+      const otherLegNotional = member.positions.filter((position) => position.contract === contract
+        && positionKey(position) !== symbol).reduce((sum, position) =>
+        sum + Math.abs(position.size) * (position.markPrice || price) * contractInfo.quantoMultiplier, 0);
+      const availableSymbolNotional = Math.max(0, member.total * member.max_position_ratio / 100
+        - otherLegNotional - (reservedNotional.get(contract) || 0));
+      const grossCapped = Math.sign(target.targetSize) * Math.max(Math.abs(protectedMemberSize),
+        Math.min(Math.abs(target.targetSize), Math.abs(roundTowardZeroToStep(availableSymbolNotional / unitNotional, contractInfo.sizeStep))));
+      if (Math.abs(grossCapped) < Math.abs(target.targetSize)) {
+        target.targetSize = grossCapped;
+        budgetReason = 'SYMBOL_GROSS_EXPOSURE_LIMIT';
+      }
+      const increase = Math.max(0, Math.abs(target.targetSize) - Math.abs(memberPosition.size));
+      // Reserve the worst allowed entry price, margin and a conservative fee.
+      // Never spend expected proceeds from a reduction that has not filled.
+      const feeRate = Math.max(0, Number(contractInfo.takerFeeRate ?? 0.001));
+      const marginPerUnit = unitNotional * (1 + Number(system.max_order_slippage_ratio ?? 0.005))
+        * (1 / Math.max(1, riskLeverage) + feeRate);
+      if (increase > 0) {
+        const affordable = Math.max(0, roundTowardZeroToStep(remainingMargin / marginPerUnit, contractInfo.sizeStep));
+        if (affordable < increase) {
+          target.targetSize = Math.sign(target.targetSize) * (Math.abs(memberPosition.size) + affordable);
+          budgetReason = 'INSUFFICIENT_AVAILABLE_MARGIN';
+        }
+      }
+      if (!manual.detected && !hasUnresolvedOrder && !hasOpenExchangeOrder && !member.resume_required) {
+        const reservedSize = Math.max(0, Math.abs(target.targetSize) - Math.abs(memberPosition.size));
+        remainingMargin = Math.max(0, remainingMargin - reservedSize * marginPerUnit);
+        reservedNotional.set(contract, (reservedNotional.get(contract) || 0) + reservedSize * unitNotional);
+      }
+      if (budgetReason) target.targetLockReason = budgetReason;
+      target.targetNotional = Math.abs(target.targetSize) * unitNotional;
+    }
+    const reduceOnly = Boolean(member.reduce_only) || Boolean(member.close_positions_requested) || contractInfo.inDelisting === true;
     const state = deriveCopyState({
       systemHalted: Boolean(system.emergency_halted) && !simulateSystemHalt, memberHalted: Boolean(member.halted),
-      symbolPaused: Boolean(member.resume_required) || hasUnresolvedOrder
+      symbolPaused: Boolean(member.resume_required) || hasUnresolvedOrder || hasOpenExchangeOrder
         || ((Boolean(member.copy_paused) || protectedOppositePosition) && !member.close_positions_requested),
       manualOverride: manual.detected || previous?.state === 'MANUAL_OVERRIDE', reduceOnly,
       targetSize: target.targetSize, actualSize: memberPosition.size, driftToleranceSize: contractInfo.sizeStep,
@@ -212,11 +295,9 @@ export function planMemberPositions({ cycleId, system, master, member, contracts
       delta.reason = 'BELOW_MINIMUM_ORDER_SIZE';
     }
     const idempotencyKey = delta.shouldSubmit ? buildIdempotencyKey({ cycleId, userId: member.user_id, contract, positionSide, targetSize: target.targetSize, actualSize: memberPosition.size }) : null;
-    const targetLeverage = Number(observedMasterPosition.leverage || previous?.target_leverage || memberPosition.leverage || 0);
-    const marginMode = String(observedMasterPosition.posMarginMode || previous?.margin_mode || memberPosition.posMarginMode || 'cross');
     const plannedPosition = {
       contract, position_side: positionSide, position_mode: member.positionMode || 'single',
-      size: memberPosition.size, mark_price: memberPosition.markPrice || markPrice,
+      size: memberPosition.size, mark_price: memberPosition.markPrice || reportedMarkPrice || null,
       entry_price: memberPosition.entryPrice || null, leverage: memberPosition.leverage || null,
       target_leverage: targetLeverage || null, margin_mode: marginMode,
       quanto_multiplier: contractInfo.quantoMultiplier, target_size: target.targetSize,
@@ -227,12 +308,19 @@ export function planMemberPositions({ cycleId, system, master, member, contracts
       member_baseline_size: protectedMemberSize,
       target_resume_version: member.resume_version || null,
       target_lock_reason: target.targetLockReason,
+      anchor_update_allowed: !hasUnresolvedOrder && !hasOpenExchangeOrder && !member.resume_required
+        && !manual.detected && previous?.state !== 'MANUAL_OVERRIDE',
+      sizing_reason: budgetReason,
+      execution_reason: delta.reason,
+      master_actual_size: Number(observedMasterPosition.size),
+      risk_leverage: riskLeverage, taker_fee_rate: Number(contractInfo.takerFeeRate ?? 0.001),
       baseline_clear_requested: baseline.clearBaseline,
       pause_reason: member.resume_required ? 'MEMBER_RESUME_VALIDATION_REQUIRED'
         : manual.detected ? 'MEMBER_POSITION_CHANGED_OUTSIDE_PLATFORM'
         : hasUnresolvedOrder ? 'UNRESOLVED_PLATFORM_ORDER'
+          : hasOpenExchangeOrder ? 'OPEN_EXCHANGE_ORDER'
           : protectedOppositePosition ? 'PROTECTED_EXISTING_POSITION_OPPOSITE_SIDE'
-            : member.risk_halt_reason || (member.copy_paused ? 'MEMBER_PAUSED' : null),
+            : member.risk_halt_reason || (member.copy_paused ? 'MEMBER_PAUSED' : null) || budgetReason,
     };
     if (delta.shouldSubmit) {
       plannedPosition.intent = {
@@ -299,10 +387,11 @@ export class TradingRunner {
   async readAccount(account) {
     const startedAt = new Date().toISOString();
     const auth = credentials(account);
-    const [summary, positions] = await Promise.all([
+    const [summary, positions, openOrders] = await Promise.all([
       getFuturesAccount({ ...auth, baseUrl: this.baseUrl, fetchImpl: this.fetchImpl }),
       getFuturesPositions({ ...auth, baseUrl: this.baseUrl, fetchImpl: this.fetchImpl,
         expectedContracts: account.expected_contracts || (account.previous_states || []).map((p) => p.contract) }),
+      listFuturesOrders({ ...auth, baseUrl: this.baseUrl, fetchImpl: this.fetchImpl, status: 'open', limit: 100 }),
     ]);
     const dayStart = Number(account.day_start_equity || 0);
     const peak = Number(account.peak_equity || 0);
@@ -311,7 +400,12 @@ export class TradingRunner {
     const dailyLimitHit = dailyLossPct >= Number(account.daily_loss_limit_pct || 5);
     const drawdownLimitHit = drawdownPct >= Number(account.max_drawdown_pct || 15);
     const riskHalted = dailyLimitHit || drawdownLimitHit;
-    return { ...account, ...summary, positions, observed_started_at: startedAt, observed_at: new Date().toISOString(), halted: Boolean(account.halted) || riskHalted, risk_halt_reason: dailyLimitHit ? 'DAILY_LOSS_LIMIT' : drawdownLimitHit ? 'MAX_DRAWDOWN_LIMIT' : null, daily_loss_pct: dailyLossPct, drawdown_pct: drawdownPct };
+    if (openOrders.length >= 100) throw new GateApiError('미체결 주문을 모두 확인해야 합니다.', { code: 'OPEN_ORDERS_LIMIT_REACHED' });
+    return { ...account, ...summary, positions, open_orders: openOrders,
+      observed_started_at: startedAt, observed_at: new Date().toISOString(),
+      halted: Boolean(account.halted), reduce_only: Boolean(account.reduce_only) || riskHalted,
+      risk_halt_reason: dailyLimitHit ? 'DAILY_LOSS_LIMIT' : drawdownLimitHit ? 'MAX_DRAWDOWN_LIMIT' : null,
+      daily_loss_pct: dailyLossPct, drawdown_pct: drawdownPct };
   }
   async readResumeSnapshot(masterContext, memberContext) {
     const startedAt = Date.now();
@@ -451,6 +545,7 @@ export class TradingRunner {
       }))),
     ]);
     timings.master_exchange_ms = elapsedMs(masterReadStartedAt);
+    assertFreshAccount(master);
     // A newly listed or newly traded contract may appear after the hourly
     // contract metadata cache was built. Refresh immediately instead of
     // silently dropping that Master position from every member plan.
@@ -499,7 +594,9 @@ export class TradingRunner {
         }
         const memberRead = memberReads[memberIndex];
         if (memberRead.status === 'rejected') throw memberRead.reason;
-        let member = { ...memberRead.value, resume_required: memberContext.resume_required, resume_version: memberContext.resume_version };
+        let member = { ...memberRead.value, resume_required: memberContext.resume_required, resume_version: memberContext.resume_version,
+          target_anchors: memberContext.target_anchors };
+        assertFreshAccount(member);
         // Concurrent account reads reduce skew; any remaining slow snapshot is
         // observed without producing an executable plan.
         const snapshotTimes = [master.observed_at, member.observed_at].map(Date.parse);
@@ -579,13 +676,7 @@ export class TradingRunner {
         }
         member.planned_positions = suppressExecutableIntents(plannedPositions, this.mode);
         members.push(member);
-        if (this.mode === 'LIVE') {
-          try {
-            await this.syncMemberPerformance(member, contracts, observedAt);
-          } catch (performanceError) {
-            if (this.logger) this.logger('member_performance_sync_failed', { user_id: member.user_id, error_code: safeError(performanceError, 'PERFORMANCE') });
-          }
-        }
+        // Accounting is sampled after the latency-sensitive order cycle.
       } catch (error) {
         const errorCode = safeError(error, memberStage);
         if (this.logger) this.logger('member_sync_failed', { user_id: memberContext.user_id, trading_account_id: memberContext.trading_account_id, error_code: errorCode });
@@ -600,9 +691,11 @@ export class TradingRunner {
         quanto_multiplier: contracts.get(position.contract)?.quantoMultiplier || null,
       })),
     };
-    const legacyPayload = { cycle_id: cycleId, source_version: sourceHash({ observedAt, master: master.positions }), observed_at: observedAt, master: recordedMaster, members };
+    const currentStatePayload = buildCurrentStatePayload({ cycleId, observedAt, master: recordedMaster, members });
+    const legacyPayload = { cycle_id: cycleId, source_version: sourceHash({ observedAt, master: master.positions }),
+      observed_at: observedAt, master: recordedMaster, members, current_state: currentStatePayload };
     const legacyWriteStartedAt = Date.now();
-    await this.rpc('record_copy_worker_cycle_with_target_anchors', { p_payload: legacyPayload });
+    await this.rpc('record_verified_copy_worker_cycle', { p_payload: legacyPayload });
     timings.legacy_write_ms = elapsedMs(legacyWriteStartedAt);
     if (this.mode === 'DRY_RUN' && this.logger && dryRunPlans.length) {
       const planHash = sourceHash(dryRunPlans);
@@ -618,19 +711,31 @@ export class TradingRunner {
       intents: simulatedIntents,
       validatedResumes,
       copyEventId: cycleId,
-      currentStatePayload: buildCurrentStatePayload({ cycleId, observedAt, master: recordedMaster, members }),
+      currentStatePayload, membersForPerformance: members.filter((member) => !member.error_code),
       timings,
     };
   }
   async submitOrders(limit = 10) {
     if (this.mode !== 'LIVE') return 0;
     const jobs = await this.rpc('claim_copy_order_intents', { p_limit: limit });
+    let attempts = 0;
     for (const job of jobs || []) {
       if (!job.resume_version) throw new Error('ORDER_RESUME_VERSION_REQUIRED');
       let response;
       let summary;
+      let memberLabel = job.user_id || '회원 계정';
       try {
         const auth = { apiKey: job.api_key, secretKey: job.secret_key, channelId: this.channelId, baseUrl: this.baseUrl, fetchImpl: this.fetchImpl };
+        const context = await this.rpc('get_copy_worker_context');
+        if (!context?.master) throw new GateApiError('마스터 조회가 필요합니다.', { code: 'MASTER_POSITION_NOT_FOUND' });
+        const memberContext = context.members?.find((member) => member.trading_account_id === job.trading_account_id);
+        if (!memberContext) throw new GateApiError('활성 회원 설정을 확인할 수 없습니다.', { code: 'MEMBER_CONTEXT_MISSING' });
+        memberLabel = memberContext.nickname || memberContext.full_name || memberLabel;
+        const [memberSnapshot, masterSnapshot] = await Promise.all([
+          this.readAccount({ ...memberContext, ...job, expected_contracts: [job.contract] }),
+          this.readAccount({ ...context.master, expected_contracts: [job.contract] }),
+        ]);
+        assertSubmissionSnapshot(job, memberSnapshot, masterSnapshot);
         if (!job.reduce_only && Number(job.target_leverage) > 0) {
           await setFuturesLeverage({
             ...auth, contract: job.contract, leverage: job.target_leverage,
@@ -642,6 +747,7 @@ export class TradingRunner {
           p_intent_id: job.intent_id, p_version: job.resume_version,
         });
         if (permitted !== true) continue;
+        attempts++;
         response = await placeFuturesOrder({ ...auth, contract: job.contract, size: job.delta_size, reduceOnly: job.reduce_only, pid: job.pid, text: job.gate_order_text, slippageRatio: job.slippage_ratio,
           expiresAtMs: Date.parse(job.source_observed_at) + RESUME_MAX_AGE_MS });
         // A successful HTTP status without usable order data is not proof of
@@ -653,7 +759,7 @@ export class TradingRunner {
             code: 'INVALID_ORDER_RESPONSE', status: response.status, outcomeUnknown: true,
           });
         }
-        summary = summarizeGateOrder(response.payload);
+        summary = assertOrderIdentity(job, response.payload);
         if (Number(response.payload.size) !== Number(job.delta_size) || Math.abs(summary.filledSize) > Math.abs(Number(job.delta_size))
           || (summary.filledSize && Math.sign(summary.filledSize) !== Math.sign(Number(job.delta_size)))) {
           throw new GateApiError('Order quantity differs from the submitted intent.', { code: 'ORDER_QUANTITY_MISMATCH', outcomeUnknown: true });
@@ -670,7 +776,11 @@ export class TradingRunner {
           result_status: unknown ? 'UNKNOWN' : 'REJECTED',
           error_code: errorCode,
         });
-        if (error instanceof GateApiError && error.code === 'ORDER_QUANTITY_MISMATCH') {
+        if (unknown && this.onSafetyEvent) await this.onSafetyEvent({ event: 'COPY_ORDER_UNCONFIRMED', severity: 'CRITICAL',
+          details: { member: memberLabel, contract: job.contract, position_side: job.position_side,
+            side: Number(job.delta_size) > 0 ? 'BUY' : 'SELL', result_status: 'UNKNOWN',
+            error_code: errorCode, evidence: 'NO_CONFIRMED_EXCHANGE_FILL', intent_id: job.intent_id } });
+        if (error instanceof GateApiError && ['ORDER_QUANTITY_MISMATCH', 'ORDER_IDENTITY_MISMATCH'].includes(error.code)) {
           if (this.onSafetyEvent) await this.onSafetyEvent({ event: 'COPY_ORDER_QUANTITY_AUTO_HALTED', severity: 'CRITICAL',
             details: { intent_id: job.intent_id, contract: job.contract, reason: error.code } });
           break;
@@ -692,33 +802,32 @@ export class TradingRunner {
         filled_size: summary.filledSize,
       });
     }
-    return jobs?.length || 0;
+    return attempts;
   }
   async reconcileOrders(limit = 10) {
     const jobs = await this.rpc('claim_copy_reconciliation_jobs', { p_limit: limit });
     for (const job of jobs || []) {
+      let completion;
+      let summary;
       try {
         const auth = { apiKey: job.api_key, secretKey: job.secret_key, baseUrl: this.baseUrl, fetchImpl: this.fetchImpl };
         const order = job.gate_order_id ? await getFuturesOrder({ ...auth, orderId: job.gate_order_id }) : await findFuturesOrderByText({ ...auth, text: job.gate_order_text, contract: job.contract });
         if (!order) {
-          await this.rpc('complete_copy_reconciliation', { p_job_id: job.job_id, p_status: 'UNKNOWN', p_gate_order_id: null, p_filled_size: 0, p_average_fill_price: null, p_safe_response: { found: false } });
-          continue;
+          completion = { p_job_id: job.job_id, p_status: 'UNKNOWN', p_gate_order_id: null,
+            p_filled_size: 0, p_average_fill_price: null, p_safe_response: { found: false } };
+        } else {
+          assertOrderIdentity(job, order);
+          const orderId = String(order.id);
+          const trades = await getOrderTrades({ ...auth, orderId, contract: job.contract });
+          summary = summarizeGateOrder(order, trades);
+          completion = { p_job_id: job.job_id, p_status: summary.finalStatus, p_gate_order_id: orderId,
+            p_filled_size: summary.filledSize, p_average_fill_price: summary.averageFillPrice,
+            p_safe_response: { finish_as: summary.finishAs, left: summary.left, trade_count: trades.length, terminal: summary.terminal } };
         }
-        const orderId = String(order.id);
-        const trades = await getOrderTrades({ ...auth, orderId, contract: job.contract });
-        const summary = summarizeGateOrder(order, trades);
-        await this.rpc('complete_copy_reconciliation', { p_job_id: job.job_id, p_status: summary.finalStatus, p_gate_order_id: orderId, p_filled_size: summary.filledSize, p_average_fill_price: summary.averageFillPrice, p_safe_response: { finish_as: summary.finishAs, left: summary.left, trade_count: trades.length, terminal: summary.terminal } });
-        if (this.logger) this.logger('order_reconciliation_completed', {
-          intent_id: job.intent_id,
-          job_id: job.job_id,
-          contract: job.contract,
-          result_status: summary.finalStatus,
-          gate_order_id: orderId,
-          filled_size: summary.filledSize,
-        });
       } catch (error) {
         const errorCode = safeError(error, 'RECONCILIATION');
-        await this.rpc('complete_copy_reconciliation', { p_job_id: job.job_id, p_status: 'UNKNOWN', p_gate_order_id: job.gate_order_id, p_filled_size: 0, p_average_fill_price: null, p_safe_response: { error_code: errorCode } });
+        completion = { p_job_id: job.job_id, p_status: 'UNKNOWN', p_gate_order_id: job.gate_order_id,
+          p_filled_size: 0, p_average_fill_price: null, p_safe_response: { error_code: errorCode } };
         if (this.logger) this.logger('order_reconciliation_failed', {
           intent_id: job.intent_id,
           job_id: job.job_id,
@@ -727,6 +836,12 @@ export class TradingRunner {
           error_code: errorCode,
         });
       }
+      // A lost database acknowledgement must never rewrite a committed fill.
+      await this.rpc('complete_copy_reconciliation', completion);
+      if (summary && this.logger) this.logger('order_reconciliation_completed', {
+        intent_id: job.intent_id, job_id: job.job_id, contract: job.contract,
+        result_status: summary.finalStatus, gate_order_id: summary.gateOrderId, filled_size: summary.filledSize,
+      });
     }
     return jobs?.length || 0;
   }
@@ -781,8 +896,18 @@ export class TradingRunner {
       let sent = false;
       let errorCode = null;
       try {
+        let details;
+        if (job.gate_order_id != null) {
+          const auth = { apiKey: job.api_key, secretKey: job.secret_key, baseUrl: this.baseUrl, fetchImpl: this.fetchImpl };
+          const order = await getFuturesOrder({ ...auth, orderId: job.gate_order_id });
+          const trades = await getOrderTrades({ ...auth, orderId: job.gate_order_id, contract: job.contract });
+          details = exchangeTradeAlert(job, order, trades);
+        } else if (['REJECTED', 'CANCELLED'].includes(job.result_status) && Number(job.filled_size) === 0 && job.error_code) {
+          details = { ...job.details, error_code: job.error_code, result_status: job.result_status,
+            fill_notional_usdt: 0, evidence: 'NO_CONFIRMED_EXCHANGE_FILL' };
+        } else throw new GateApiError('거래소 결과를 확인하지 못했습니다.', { code: 'ALERT_EXCHANGE_RESULT_UNVERIFIED' });
         const result = this.onSafetyEvent
-          ? await this.onSafetyEvent({ event: job.event_type, severity: 'INFO', details: job.details || {} })
+          ? await this.onSafetyEvent({ event: job.event_type, severity: Number(job.filled_size) ? 'INFO' : 'WARNING', details })
           : { sent: false, reason: 'ALERT_DESTINATION_NOT_CONFIGURED' };
         sent = result?.sent === true;
         errorCode = sent ? null : safeError(new Error(result?.reason || 'ALERT_DELIVERY_FAILED'), 'ENTRY_ALERT');

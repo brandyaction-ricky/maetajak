@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { planMemberPositions, TradingRunner } from './trading-runner.js';
+import { observedAccount, position } from '../tests/fixtures/verified-runtime.js';
 
 const contracts = new Map([['BTC_USDT', {
   quantoMultiplier: 0.001, sizeStep: 1, orderSizeMin: 1,
@@ -55,6 +56,8 @@ const job = {
   contract: 'BTC_USDT', position_side: 'LONG', position_mode: 'dual', delta_size: 20,
   reduce_only: false, target_leverage: null, gate_order_text: 't-mtj-12345678901234567890',
   slippage_ratio: 0.005, resume_version: 'test-resume', source_observed_at: new Date().toISOString(),
+  trading_account_id: 'account', actual_size_at_plan: 0, target_size: 20, master_size_at_plan: 20,
+  quanto_multiplier: 0.001, risk_leverage: 10,
 };
 
 function runnerFor({ body, status = 201, failCompletion = false, failFetch = false, jobs = [job] }) {
@@ -69,6 +72,7 @@ function runnerFor({ body, status = 201, failCompletion = false, failFetch = fal
     },
   });
   runner.rpc = async (name, parameters) => {
+    if (name === 'get_copy_worker_context') return { master: { trading_account_id: 'master' }, members: [{ trading_account_id: 'account' }] };
     if (name === 'claim_copy_order_intents') return jobs;
     if (name === 'authorize_copy_order_submission') return true;
     if (name === 'complete_copy_order_attempt') {
@@ -80,12 +84,13 @@ function runnerFor({ body, status = 201, failCompletion = false, failFetch = fal
     }
     throw new Error(`unexpected RPC: ${name}`);
   };
+  runner.readAccount = async (account) => observedAccount({ ...account, positions: account.trading_account_id === 'master' ? [position(20)] : [] });
   return { runner, completions, orderRequests: () => orderRequests };
 }
 
 test('a lost completion response never rewrites a filled order as rejected', async () => {
   const fixture = runnerFor({
-    body: JSON.stringify({ id: 'order-1', size: 20, left: 0, status: 'finished', finish_as: 'filled' }),
+    body: JSON.stringify({ id: 'order-1', contract: job.contract, text: job.gate_order_text, size: 20, left: 0, status: 'finished', finish_as: 'filled' }),
     failCompletion: true,
     jobs: [job, { ...job, intent_id: 'intent-2' }],
   });

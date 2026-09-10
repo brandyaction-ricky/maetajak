@@ -34,7 +34,7 @@ test('worker alert sends Telegram messages without leaking the bot token into th
   const result = await sendWorkerAlert({
     telegramBotToken: botToken, telegramChatId: '-1001234567890', event: 'COPY_SYSTEM_AUTO_HALTED', severity: 'CRITICAL',
     details: { failures: 3, error_code: 'GATE_TIMEOUT\nretry stopped' },
-    fetchImpl: async (url, options) => { request = { url, options }; return { ok: true, status: 200 }; },
+    fetchImpl: async (url, options) => { request = { url, options }; return new Response(JSON.stringify({ ok: true, result: { message_id: 1 } })); },
   });
   assert.deepEqual(result, { sent: true, provider: 'telegram' });
   assert.equal(request.url, `https://api.telegram.org/bot${botToken}/sendMessage`);
