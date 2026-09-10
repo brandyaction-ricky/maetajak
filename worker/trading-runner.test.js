@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { buildCurrentStatePayload, planMemberPositions, safeError, suppressExecutableIntents, TradingRunner } from './trading-runner.js';
+import { observedAccount, position as observedPosition } from '../tests/fixtures/verified-runtime.js';
 
 const contracts = new Map([['BTC_USDT', { quantoMultiplier: 0.001, sizeStep: 1, orderSizeMin: 1, orderSizeMax: 0, marketOrderSizeMax: 0, inDelisting: false }]]);
 const base = {
@@ -284,7 +285,7 @@ test('DRY_RUN records target, actual, and delta without an intent key', async ()
     if (name === 'get_copy_resume_context') return [{ trading_account_id: 'member-account-1', state: 'ACTIVE', version: 'test-resume', baseline_version: 'test-resume', positions: [], member_positions: [] }];
     if (name === 'get_copy_target_anchors') return [];
     if (name === 'confirm_copy_order_observation') return 0;
-    if (name === 'record_copy_worker_cycle_with_target_anchors') {
+    if (name === 'record_verified_copy_worker_cycle') {
       recordedPayload = parameters.p_payload;
       return 'cycle-1';
     }
@@ -293,8 +294,8 @@ test('DRY_RUN records target, actual, and delta without an intent key', async ()
   };
   runner.loadContracts = async () => contracts;
   runner.readAccount = async (account) => account.trading_account_id === 'master-1'
-    ? { ...account, total: 10_000, available: 9_000, unrealisedPnl: 0, positions: [{ contract: 'BTC_USDT', size: 100, markPrice: 50_000 }] }
-    : { ...account, total: 5_000, available: 5_000, unrealisedPnl: 0, positions: [] };
+    ? { ...account, open_orders: [], observed_started_at: new Date().toISOString(), observed_at: new Date().toISOString(), total: 10_000, available: 9_000, unrealisedPnl: 0, positions: [{ contract: 'BTC_USDT', size: 100, markPrice: 50_000 }] }
+    : { ...account, open_orders: [], observed_started_at: new Date().toISOString(), observed_at: new Date().toISOString(), total: 5_000, available: 5_000, unrealisedPnl: 0, positions: [] };
 
   const observation = await runner.syncOnce();
   const [position] = recordedPayload.members[0].planned_positions;
@@ -341,7 +342,7 @@ test('worker snapshots a verified Master before any member API is connected', as
     if (name === 'get_copy_resume_context') return [{ trading_account_id: 'member-account-1', state: 'ACTIVE', version: 'test-resume', baseline_version: 'test-resume', positions: [], member_positions: [] }];
     if (name === 'get_copy_target_anchors') return [];
     if (name === 'confirm_copy_order_observation') return 0;
-    if (name === 'record_copy_worker_cycle_with_target_anchors') {
+    if (name === 'record_verified_copy_worker_cycle') {
       recordedPayload = parameters.p_payload;
       return 'cycle-1';
     }
@@ -349,7 +350,7 @@ test('worker snapshots a verified Master before any member API is connected', as
   };
   runner.loadContracts = async () => { throw new Error('contracts should not load without members'); };
   runner.readAccount = async (account) => ({
-    ...account,
+    ...account, open_orders: [], observed_started_at: new Date().toISOString(), observed_at: new Date().toISOString(),
     total: 10_000,
     available: 9_000,
     unrealisedPnl: 100,
@@ -382,7 +383,7 @@ test('worker refreshes cached contract metadata when Master opens an unknown con
     if (name === 'get_copy_resume_context') return [{ trading_account_id: 'member-account-1', state: 'ACTIVE', version: 'test-resume', baseline_version: 'test-resume', positions: [], member_positions: [] }];
     if (name === 'get_copy_target_anchors') return [];
     if (name === 'confirm_copy_order_observation') return 0;
-    if (name === 'record_copy_worker_cycle_with_target_anchors') return {};
+    if (name === 'record_verified_copy_worker_cycle') return {};
     if (name === 'get_or_initialize_member_copy_baselines') return { positions: [], member_positions: [] };
     throw new Error(`unexpected rpc ${name}`);
   };
@@ -396,8 +397,8 @@ test('worker refreshes cached contract metadata when Master opens an unknown con
   runner.readAccount = async (account) => {
     reads += 1;
     return reads === 1
-      ? { ...account, total: 10_000, available: 9_000, positions: [{ contract: 'DELL_USDT', size: 10, markPrice: 100 }] }
-      : { ...account, total: 10_000, available: 9_000, positions: [] };
+      ? { ...account, open_orders: [], observed_started_at: new Date().toISOString(), observed_at: new Date().toISOString(), total: 10_000, available: 9_000, positions: [{ contract: 'DELL_USDT', size: 10, markPrice: 100 }] }
+      : { ...account, open_orders: [], observed_started_at: new Date().toISOString(), observed_at: new Date().toISOString(), total: 10_000, available: 9_000, positions: [] };
   };
   await runner.syncOnce();
   assert.equal(loads, 2);
@@ -424,7 +425,7 @@ test('member failures expose a safe stage without leaking upstream messages', as
     if (name === 'get_copy_resume_context') return [{ trading_account_id: 'member-account-1', state: 'ACTIVE', version: 'test-resume', baseline_version: 'test-resume', positions: [], member_positions: [] }];
     if (name === 'get_copy_target_anchors') return [];
     if (name === 'confirm_copy_order_observation') throw new Error('private SQL error');
-    if (name === 'record_copy_worker_cycle_with_target_anchors') {
+    if (name === 'record_verified_copy_worker_cycle') {
       recordedPayload = parameters.p_payload;
       return 'cycle-1';
     }
@@ -432,7 +433,7 @@ test('member failures expose a safe stage without leaking upstream messages', as
   };
   runner.loadContracts = async () => contracts;
   runner.readAccount = async (account) => ({
-    ...account, total: 10_000, available: 9_000, positions: [],
+    ...account, open_orders: [], observed_started_at: new Date().toISOString(), observed_at: new Date().toISOString(), total: 10_000, available: 9_000, positions: [],
   });
 
   await runner.syncOnce();
@@ -463,6 +464,7 @@ test('LIVE applies Master leverage to the correct hedge leg before submitting an
       if (url.endsWith('/futures/usdt/orders')) {
         return new Response(JSON.stringify({
           id: '9223372036854775807', size: 3, left: 0, status: 'finished', finish_as: 'filled',
+          contract: 'BTC_USDT', text: 't-mtj-12345678901234567890',
         }), { status: 201 });
       }
       throw new Error(`unexpected URL: ${url}`);
@@ -470,11 +472,13 @@ test('LIVE applies Master leverage to the correct hedge leg before submitting an
   });
   runner.rpc = async (name, parameters = {}) => {
     if (name === 'authorize_copy_order_submission') return true;
+    if (name === 'get_copy_worker_context') return { master: { trading_account_id: 'master' }, members: [{ trading_account_id: 'member' }] };
     if (name === 'claim_copy_order_intents') return [{
       resume_version: 'test-resume', source_observed_at: new Date().toISOString(), intent_id: 'intent-1', api_key: 'key', secret_key: 'secret', contract: 'BTC_USDT',
       position_side: 'LONG', position_mode: 'dual', delta_size: 3, reduce_only: false,
       target_leverage: 7, margin_mode: 'cross', gate_order_text: 't-mtj-12345678901234567890',
       slippage_ratio: 0.005,
+      trading_account_id: 'member', actual_size_at_plan: 0, target_size: 3, master_size_at_plan: 40, quanto_multiplier: 0.001,
     }];
     if (name === 'complete_copy_order_attempt') {
       completions.push(parameters);
@@ -483,6 +487,7 @@ test('LIVE applies Master leverage to the correct hedge leg before submitting an
     throw new Error(`unexpected rpc: ${name}`);
   };
 
+  runner.readAccount = async (account) => observedAccount({ ...account, positions: account.trading_account_id === 'master' ? [observedPosition(40)] : [] });
   assert.equal(await runner.submitOrders(), 1);
   assert.equal(requests.length, 2);
   assert.match(requests[0].url, /dual_comp\/positions\/BTC_USDT\/leverage\?leverage=0&cross_leverage_limit=7$/);
@@ -498,9 +503,14 @@ test('entry alert delivery reports the durable job result without affecting orde
     supabase: {}, baseUrl: 'https://api.gateio.ws', workerId: 'worker-test', workerVersion: '0.4.0',
     publicIp: '192.0.2.1', channelId: 'maetajak', mode: 'LIVE',
     onSafetyEvent: async (alert) => { alerts.push(alert); return { sent: true, provider: 'telegram' }; },
+    fetchImpl: async (url) => new Response(JSON.stringify(url.includes('/my_trades') ? [] : {
+      id: '77', contract: 'BTC_USDT', text: 't-mtj-alert', size: 2, left: 0, fill_price: '50000', status: 'finished', finish_as: 'filled',
+    })),
   });
   runner.rpc = async (name, parameters = {}) => {
     if (name === 'claim_copy_entry_alerts') return [{ alert_id: 7, event_type: 'COPY_POSITION_ENTRY_FILLED',
+      gate_order_id: '77', gate_order_text: 't-mtj-alert', contract: 'BTC_USDT', delta_size: 2, filled_size: 2,
+      result_status: 'FILLED', quanto_multiplier: 0.001, api_key: 'test', secret_key: 'test',
       details: { member: '테스트 회원', contract: 'BTC_USDT', position_side: 'LONG', filled_size: 2 } }];
     if (name === 'complete_copy_entry_alert') { completions.push(parameters); return null; }
     throw new Error(`unexpected rpc: ${name}`);
@@ -559,21 +569,24 @@ test('order observability contains safe intent correlation without credentials',
     logger: (event, details) => logs.push({ event, details }),
     fetchImpl: async (url) => {
       if (url.includes('/positions/BTC_USDT/leverage')) return new Response('{}', { status: 200 });
-      if (url.endsWith('/futures/usdt/orders')) return new Response(JSON.stringify({ id: '1234', size: 1, left: 0, status: 'finished', finish_as: 'filled' }), { status: 201 });
+      if (url.endsWith('/futures/usdt/orders')) return new Response(JSON.stringify({ id: '1234', contract: 'BTC_USDT', text: 't-mtj-safe', size: 1, left: 0, status: 'finished', finish_as: 'filled' }), { status: 201 });
       throw new Error(`unexpected URL: ${url}`);
     },
   });
   runner.rpc = async (name) => {
     if (name === 'authorize_copy_order_submission') return true;
+    if (name === 'get_copy_worker_context') return { master: { trading_account_id: 'master' }, members: [{ trading_account_id: 'member' }] };
     if (name === 'claim_copy_order_intents') return [{
       resume_version: 'test-resume', source_observed_at: new Date().toISOString(), intent_id: 'intent-safe-1', user_id: 'member-1', api_key: 'private-key', secret_key: 'private-secret',
       contract: 'BTC_USDT', position_side: 'LONG', position_mode: 'single', delta_size: 1,
       reduce_only: false, target_leverage: 0, margin_mode: 'cross', gate_order_text: 't-mtj-safe', slippage_ratio: 0.005,
+      trading_account_id: 'member', actual_size_at_plan: 0, target_size: 1, master_size_at_plan: 40, quanto_multiplier: 0.001, risk_leverage: 10,
     }];
     if (name === 'complete_copy_order_attempt') return null;
     throw new Error(`unexpected rpc: ${name}`);
   };
 
+  runner.readAccount = async (account) => observedAccount({ ...account, positions: account.trading_account_id === 'master' ? [observedPosition(40)] : [] });
   assert.equal(await runner.submitOrders(), 1);
   assert.equal(logs[0].event, 'order_attempt_completed');
   assert.equal(logs[0].details.intent_id, 'intent-safe-1');

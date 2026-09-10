@@ -132,10 +132,9 @@ export async function runTradingCycle() {
     const submitMs = Date.now() - submitStartedAt;
     const alertsDelivered = await runner.deliverEntryAlerts();
     await runner.reportCycle(true);
-    // The shadow projection is intentionally written only after reconciliation,
-    // order submission, and the authoritative cycle report have completed. Its
-    // failure cannot delay or halt live copy execution.
-    const currentState = await runner.syncCurrentState(observation.currentStatePayload);
+    // Current State and engine state were committed and compared atomically
+    // before any order could be claimed. A fill remains pending observation
+    // until two fresh Gate position reads confirm it in later cycles.
     if (observation.masterObserved || observation.observed || reconciled || submitted || alertsDelivered) log('cycle_complete', {
       copy_event_id: observation.copyEventId,
       observed: observation.observed,
@@ -144,14 +143,18 @@ export async function runTradingCycle() {
       reconciled,
       submitted,
       alerts_delivered: alertsDelivered,
-      current_state_synced: currentState.synced,
+      current_state_synced: true,
       timings: {
         ...observation.timings,
         reconcile_ms: reconcileMs,
         submit_ms: submitMs,
-        current_state_ms: currentState.duration_ms,
+        current_state_ms: observation.timings.legacy_write_ms,
       },
     });
+    if (tradingMode === 'LIVE') for (const member of observation.membersForPerformance || []) {
+      try { await runner.syncMemberPerformance(member, runner.contracts, new Date().toISOString()); }
+      catch (error) { log('member_performance_sync_failed', { user_id: member.user_id, error_code: safeError(error, 'PERFORMANCE') }); }
+    }
   } catch (error) {
     const code = error instanceof Error ? error.message : 'unknown';
     try {

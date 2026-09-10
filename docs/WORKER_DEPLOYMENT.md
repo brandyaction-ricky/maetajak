@@ -115,7 +115,7 @@ DB는 최근 Worker heartbeat, 운영 Gate URL, 고정 IP, 최근 준비 테스�
 5. `DRY_RUN` 고정, Preflight, Worker 재시작
 6. 정상 사이클과 회원 동기화 오류 부재 검증
 
-실패하면 Worker는 중지되고 DB 실행 잠금은 유지됩니다. 배포 직전 DB와 Worker가 모두 정상인 LIVE 상태였던 경우에만, DRY_RUN 검증을 통과한 뒤 기존 LIVE 상태를 자동 복구합니다. 수동 중단·장애 중단·OBSERVE·DRY_RUN 상태는 자동 복구하지 않습니다. 최초 LIVE 승격은 DRY_RUN 목표 수량 검토 후 `lightsail-enable-live.sh`의 별도 확인 절차가 필요합니다.
+실패하면 Worker는 중지되고 DB 실행 잠금은 유지됩니다. 성공해도 배포는 항상 DRY_RUN으로 종료하며 LIVE 상태를 자동 복구하지 않습니다. 실카피 재개는 DRY_RUN 목표 수량 검토와 운영자의 명시적 지시 후 `lightsail-enable-live.sh`의 별도 확인 절차로 진행합니다.
 
 배포 스크립트가 이미 이미지를 빌드한 뒤 systemd는 같은 이미지를 재빌드하지 않고 시작합니다. 빌드 또는 시작 실패로 서비스가 비활성 상태에 남으면 다음 자동 배포 주기가 동일 커밋을 안전한 DRY_RUN 절차로 다시 복구합니다.
 
@@ -124,6 +124,20 @@ DB는 최근 Worker heartbeat, 운영 Gate URL, 고정 IP, 최근 준비 테스�
 DB 마이그레이션이 포함된 커밋은 자동 배포가 차단됩니다. 운영 SQL을 먼저 적용하고 검증한 뒤 서버 체크아웃을 갱신해야 합니다. 기존 운영 DB의 `supabase_migrations.schema_migrations`에는 이미 적용된 버전을 등록해 이력을 일관되게 유지합니다.
 
 ## 긴급 중단
+
+### Worker 0.5.0 / schema 3 배포 검수
+
+1. 실행 잠금과 emergency halt를 유지한 상태에서 `20260910002837_verified_copy_cycles_and_trade_alerts.sql`을 먼저 적용합니다. 자동 배포는 새 RPC 존재와 `schema_version=3`, `worker_version=0.5.0`, 원자적 Current State 및 거래소 확인 알림 기능을 모두 검사합니다.
+2. Worker를 DRY_RUN으로 배포하고 실제 관측 사이클의 오류 여부를 확인합니다. 이전 0.4.0 워커는 신규 주문을 가져갈 수 없습니다. 구버전 롤백도 DRY_RUN/중단 상태를 유지해야 합니다.
+3. 서버의 기존 보안 환경에서 `npm run worker:audit`를 실행해 Gate 실제값, 엔진, Current State, 관측 시각, 미확정 주문 및 체결 반영 대기를 대조합니다. 명령은 읽기 전용이며 알림이나 주문을 전송하지 않습니다.
+4. 연결된 대상 계좌에서 DRY_RUN 목표와 실제 Gate 내역을 대조하고, 명시적으로 허용된 환경에서 알림 수신을 확인합니다. 자동 테스트 결과만으로 운영 계좌 검수를 완료한 것으로 표시하지 않습니다.
+5. LIVE 재개는 기존의 별도 명시 지시를 요구합니다. 이 변경이나 CI 통과는 LIVE 재개를 의미하지 않습니다.
+
+프런트엔드 Vercel 재시작은 Lightsail 주문 워커를 재시작하거나 주문을 재전송하지 않습니다. 장애 검수의 주문 프로세스 종료 대상은 독립 Node 워커입니다.
+
+상세 검수 증거와 운영 환경에서 남은 항목은 [COPY_QA_20260910.md](COPY_QA_20260910.md)를 참고합니다.
+
+### 중단 명령
 
 ```bash
 COPY_HALT_REASON=OPERATOR_EMERGENCY_HALT npm run worker:halt

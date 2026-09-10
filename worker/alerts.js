@@ -1,5 +1,5 @@
 function safeAlertText(value, limit = 300) {
-  return String(value || '').replace(/[\r\n\t]+/g, ' ').slice(0, limit);
+  return String(value ?? '').replace(/[\r\n\t]+/g, ' ').slice(0, limit);
 }
 
 const EVENT_MESSAGES = {
@@ -12,6 +12,9 @@ const EVENT_MESSAGES = {
   COPY_ORDER_QUANTITY_AUTO_HALTED: { title: '주문 수량 불일치 감지', state: '전체 카피 중단', description: '계획한 수량과 거래소가 접수한 수량이 달라 신규 주문을 차단했습니다.', action: '해당 주문과 실제 포지션 수량을 확인한 뒤 재개해 주세요.' },
   MEMBER_COPY_RESUME_WAITING: { title: '회원 카피 재개 대기', state: '해당 회원 대기', description: '안전 확인 조건이 아직 충족되지 않아 회원 카피를 재개하지 않았습니다.', action: '표시된 대기 사유를 확인해 주세요. 조건이 정상화되면 다시 검증합니다.' },
   COPY_POSITION_ENTRY_FILLED: { title: '포지션 진입 체결', state: '체결 완료', description: '회원 계정의 신규 진입 또는 증액 주문이 체결되었습니다.', action: '워커가 실제 포지션 반영을 다시 확인한 뒤 다음 주문을 계산합니다.' },
+  COPY_POSITION_REDUCTION_FILLED: { title: '포지션 청산 체결', state: '체결 확인', description: '회원 계정의 감축 또는 청산 주문 결과를 거래소에서 확인했습니다.', action: '실제 포지션 반영을 확인한 뒤 다음 주문을 계산합니다.' },
+  COPY_ORDER_FAILED: { title: '카피 주문 미체결', state: '주문 결과 확인', description: '주문이 체결되지 않았습니다. 아래 결과와 원인을 확인해 주세요.', action: '실제 체결이 확인되지 않은 수량은 체결 금액에 포함하지 않습니다.' },
+  COPY_ORDER_UNCONFIRMED: { title: '주문 결과 확인 중', state: '추가 주문 대기', description: '거래소 응답을 확인하지 못했습니다. 이미 체결되었을 수 있어 같은 주문을 다시 보내지 않습니다.', action: '기존 주문 ID로 거래소 결과를 조회합니다. 확인 전까지 이 회원의 추가 주문을 보류합니다.' },
   OPEN_ORDERS_CANCELLED: { title: '미체결 주문 취소 완료', state: '회원 카피 중단 유지', description: 'Gate.io의 일반 무기한 선물 미체결 주문을 모두 취소하고 0건을 재확인했습니다.', action: '현재 포지션은 유지됩니다. 해당 회원을 다시 안전 검증한 뒤 재개해 주세요.' },
   OPEN_ORDER_CANCEL_FAILED: { title: '미체결 주문 취소 실패', state: '회원 카피 중단 유지', description: 'Gate.io 미체결 주문을 모두 취소했는지 확인하지 못했습니다.', action: '해당 계정은 자동 재개하지 않습니다. 오류와 Gate.io 주문 화면을 확인해 주세요.' },
 };
@@ -22,10 +25,14 @@ const DETAIL_LABELS = {
   error_code: '오류 원인', reason: '감지 사유', duplicate_count: '중복 주문 수', mode: '실행 모드', action: '현재 처리',
   gate_uid: 'Gate UID', copy_event_id: '추적 ID', intent_id: '주문 추적 ID',
   cancelled_count: '취소 주문 수', remaining_count: '남은 미체결 주문 수',
+  side: '매수·매도', fill_notional_usdt: '체결 금액 (USDT)', gate_order_id: '거래소 주문 ID', evidence: '확인 근거',
 };
 
 const VALUE_LABELS = {
   LONG: '롱', SHORT: '숏', FILLED: '전체 체결', PARTIALLY_FILLED: '부분 체결',
+  BUY: '매수', SELL: '매도', REJECTED: '거절·미체결', CANCELLED: '취소',
+  UNKNOWN: '거래소 결과 미확정',
+  GATE_ORDER_QUERY: 'Gate 주문·체결 직접 조회', NO_CONFIRMED_EXCHANGE_FILL: '거래소 체결 확인 없음',
   cross: '교차', isolated: '격리', DRY_RUN: '모의 실행', LIVE: '실거래',
   GATE_TIMEOUT: 'Gate.io 응답 시간 초과', ORDER_QUANTITY_MISMATCH: '계획 수량과 거래소 주문 수량 불일치',
   RESUME_UNRESOLVED_ORDERS: '확인되지 않은 이전 주문이 남아 있음', RESUME_OPEN_EXCHANGE_ORDERS: '거래소에 미체결 주문이 남아 있음',
@@ -39,6 +46,7 @@ function koreanTime(value) {
 }
 
 function readableValue(key, value) {
+  if (key === 'fill_notional_usdt' && Number.isFinite(Number(value))) return `${Number(value).toFixed(2)} USDT`;
   const text = VALUE_LABELS[value] || value;
   if (key === 'target_leverage' && /^\d+(?:\.\d+)?$/.test(text)) return `${text}배`;
   return text;
@@ -57,7 +65,8 @@ function alertPayload({ event, severity, details }) {
     event: safeAlertText(event, 80),
     severity: safeAlertText(severity, 20),
     occurred_at: new Date().toISOString(),
-    details: Object.fromEntries(Object.entries(details).slice(0, 10).map(([key, value]) => [safeAlertText(key, 50), safeAlertText(value)])),
+    details: Object.fromEntries(Object.entries(details).filter(([key]) => !/secret|api_key|token|password/i.test(key))
+      .slice(0, 18).map(([key, value]) => [safeAlertText(key, 50), value == null ? '없음' : safeAlertText(value)])),
   };
 }
 
@@ -90,9 +99,10 @@ async function sendTelegramAlert({ botToken, chatId, payload, fetchImpl }) {
       body: JSON.stringify({ chat_id: chatId, text: telegramMessage(payload), disable_web_page_preview: true }),
       signal: AbortSignal.timeout(5_000),
     });
-    return response.ok
+    const result = await response.json();
+    return response.ok && result?.ok === true && result.result?.message_id != null
       ? { sent: true, provider: 'telegram' }
-      : { sent: false, provider: 'telegram', reason: `HTTP_${response.status}` };
+      : { sent: false, provider: 'telegram', reason: result?.error_code ? `TELEGRAM_${result.error_code}` : `HTTP_${response.status}_UNCONFIRMED` };
   } catch (error) {
     return { sent: false, provider: 'telegram', reason: error?.name === 'TimeoutError' ? 'TIMEOUT' : 'NETWORK_ERROR' };
   }

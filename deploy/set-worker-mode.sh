@@ -29,7 +29,7 @@ systemctl daemon-reload
 temp_env="$(mktemp "${ENV_FILE}.XXXXXX")"
 trap 'rm -f "${temp_env}"' EXIT
 awk '!/^TRADING_MODE=/ && !/^RUN_READINESS_CHECK=/ && !/^WORKER_VERSION=/' "${ENV_FILE}" > "${temp_env}"
-printf 'WORKER_VERSION=0.4.0\n' >> "${temp_env}"
+printf 'WORKER_VERSION=0.5.0\n' >> "${temp_env}"
 printf 'TRADING_MODE=%s\n' "${MODE}" >> "${temp_env}"
 if [[ "${MODE}" == "DRY_RUN" ]]; then
   printf 'RUN_READINESS_CHECK=true\n' >> "${temp_env}"

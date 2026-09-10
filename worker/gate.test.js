@@ -244,8 +244,8 @@ test('open futures orders are cancelled and verified empty before success', asyn
     apiKey: 'api-key', secretKey: 'secret-key', channelId: 'maetajak',
     fetchImpl: async (url, options) => {
       calls.push({ url, method: options.method });
-      if (options.method === 'DELETE') return new Response(JSON.stringify([{ id: '1' }]), { status: 200 });
-      return new Response(JSON.stringify(calls.length === 1 ? [{ id: '1', status: 'open' }] : []), { status: 200 });
+      if (options.method === 'DELETE') return new Response(JSON.stringify([{ id: '1', contract: 'BTC_USDT' }]), { status: 200 });
+      return new Response(JSON.stringify(calls.length === 1 ? [{ id: '1', contract: 'BTC_USDT', status: 'open' }] : []), { status: 200 });
     },
   });
   assert.deepEqual(result, { cancelledCount: 1, remainingCount: 0 });
@@ -256,7 +256,7 @@ test('open futures orders are cancelled and verified empty before success', asyn
 test('open futures order cancellation fails closed when an order remains', async () => {
   await assert.rejects(cancelAllOpenFuturesOrders({
     apiKey: 'api-key', secretKey: 'secret-key', channelId: 'maetajak',
-    fetchImpl: async (_url, options) => new Response(JSON.stringify(options.method === 'DELETE' ? [] : [{ id: '1' }]), { status: 200 }),
+    fetchImpl: async (_url, options) => new Response(JSON.stringify(options.method === 'DELETE' ? [] : [{ id: '1', contract: 'BTC_USDT' }]), { status: 200 }),
   }), (error) => error instanceof GateApiError && error.code === 'OPEN_FUTURES_ORDERS_REMAIN');
 });
 
@@ -293,7 +293,7 @@ test('decimal futures contracts use their minimum quantity as the lot step', asy
   });
   assert.deepEqual(contracts.get('TEST_USDT'), {
     name: 'TEST_USDT', quantoMultiplier: 0.01, sizeStep: 0.001, orderSizeMin: 0.001,
-    orderSizeMax: 100, marketOrderSizeMax: 25, inDelisting: false,
+    orderSizeMax: 100, marketOrderSizeMax: 25, inDelisting: false, leverageMax: 100, takerFeeRate: 0.001,
   });
 });
 
