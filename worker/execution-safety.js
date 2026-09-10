@@ -15,9 +15,14 @@ export function assertFreshAccount(account, now = Date.now()) {
 }
 
 export function assertOrderIdentity(job, order) {
+  // Gate accepts `reduce_only` in the create request, but its FuturesOrder
+  // response schema exposes the verified flag as the read-only
+  // `is_reduce_only` field. Keep the request-shaped alias for compatibility
+  // with older responses and test fixtures.
+  const reduceOnly = order?.is_reduce_only === true || order?.reduce_only === true;
   if (order?.id == null || order.contract !== job.contract
     || String(order.text) !== String(job.gate_order_text)
-    || (job.reduce_only && order.reduce_only !== true)
+    || (job.reduce_only && !reduceOnly)
     || (job.gate_order_id != null && String(order.id) !== String(job.gate_order_id))) {
     throw new GateApiError('거래소 주문 식별자가 일치하지 않습니다.', { code: 'ORDER_IDENTITY_MISMATCH', outcomeUnknown: true });
   }
