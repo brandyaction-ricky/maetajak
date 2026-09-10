@@ -81,6 +81,19 @@ test('ORCL and HOOD cannot appear as entries without corresponding Master positi
   assert.equal(p.length,2);
 });
 
+test('missing metadata clears proven-flat legacy legs but blocks any live exposure', () => {
+  const common = { cycleId:'flat-legacy',system:{},contracts:new Map(),
+    master:{total:20000,positions:[]},member:{user_id:'member',resume_version:ids.version,total:5000,
+      available:4500,positions:[],copy_ratio:100,max_position_ratio:30,
+      previous_states:[{contract:'OLD_USDT',position_side:'LONG',actual_size:4,state:'SYNCED'}]} };
+  const [flat] = planMemberPositions(common);
+  assert.equal(flat.contract,'OLD_USDT'); assert.equal(flat.size,0); assert.equal(flat.target_size,0);
+  assert.equal(flat.state,'MANUAL_OVERRIDE'); assert.equal(flat.intent,undefined);
+  assert.equal(flat.anchor_update_allowed,false);
+  assert.throws(() => planMemberPositions({ ...common,
+    member:{...common.member,positions:[position(1,'OLD_USDT')]} }), /계약 정보를/);
+});
+
 test('manual stray positions and open exchange orders pause copying without consuming a Master change', () => {
   const manual = cyclePayload({ member:{positions:[position(3,'SOXL_USDT')]} }).members[0].planned_positions.find((p)=>p.contract==='SOXL_USDT');
   assert.equal(manual.state,'MANUAL_OVERRIDE'); assert.equal(manual.intent,undefined); assert.equal(manual.anchor_update_allowed,false);
