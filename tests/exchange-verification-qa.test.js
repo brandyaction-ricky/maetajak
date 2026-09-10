@@ -18,6 +18,7 @@ test('foreign symbol, wrong direction, wrong ID, and incorrect reduce-only respo
     assert.throws(()=>assertOrderIdentity(job,altered),/일치/);
   }
   assert.throws(()=>assertOrderIdentity({...job,reduce_only:true},order),/식별자/);
+  assert.equal(assertOrderIdentity({...job,reduce_only:true},{...order,is_reduce_only:true}).filledSize,10);
   assert.throws(()=>normalizeGatePositions([{contract:'BTC_USDT',size:1,mark_price:50000,mode:'dual_short'}]),/방향/);
 });
 
@@ -41,7 +42,7 @@ test('protected position additions budget the existing leverage without changing
 test('Telegram uses actual average fill price and short covering reports BUY', () => {
   const details = exchangeTradeAlert(job,order);
   assert.equal(details.fill_notional_usdt,501); assert.equal(details.side,'BUY');
-  const covered = exchangeTradeAlert({...job,position_side:'SHORT',reduce_only:true},{...order,reduce_only:true});
+  const covered = exchangeTradeAlert({...job,position_side:'SHORT',reduce_only:true},{...order,is_reduce_only:true});
   assert.equal(covered.side,'BUY'); assert.equal(covered.result_status,'FILLED');
   assert.throws(()=>exchangeTradeAlert(job,{...order,left:10,finish_as:'ioc'}),/알림 기록/);
   assert.throws(()=>exchangeTradeAlert(job,{...order,fill_price:0}),/체결 금액/);
