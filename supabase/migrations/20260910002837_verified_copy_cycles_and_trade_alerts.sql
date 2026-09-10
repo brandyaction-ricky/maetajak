@@ -21,7 +21,7 @@ alter table private.copy_current_verifications enable row level security;
 revoke all on private.copy_current_verifications from public,anon,authenticated;
 create index copy_account_inflight_guard_idx on private.copy_order_intents(trading_account_id,id)
   where status in ('SUBMITTING','ACKNOWLEDGED','UNKNOWN','PARTIALLY_FILLED')
-    or (filled_size<>0 and observation_confirmed_at is null);
+    or (resume_version is not null and filled_size<>0 and observation_confirmed_at is null);
 
 create function public.record_verified_copy_worker_cycle(p_payload jsonb)
 returns uuid language plpgsql security definer set search_path=pg_catalog
@@ -195,7 +195,8 @@ begin
       left join private.copy_current_accounts c on c.trading_account_id=a.id where a.status='ACTIVE'),
     'unresolved_orders',(select count(*) from private.copy_order_intents where status in ('SUBMITTING','ACKNOWLEDGED','UNKNOWN')
       or (status='PARTIALLY_FILLED' and not exchange_terminal)),
-    'pending_fill_observations',(select count(*) from private.copy_order_intents where filled_size<>0 and observation_confirmed_at is null),
+    'pending_fill_observations',(select count(*) from private.copy_order_intents
+      where resume_version is not null and filled_size<>0 and observation_confirmed_at is null),
     'pending_alerts',(select count(*) from private.copy_entry_alert_outbox where delivered_at is null));
 end;
 $$;
