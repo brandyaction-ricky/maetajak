@@ -13,6 +13,7 @@ export const migrationFiles = [
   '20260909065335_lock_targets_to_master_size_changes.sql',
   '20260910002837_verified_copy_cycles_and_trade_alerts.sql',
   '20260910052000_supersede_stale_planned_intents.sql',
+  '20260910095235_confirmed_order_observation_context.sql',
 ];
 export async function createVerifiedDatabase() {
   const db = new PGlite();
