@@ -37,6 +37,19 @@ test('different symbol legs cannot claim the same member margin concurrently',as
   assert.equal(results.flatMap((r)=>r.rows).length,1);
 });
 
+test('a fresh cycle supersedes an unsubmitted plan without weakening duplicate auto-halt',async()=>{
+  await record(db,cyclePayload());
+  await record(db,cyclePayload());
+  const intents=(await db.query("select status,submit_attempts,last_error_code from private.copy_order_intents order by created_at")).rows;
+  assert.deepEqual(intents.map((i)=>i.status),['CANCELLED','PLANNED']);
+  assert.equal(intents[0].submit_attempts,0);
+  assert.equal(intents[0].last_error_code,'SUPERSEDED_BY_FRESH_PLAN');
+  const anomaly=(await db.query('select public.detect_and_halt_copy_order_anomaly() result')).rows[0].result;
+  assert.equal(anomaly.anomaly_detected,false);
+  const control=(await db.query('select execution_enabled,emergency_halted from public.copy_system_control')).rows[0];
+  assert.equal(control.execution_enabled,true); assert.equal(control.emergency_halted,false);
+});
+
 for(const phase of ['before_authorization','after_authorization','after_exchange','after_commit']) {
   test(`SIGKILL at ${phase} recovers from durable SQL state without duplicating an exchange order`,async()=>{
     const dir=mkdtempSync(join(tmpdir(),'maetajak-qa-crash-')); const ledger=join(dir,'exchange.json');
