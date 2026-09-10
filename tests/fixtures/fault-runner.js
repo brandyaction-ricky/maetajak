@@ -7,7 +7,7 @@ export function faultRunner(db, exchange, faults = {}) {
   const calls = []; const alerts = [];
   const rpc = async (name, params = {}) => {
     calls.push(name);
-    if (name === 'get_copy_worker_context') {
+    if (name === 'get_copy_worker_context' && !faults.sqlContext) {
       const states = (await db.query('select * from public.copy_position_states')).rows;
       const profile = (await db.query('select * from public.profiles where id=$1', [ids.user])).rows[0];
       const system = (await db.query('select * from public.copy_system_control')).rows[0];
@@ -32,7 +32,7 @@ export function faultRunner(db, exchange, faults = {}) {
         const body = JSON.parse(request.body); exchange.posts++;
         const size = Number(body.size); const fill = exchange.fillFraction == null ? size : size * exchange.fillFraction;
         const order = { id: String(9000 + exchange.posts), contract: body.contract, text: body.text,
-          size, left: size - fill, reduce_only: body.reduce_only, status: 'finished',
+          size, left: size - fill, is_reduce_only: body.reduce_only, status: 'finished',
           finish_as: fill === size ? 'filled' : 'ioc', fill_price: '50100' };
         exchange.orders.push(order); exchange.memberSize += fill;
         if (faults.exchange === 'timeout') throw new DOMException('SIMULATED_TIMEOUT', 'TimeoutError');
