@@ -134,6 +134,37 @@ export function planMemberPositions({ cycleId, system, master, member, contracts
     const { contract, positionSide } = parsePositionKey(symbol);
     const contractInfo = contracts.get(contract);
     if (!contractInfo) {
+      const observedMaster = masterPositions.get(symbol);
+      const observedMember = memberPositions.get(symbol);
+      if (Number(observedMaster?.size || 0) === 0 && Number(observedMember?.size || 0) === 0) {
+        const previous = previousStates.get(symbol);
+        const previousActualSize = Number(previous?.actual_size || 0);
+        const masterBaselineSize = masterBaselines.get(symbol) || 0;
+        const memberBaselineSize = memberPositionBaselines.get(symbol) || 0;
+        planned.push({
+          contract, position_side: positionSide, position_mode: member.positionMode || 'single',
+          size: 0, mark_price: null, entry_price: null, leverage: null,
+          target_leverage: null, margin_mode: String(previous?.margin_mode || 'cross'),
+          quanto_multiplier: null, target_size: 0,
+          state: previousActualSize !== 0 ? 'MANUAL_OVERRIDE' : 'SYNCED',
+          delta_size: 0, previous_actual_size: previous?.actual_size ?? null,
+          unexplained_delta: -previousActualSize,
+          master_baseline_size: masterBaselineSize,
+          master_copyable_size: 0,
+          member_baseline_size: memberBaselineSize,
+          target_resume_version: member.resume_version || null,
+          target_lock_reason: 'FLAT_CONTRACT_METADATA_UNAVAILABLE',
+          anchor_update_allowed: false,
+          sizing_reason: null,
+          execution_reason: 'NO_EXECUTABLE_POSITION',
+          master_actual_size: 0,
+          risk_leverage: null,
+          taker_fee_rate: null,
+          baseline_clear_requested: masterBaselineSize !== 0,
+          pause_reason: 'FLAT_CONTRACT_METADATA_UNAVAILABLE',
+        });
+        continue;
+      }
       throw new GateApiError('계약 정보를 안전하게 확인할 수 없습니다.', { code: 'CONTRACT_METADATA_UNAVAILABLE' });
     }
     const observedMasterPosition = masterPositions.get(symbol) || {
