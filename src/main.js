@@ -1,5 +1,6 @@
 import { createClient } from '@supabase/supabase-js';
 import { getAccessDecision } from './access.js';
+import { createNewOperationPanel } from './new-operation.js';
 import './prototype-theme.css';
 
 // The prototype stylesheet is the single visual source of truth.
@@ -62,6 +63,7 @@ let adminOperationsRange = 30;
 let adminOperationsMetrics = null;
 let adminMembersCache = [];
 let adminMemberSearch = '';
+let newOperationPanel = null;
 
 function extendCopySettingOptions() {
   const selects = [...document.querySelectorAll('select')];
@@ -282,7 +284,7 @@ function enhanceMemberDetailModal() {
           <button type="button" role="tab" aria-selected="false" data-member-detail-tab="performance">수익 내역</button>
           <button type="button" role="tab" aria-selected="false" data-member-detail-tab="security">계정 보안</button>
         </div>
-        <section class="member-detail-panel" data-member-detail-panel="overview"><div id="memberDetailSummary" class="member-detail-summary"></div></section>
+        <section class="member-detail-panel" data-member-detail-panel="overview"><div id="memberDetailSummary" class="member-detail-summary"></div><section id="memberNewOperation" class="new-operation-panel" hidden></section></section>
         <section class="member-detail-panel hidden" data-member-detail-panel="performance">
           <div class="section-head member-performance-title"><div><h3>월별 수익</h3><p>실현손익·수수료·펀딩비가 반영된 집계입니다.</p></div></div>
           <div class="table"><table class="member-performance-table"><thead><tr><th>월</th><th>순손익</th><th>수익률</th><th>거래량</th><th>거래</th><th>승률</th></tr></thead><tbody id="memberMonthlyPerformance"><tr><td colspan="6" class="empty-cell">월별 수익을 불러오는 중입니다.</td></tr></tbody></table></div>
@@ -1258,6 +1260,7 @@ function auditActionLabel(action) {
     USER_APPROVAL_CHANGED: '회원 승인 상태 변경',
     COPY_SYSTEM_CONTROL_UPDATED: '전체 카피 제어 변경',
     MEMBER_COPY_CONTROL_UPDATED: '회원 카피 상태 변경',
+    MEMBER_NEW_OPERATION_STARTED: '회원 새 운용 기준 설정',
     LIVE_COPY_ENABLED: '실거래 카피 활성화',
     LIVE_COPY_HALTED: '실거래 카피 중단',
     GATE_API_CREDENTIALS_SAVED: '회원 API 정보 저장',
@@ -1734,6 +1737,7 @@ async function loadAdminMemberTradingAnalysis(userId = adminAnalysisSelectedUser
 }
 
 function closeMemberDetail() {
+  newOperationPanel?.clear();
   const modal = byId('memberDetailModal');
   if (!modal) return;
   modal.classList.remove('open');
@@ -1755,6 +1759,7 @@ function setMemberDetailTab(tab = 'overview') {
 
 async function openMemberDetail(userId) {
   if (!supabase || currentProfile?.role !== 'ADMIN' || memberDetailBusy) return;
+  newOperationPanel?.clear();
   const modal = byId('memberDetailModal');
   selectedMemberId = userId;
   modal.classList.add('open');
@@ -1787,7 +1792,7 @@ async function openMemberDetail(userId) {
     <div><small>카피 비율</small><b>${Number(member.copy_ratio ?? 100)}%</b></div>
     <div><small>최대 포지션 비중</small><b>${Number(member.max_position_ratio ?? 30)}%</b></div>
     <div><small>가입일</small><b>${member.created_at ? new Date(member.created_at).toLocaleDateString('ko-KR') : '-'}</b></div>
-    ${member.role === 'MEMBER' ? '<div class="member-control-actions"><small>관리자 카피 제어</small><div class="actions"><button class="btn" type="button" data-member-control="PAUSE">일시중지</button><button class="btn" type="button" data-member-control="REDUCE_ONLY">축소 전용</button><button class="btn red" type="button" data-member-control="HALT">중단</button><button class="btn green" type="button" data-member-control="RESUME">재개</button></div></div>' : ''}`;
+    ${member.role === 'MEMBER' ? '<div class="member-control-actions"><small>관리자 카피 제어</small><div class="actions"><button class="btn" type="button" data-member-control="PAUSE">일시중지</button><button class="btn" type="button" data-member-control="REDUCE_ONLY">축소 전용</button><button class="btn red" type="button" data-member-control="HALT">중단</button><button class="btn green" type="button" data-member-control="RESUME">재개</button><button class="btn" type="button" data-new-operation-open>새 운용 시작</button></div></div>' : ''}`;
   byId('memberPasswordResetActions')?.classList.toggle('hidden', member.role !== 'MEMBER');
   byId('memberMonthlyPerformance').innerHTML = months.length ? months.map((month) => {
     const netPnl = Number(month.net_pnl || 0);
@@ -1973,6 +1978,11 @@ document.addEventListener('click', async (event) => {
   if (memberDetailButton) await openMemberDetail(memberDetailButton.dataset.memberDetail);
   const memberControlButton = event.target.closest('[data-member-control]');
   if (memberControlButton) await setAdminMemberControl(memberControlButton.dataset.memberControl);
+  if (event.target.closest('[data-new-operation-open]') && selectedMemberId && currentProfile?.role === 'ADMIN') {
+    newOperationPanel ||= createNewOperationPanel({ root: byId('memberNewOperation'),
+      rpc: (name, params) => supabase.rpc(name, params), onRequested: () => loadAdminMembers() });
+    await newOperationPanel.open(selectedMemberId);
+  }
   const approvalButton = event.target.closest('[data-approval]');
   if (!approvalButton || currentProfile?.role !== 'ADMIN') return;
   approvalButton.disabled = true;

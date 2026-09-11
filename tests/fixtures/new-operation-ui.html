@@ -1,0 +1,15 @@
+<!doctype html><html lang="ko"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>새 운용 시작 UI 검증</title><link rel="stylesheet" href="/src/prototype-theme.css"></head>
+<body><main style="max-width:720px;margin:24px auto;padding:16px"><h1 style="font-size:22px">새 운용 시작 · 모의 화면</h1><p>실제 계좌와 연결되지 않은 합성 데이터입니다.</p><section id="panel" class="new-operation-panel"></section></main>
+<script type="module">
+import { createNewOperationPanel } from '/src/new-operation.js';
+window.calls=[]; window.failOnce=false;
+const panel=createNewOperationPanel({root:document.querySelector('#panel'),rpc:async(name,params)=>{
+  window.calls.push({name,params});
+  if(name==='get_member_new_operation_preview')return{data:{member_name:'테스트 회원',member_email:'member@example.invalid',
+    equity:1500,previous_peak_equity:6000,observed_at:new Date().toISOString(),fingerprint:'TEST_ONLY',eligible:true,blockers:[],
+    settings:{daily_loss_limit_pct:10,max_drawdown_pct:20,copy_ratio:130,max_position_ratio:50}}};
+  if(window.failOnce){window.failOnce=false;throw new Error('SIMULATED_RESPONSE_LOST');}
+  return{data:{state:'REQUESTED',copy_paused:true}};
+}});
+window.panel=panel;await panel.open('TEST_ONLY');
+</script></body></html>
