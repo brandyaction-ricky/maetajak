@@ -87,3 +87,33 @@ test('protected holdings count toward the position cap without being automatical
   assert.equal(build(70).target_size, 70);
   assert.equal(build(70).intent, undefined);
 });
+
+test('new operation validates a full current-Master preview and stores no Master baseline', async () => {
+  const { runner, calls, input } = fixture();
+  input.session.sync_current_master = true;
+  runner.readResumeSnapshot = async () => {
+    const now = Date.now();
+    return {
+      startedAt: now,
+      openOrders: [],
+      master: {
+        positions: positions(100), total: 10_000, positionMode: 'single',
+        observed_at: new Date(now).toISOString(),
+      },
+      member: {
+        user_id: 'member', positions: [], total: 5_000, available: 5_000,
+        positionMode: 'single', copy_ratio: 100, max_position_ratio: 30,
+        observed_at: new Date(now).toISOString(),
+      },
+    };
+  };
+
+  const result = await runner.processMemberResume(input);
+
+  assert.equal(result.activated, true);
+  assert.deepEqual(calls.map((call) => call.name), [
+    'prepare_member_copy_resume', 'activate_member_copy_resume',
+  ]);
+  assert.deepEqual(calls[0].params.p_snapshot.master_positions, []);
+  assert.deepEqual(calls[0].params.p_snapshot.member_positions, []);
+});
