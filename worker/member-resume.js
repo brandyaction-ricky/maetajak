@@ -58,3 +58,21 @@ export function validateResumePreview(positions, protectedPositions) {
   }
   return expected.size === 0;
 }
+
+export function validateCurrentMasterSyncPreview(positions, memberPositions) {
+  // A new operating period may explicitly start from an empty member account
+  // against the Master's current portfolio. Validate the complete executable
+  // preview, but never reinterpret an existing member holding as copy exposure.
+  if (resumePositions(memberPositions).length !== 0 || !Array.isArray(positions)) return false;
+  return positions.every((position) => {
+    if (!Number.isFinite(position.target_size) || !Number.isFinite(position.size)
+      || !Number.isFinite(position.delta_size) || position.size !== 0
+      || !['SYNCED', 'DRIFT'].includes(position.state)) return false;
+    if (position.target_size === 0) {
+      return position.delta_size === 0 && !position.intent;
+    }
+    return position.state === 'DRIFT' && position.delta_size === position.target_size
+      && position.intent?.delta_size === position.target_size
+      && position.intent?.reduce_only === false;
+  });
+}
