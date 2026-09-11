@@ -122,6 +122,13 @@ test('settings changed after preview require a fresh review', async () => {
   await db.query('update public.profiles set copy_ratio=130 where id=$1', [ids.user]);
   await assert.rejects(() => invoke(p), /PREVIEW_CHANGED/);
 });
+test('admin has time to review a fresh account snapshot before confirming', async () => {
+  const p = await preview();
+  const reviewedAt = new Date(new Date(p.observed_at).getTime() - 90_000).toISOString();
+  const receipt = await invoke(p, randomUUID(), { observed: reviewedAt });
+  assert.equal(receipt.state, 'REQUESTED');
+  assert.equal(await count('private.copy_operation_history'), 1);
+});
 test('an active unpaused member cannot reset risk via this action', async () => {
   await db.query("update private.copy_resume_sessions set state='ACTIVE' where trading_account_id=$1", [ids.member]);
   await db.query('update public.profiles set copy_paused=false where id=$1', [ids.user]);
@@ -186,7 +193,7 @@ test('stale snapshots and failed preview leave no partial operation record', asy
   await db.exec('rollback to attempted_start');
   assert.equal(await count('private.copy_operation_history'), 0);
   assert.equal(await count('private.copy_operation_risk'), 0);
-  await db.query("update private.copy_current_accounts set observed_at=clock_timestamp()-interval '1 minute' where trading_account_id=$1", [ids.member]);
+  await db.query("update private.copy_current_accounts set observed_at=clock_timestamp()-interval '3 minutes' where trading_account_id=$1", [ids.member]);
   assert.ok((await preview()).blockers.includes('ACCOUNT_SNAPSHOT_STALE'));
 });
 

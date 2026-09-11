@@ -15,6 +15,7 @@ export const migrationFiles = [
   '20260910052000_supersede_stale_planned_intents.sql',
   '20260910095235_confirmed_order_observation_context.sql',
   '20260911062432_admin_new_operation.sql',
+  '20260911065800_new_operation_confirmation_window.sql',
 ];
 export async function createVerifiedDatabase() {
   const db = new PGlite();
