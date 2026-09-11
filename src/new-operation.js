@@ -54,7 +54,7 @@ export function createNewOperationPanel({ root, rpc, onRequested }) {
         <div><dt>최대 포지션 비중</dt><dd>${escape(preview.settings?.max_position_ratio)}%</dd></div>
       </dl>
       <p>과거 거래·손익은 그대로 보관합니다. 이번 운용의 일일 손실과 최대 낙폭은 새 시작 자산부터 계산합니다.</p>
-      <p>확인 후 거래소 미체결·포지션 검증을 통과하면 실제 카피 주문이 시작될 수 있습니다.</p>
+      <p>확인 후 거래소 미체결·포지션 검증을 통과하면, 마스터의 현재 전체 포지션을 새 시작 자산 비율과 카피 비율로 계산해 카피 주문을 시작합니다.</p>
       ${reasons.length ? `<p role="alert">${reasons.map((r) => escape(newOperationError(r))).join('<br>')}</p>` : ''}
       <label class="new-operation-field">시작 사유<textarea name="reason" rows="2" maxlength="200" required placeholder="예: 카피 중단 후 재입금, 새 운용 시작"></textarea></label>
       <label class="new-operation-consent"><input type="checkbox" name="confirmed" required>위 자산을 새 위험 기준으로 적용하고 카피 재개를 요청합니다.</label>
