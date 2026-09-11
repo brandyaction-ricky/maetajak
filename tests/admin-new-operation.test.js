@@ -246,3 +246,19 @@ test('existing Worker validates the new period twice before activation, with no 
   assert.equal(calls.filter((p)=>p.endsWith('/accounts')).length,2);
   assert.equal(await count('private.copy_order_intents'),0);
 });
+
+test('only the current new-operation resume generation requests a full current-Master sync', async () => {
+  await invoke(await preview());
+  await actor('', 'service_role');
+  let session = (await one('select public.get_copy_resume_context() value')).value
+    .find((item) => item.trading_account_id === ids.member);
+  assert.equal(session.sync_current_master, true);
+
+  await actor();
+  await db.query("update private.copy_resume_sessions set state='PAUSED' where trading_account_id=$1", [ids.member]);
+  await db.query("select public.set_member_copy_control($1,'RESUME','TEST_ONLY ordinary resume')", [ids.user]);
+  await actor('', 'service_role');
+  session = (await one('select public.get_copy_resume_context() value')).value
+    .find((item) => item.trading_account_id === ids.member);
+  assert.equal(session.sync_current_master, false);
+});
