@@ -135,6 +135,19 @@ test('resume attribution keeps only quantities not filled by the platform as pro
   ]);
 });
 
+test('resume attribution ignores historical fill sums opposite to the current leg', () => {
+  assert.deepEqual(deriveProtectedMemberPositions([
+    { contract: 'SOXL_USDT', positionSide: 'LONG', size: 25 },
+    { contract: 'DELL_USDT', positionSide: 'SHORT', size: -71 },
+  ], [
+    { contract: 'SOXL_USDT', positionSide: 'LONG', size: -355 },
+    { contract: 'DELL_USDT', positionSide: 'SHORT', size: -52 },
+  ]), [
+    { contract: 'DELL_USDT', position_side: 'SHORT', size: -19 },
+    { contract: 'SOXL_USDT', position_side: 'LONG', size: 25 },
+  ]);
+});
+
 test('ordinary current-Master resume preserves personal residual and reconciles copied exposure', async () => {
   const { runner, calls, input } = fixture();
   input.session.sync_current_master = true;
