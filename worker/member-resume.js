@@ -60,8 +60,22 @@ export function validateResumePreview(positions, protectedPositions) {
 }
 
 export function deriveProtectedMemberPositions(memberPositions, platformPositions) {
-  const platform = new Map(resumePositions(platformPositions)
-    .map((position) => [`${position.contract}:${position.position_side}`, position.size]));
+  if (!Array.isArray(platformPositions)) throw new Error('RESUME_POSITIONS_INVALID');
+  const platform = new Map();
+  for (const position of platformPositions) {
+    const size = Number(position.size);
+    const side = position.position_side || position.positionSide;
+    if (!/^[A-Z0-9_]{2,80}$/.test(position.contract || '') || position.size == null
+      || !Number.isFinite(size) || Math.abs(size) > Number.MAX_SAFE_INTEGER
+      || !['LONG', 'SHORT'].includes(side)) throw new Error('RESUME_POSITIONS_INVALID');
+    const key = `${position.contract}:${side}`;
+    if (platform.has(key)) throw new Error('RESUME_DUPLICATE_POSITION');
+    // A durable fill sum is a signed history delta, not a Gate position. An
+    // old LONG leg can therefore have a negative net after later closes (and
+    // vice versa). Keep the signed value here; the clamp below only attributes
+    // it when it still has the same direction as the current Gate position.
+    platform.set(key, size);
+  }
   return resumePositions(memberPositions).map((position) => {
     const platformSize = platform.get(`${position.contract}:${position.position_side}`) || 0;
     const retainedPlatformSize = Math.sign(platformSize) === Math.sign(position.size)
