@@ -462,7 +462,7 @@ export class TradingRunner {
       reason = validateResumeSnapshot({ ...first, contracts });
       if (reason) throw new Error(reason);
       const protectedMemberPositions = syncCurrentMaster
-        ? deriveProtectedMemberPositions(first.member.positions, session.platform_positions || [])
+        ? deriveProtectedMemberPositions(first.member.positions, session.platform_positions || [], first.master.positions)
         : resumePositions(first.member.positions);
       const preview = planMemberPositions({
         cycleId: randomUUID(), system: { emergency_halted: false }, contracts, master: first.master,
@@ -484,7 +484,7 @@ export class TradingRunner {
         // compared twice above before activation.
         master_positions: syncCurrentMaster ? [] : resumePositions(snapshot.master.positions),
         member_positions: syncCurrentMaster
-          ? deriveProtectedMemberPositions(snapshot.member.positions, session.platform_positions || [])
+          ? deriveProtectedMemberPositions(snapshot.member.positions, session.platform_positions || [], snapshot.master.positions)
           : resumePositions(snapshot.member.positions),
         settings: { copy_ratio: Number(snapshot.member.copy_ratio ?? 100), max_position_ratio: Number(snapshot.member.max_position_ratio ?? 30),
           daily_loss_limit_pct: Number(snapshot.member.daily_loss_limit_pct ?? 5), max_drawdown_pct: Number(snapshot.member.max_drawdown_pct ?? 15),
