@@ -11,7 +11,10 @@ import {
   deriveCopyState, detectManualOverride, roundTowardZeroToStep,
 } from './copy-engine.js';
 import { aggregateMemberPerformance, kstDayRange } from './performance.js';
-import { resumePositions, sameResumePositions, validateResumeSnapshot, validateResumePreview, RESUME_MAX_AGE_MS } from './member-resume.js';
+import {
+  resumePositions, sameResumePositions, validateResumeSnapshot, validateResumePreview,
+  deriveProtectedMemberPositions, validateCurrentMasterSyncPreview, RESUME_MAX_AGE_MS,
+} from './member-resume.js';
 import { assertFreshAccount, assertOrderIdentity, assertSubmissionSnapshot, exchangeTradeAlert } from './execution-safety.js';
 
 export function safeError(error, stage = 'WORKER') {
@@ -449,6 +452,7 @@ export class TradingRunner {
   }
   async processMemberResume({ session, masterContext, memberContext, contracts, system }) {
     if (!['REQUESTED', 'VALIDATED'].includes(session?.state)) return;
+    const syncCurrentMaster = session.sync_current_master === true;
     let reason;
     try {
       if (Date.parse(session.expires_at) <= Date.now()) throw new Error('RESUME_REQUEST_EXPIRED');
@@ -457,17 +461,31 @@ export class TradingRunner {
       const first = await this.readResumeSnapshot(masterContext, memberContext);
       reason = validateResumeSnapshot({ ...first, contracts });
       if (reason) throw new Error(reason);
+      const protectedMemberPositions = syncCurrentMaster
+        ? deriveProtectedMemberPositions(first.member.positions, session.platform_positions || [])
+        : resumePositions(first.member.positions);
       const preview = planMemberPositions({
         cycleId: randomUUID(), system: { emergency_halted: false }, contracts, master: first.master,
         member: { ...first.member, copy_paused: false, resume_required: false, previous_states: [],
-          master_baselines: resumePositions(first.master.positions), member_position_baselines: resumePositions(first.member.positions) },
+          master_baselines: syncCurrentMaster ? [] : resumePositions(first.master.positions),
+          member_position_baselines: protectedMemberPositions },
       });
-      if (!validateResumePreview(preview, first.member.positions)) throw new Error('RESUME_PREVIEW_NOT_ZERO');
+      const previewValid = syncCurrentMaster
+        ? validateCurrentMasterSyncPreview(preview, first.member.positions, protectedMemberPositions)
+        : validateResumePreview(preview, first.member.positions);
+      if (!previewValid) throw new Error(syncCurrentMaster
+        ? 'RESUME_CURRENT_MASTER_PREVIEW_INVALID' : 'RESUME_PREVIEW_NOT_ZERO');
       const payload = (snapshot) => ({
         started_at: new Date(snapshot.startedAt).toISOString(),
         observed_at: new Date().toISOString(),
-        master_positions: resumePositions(snapshot.master.positions),
-        member_positions: resumePositions(snapshot.member.positions),
+        // New-operation sessions intentionally use an empty Master baseline:
+        // the first active cycle copies the full current portfolio at the
+        // current Master/member equity ratio. Raw Master quantities are still
+        // compared twice above before activation.
+        master_positions: syncCurrentMaster ? [] : resumePositions(snapshot.master.positions),
+        member_positions: syncCurrentMaster
+          ? deriveProtectedMemberPositions(snapshot.member.positions, session.platform_positions || [])
+          : resumePositions(snapshot.member.positions),
         settings: { copy_ratio: Number(snapshot.member.copy_ratio ?? 100), max_position_ratio: Number(snapshot.member.max_position_ratio ?? 30),
           daily_loss_limit_pct: Number(snapshot.member.daily_loss_limit_pct ?? 5), max_drawdown_pct: Number(snapshot.member.max_drawdown_pct ?? 15),
           max_leverage: Number(snapshot.member.max_leverage ?? 10) },
@@ -635,7 +653,10 @@ export class TradingRunner {
           || Date.now() - Math.min(...snapshotTimes) > RESUME_MAX_AGE_MS)) member.resume_required = true;
         memberStage = 'BASELINE_INIT';
         const baseline = session?.state === 'CLOSING' ? { positions: [], member_positions: [] }
-          : { positions: session?.positions || [], member_positions: session?.member_positions || [] };
+          : {
+            positions: session?.sync_current_master === true ? [] : (session?.positions || []),
+            member_positions: session?.member_positions || [],
+          };
         if (!member.resume_required) await this.rpc('confirm_copy_order_observation', {
           p_trading_account_id: member.trading_account_id, p_version: session.version,
           p_positions: resumePositions(member.positions), p_started_at: member.observed_started_at, p_observed_at: member.observed_at,
