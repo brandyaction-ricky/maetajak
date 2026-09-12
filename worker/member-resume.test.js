@@ -129,6 +129,9 @@ test('resume attribution keeps only quantities not filled by the platform as pro
   ], [
     { contract: 'BTC_USDT', positionSide: 'LONG', size: 84 },
     { contract: 'HOOD_USDT', positionSide: 'LONG', size: 11 },
+  ], [
+    { contract: 'BTC_USDT', positionSide: 'LONG', size: 100 },
+    { contract: 'HOOD_USDT', positionSide: 'LONG', size: 100 },
   ]), [
     { contract: 'HOOD_USDT', position_side: 'LONG', size: 19 },
     { contract: 'HYPE_USDT', position_side: 'LONG', size: 73 },
@@ -142,9 +145,22 @@ test('resume attribution ignores historical fill sums opposite to the current le
   ], [
     { contract: 'SOXL_USDT', positionSide: 'LONG', size: -355 },
     { contract: 'DELL_USDT', positionSide: 'SHORT', size: -52 },
+  ], [
+    { contract: 'SOXL_USDT', positionSide: 'LONG', size: 100 },
+    { contract: 'DELL_USDT', positionSide: 'SHORT', size: -100 },
   ]), [
     { contract: 'DELL_USDT', position_side: 'SHORT', size: -19 },
     { contract: 'SOXL_USDT', position_side: 'LONG', size: 25 },
+  ]);
+});
+
+test('resume attribution preserves an entire member-only leg as personal', () => {
+  assert.deepEqual(deriveProtectedMemberPositions([
+    { contract: 'HYPE_USDT', positionSide: 'LONG', size: 37 },
+  ], [
+    { contract: 'HYPE_USDT', positionSide: 'LONG', size: 21 },
+  ], []), [
+    { contract: 'HYPE_USDT', position_side: 'LONG', size: 37 },
   ]);
 });
 

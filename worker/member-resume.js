@@ -59,7 +59,7 @@ export function validateResumePreview(positions, protectedPositions) {
   return expected.size === 0;
 }
 
-export function deriveProtectedMemberPositions(memberPositions, platformPositions) {
+export function deriveProtectedMemberPositions(memberPositions, platformPositions, masterPositions = []) {
   if (!Array.isArray(platformPositions)) throw new Error('RESUME_POSITIONS_INVALID');
   const platform = new Map();
   for (const position of platformPositions) {
@@ -76,8 +76,15 @@ export function deriveProtectedMemberPositions(memberPositions, platformPosition
     // it when it still has the same direction as the current Gate position.
     platform.set(key, size);
   }
+  const currentMaster = new Set(resumePositions(masterPositions)
+    .map((position) => `${position.contract}:${position.position_side}`));
   return resumePositions(memberPositions).map((position) => {
-    const platformSize = platform.get(`${position.contract}:${position.position_side}`) || 0;
+    const key = `${position.contract}:${position.position_side}`;
+    // A member-only leg is not part of the current Master portfolio. Treat the
+    // whole current quantity as personal: historical platform fills cannot
+    // prove which part survived later manual reductions or re-entries.
+    if (!currentMaster.has(key)) return position;
+    const platformSize = platform.get(key) || 0;
     const retainedPlatformSize = Math.sign(platformSize) === Math.sign(position.size)
       ? Math.sign(position.size) * Math.min(Math.abs(position.size), Math.abs(platformSize))
       : 0;
