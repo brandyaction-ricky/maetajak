@@ -44,7 +44,9 @@ test('migration and read-only preview create no operation, resume or account res
   assert.equal(p.equity, 1500);
   assert.equal(await count('private.copy_operation_history'), 0);
   assert.equal(await count('private.copy_operation_risk'), 0);
-  assert.equal((await one('select state from private.copy_resume_sessions where trading_account_id=$1', [ids.member])).state, 'PAUSED');
+  const session = await one('select state,sync_current_master from private.copy_resume_sessions where trading_account_id=$1', [ids.member]);
+  assert.equal(session.state, 'PAUSED');
+  assert.equal(session.sync_current_master, false);
 });
 
 test('explicit admin action records a separate risk period and stays paused for validation', async () => {
@@ -247,7 +249,7 @@ test('existing Worker validates the new period twice before activation, with no 
   assert.equal(await count('private.copy_order_intents'),0);
 });
 
-test('only the current new-operation resume generation requests a full current-Master sync', async () => {
+test('new-operation and ordinary resume generations both request a current-Master reconciliation', async () => {
   await invoke(await preview());
   await actor('', 'service_role');
   let session = (await one('select public.get_copy_resume_context() value')).value
@@ -260,5 +262,29 @@ test('only the current new-operation resume generation requests a full current-M
   await actor('', 'service_role');
   session = (await one('select public.get_copy_resume_context() value')).value
     .find((item) => item.trading_account_id === ids.member);
-  assert.equal(session.sync_current_master, false);
+  assert.equal(session.sync_current_master, true);
+});
+
+test('resume context exposes net platform fills and blocks unconfirmed fill attribution', async () => {
+  const cycle = (await one('select id from private.copy_cycles order by started_at desc limit 1')).id;
+  const intent = randomUUID();
+  await db.query(`insert into private.copy_order_intents(
+    id,cycle_id,user_id,trading_account_id,contract,position_side,target_size,actual_size_at_plan,
+    delta_size,reduce_only,idempotency_key,gate_order_text,status,filled_size,submit_attempts,
+    exchange_terminal,resume_version,source_observed_at,resolved_at,observation_confirmed_at
+  ) values($1,$2,$3,$4,'BTC_USDT','LONG',5,0,5,false,$5,$6,'FILLED',5,1,true,$7,
+    clock_timestamp(),clock_timestamp(),clock_timestamp())`, [
+    intent, cycle, ids.user, ids.member, randomUUID(), `t-mtj-${randomUUID()}`, ids.version,
+  ]);
+  await db.query("select public.set_member_copy_control($1,'RESUME','TEST_ONLY attribution resume')", [ids.user]);
+  await actor('', 'service_role');
+  let session = (await one('select public.get_copy_resume_context() value')).value
+    .find((item) => item.trading_account_id === ids.member);
+  assert.deepEqual(session.platform_positions, [{ contract: 'BTC_USDT', position_side: 'LONG', size: 5 }]);
+  assert.equal(Number(session.unresolved_orders), 0);
+
+  await db.query('update private.copy_order_intents set observation_confirmed_at=null where id=$1', [intent]);
+  session = (await one('select public.get_copy_resume_context() value')).value
+    .find((item) => item.trading_account_id === ids.member);
+  assert.equal(Number(session.unresolved_orders), 1);
 });

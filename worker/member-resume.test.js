@@ -1,7 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { TradingRunner, planMemberPositions } from './trading-runner.js';
-import { resumePositions, sameResumePositions, validateResumeSnapshot } from './member-resume.js';
+import {
+  deriveProtectedMemberPositions, resumePositions, sameResumePositions,
+  validateCurrentMasterSyncPreview, validateResumeSnapshot,
+} from './member-resume.js';
 const contracts = new Map([['BTC_USDT', { quantoMultiplier: 0.001, sizeStep: 1, orderSizeMin: 1 }]]);
 const positions = (size) => [{ contract: 'BTC_USDT', positionSide: 'LONG', size, markPrice: 50_000 }];
 function fixture(mode = 'LIVE') {
@@ -116,4 +119,40 @@ test('new operation validates a full current-Master preview and stores no Master
   ]);
   assert.deepEqual(calls[0].params.p_snapshot.master_positions, []);
   assert.deepEqual(calls[0].params.p_snapshot.member_positions, []);
+});
+
+test('resume attribution keeps only quantities not filled by the platform as protected', () => {
+  assert.deepEqual(deriveProtectedMemberPositions([
+    { contract: 'BTC_USDT', positionSide: 'LONG', size: 84 },
+    { contract: 'HYPE_USDT', positionSide: 'LONG', size: 73 },
+    { contract: 'HOOD_USDT', positionSide: 'LONG', size: 30 },
+  ], [
+    { contract: 'BTC_USDT', positionSide: 'LONG', size: 84 },
+    { contract: 'HOOD_USDT', positionSide: 'LONG', size: 11 },
+  ]), [
+    { contract: 'HOOD_USDT', position_side: 'LONG', size: 19 },
+    { contract: 'HYPE_USDT', position_side: 'LONG', size: 73 },
+  ]);
+});
+
+test('ordinary current-Master resume preserves personal residual and reconciles copied exposure', async () => {
+  const { runner, calls, input } = fixture();
+  input.session.sync_current_master = true;
+  input.session.platform_positions = positions(5);
+
+  const result = await runner.processMemberResume(input);
+
+  assert.equal(result.activated, true);
+  assert.deepEqual(calls[0].params.p_snapshot.master_positions, []);
+  assert.deepEqual(calls[0].params.p_snapshot.member_positions, positions(2).map(({ contract, positionSide, size }) => ({
+    contract, position_side: positionSide, size,
+  })));
+});
+
+test('current-Master resume accepts a safely chunked reconciliation intent', () => {
+  assert.equal(validateCurrentMasterSyncPreview([{
+    contract: 'BTC_USDT', position_side: 'LONG', size: 0, target_size: 100,
+    member_baseline_size: 0, state: 'DRIFT', delta_size: 25,
+    intent: { delta_size: 25, reduce_only: false },
+  }], [], []), true);
 });

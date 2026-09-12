@@ -59,20 +59,49 @@ export function validateResumePreview(positions, protectedPositions) {
   return expected.size === 0;
 }
 
-export function validateCurrentMasterSyncPreview(positions, memberPositions) {
-  // A new operating period may explicitly start from an empty member account
-  // against the Master's current portfolio. Validate the complete executable
-  // preview, but never reinterpret an existing member holding as copy exposure.
-  if (resumePositions(memberPositions).length !== 0 || !Array.isArray(positions)) return false;
+export function deriveProtectedMemberPositions(memberPositions, platformPositions) {
+  const platform = new Map(resumePositions(platformPositions)
+    .map((position) => [`${position.contract}:${position.position_side}`, position.size]));
+  return resumePositions(memberPositions).map((position) => {
+    const platformSize = platform.get(`${position.contract}:${position.position_side}`) || 0;
+    const retainedPlatformSize = Math.sign(platformSize) === Math.sign(position.size)
+      ? Math.sign(position.size) * Math.min(Math.abs(position.size), Math.abs(platformSize))
+      : 0;
+    return {
+      ...position,
+      // Gate exposes one aggregate quantity per leg. The durable sum of fills
+      // submitted by this platform is the copied component; the residual is the
+      // member-owned component that must survive a pause/resume unchanged.
+      size: position.size - retainedPlatformSize,
+    };
+  }).filter((position) => position.size !== 0);
+}
+
+export function validateCurrentMasterSyncPreview(positions, memberPositions, protectedPositions) {
+  // Resume is allowed to reconcile the copied component to the Master's
+  // current portfolio. It must leave the independently held residual intact.
+  if (!Array.isArray(positions)) return false;
+  const actual = new Map(resumePositions(memberPositions)
+    .map((position) => [`${position.contract}:${position.position_side}`, position.size]));
+  const protectedByKey = new Map(resumePositions(protectedPositions)
+    .map((position) => [`${position.contract}:${position.position_side}`, position.size]));
   return positions.every((position) => {
+    const key = `${position.contract}:${position.position_side}`;
     if (!Number.isFinite(position.target_size) || !Number.isFinite(position.size)
-      || !Number.isFinite(position.delta_size) || position.size !== 0
+      || !Number.isFinite(position.delta_size) || position.size !== (actual.get(key) || 0)
+      || position.member_baseline_size !== (protectedByKey.get(key) || 0)
       || !['SYNCED', 'DRIFT'].includes(position.state)) return false;
-    if (position.target_size === 0) {
+    if (position.target_size === position.size) {
       return position.delta_size === 0 && !position.intent;
     }
-    return position.state === 'DRIFT' && position.delta_size === position.target_size
-      && position.intent?.delta_size === position.target_size
-      && position.intent?.reduce_only === false;
+    const fullDelta = position.target_size - position.size;
+    const resultingSize = position.size + position.delta_size;
+    const reducesExposure = Math.abs(resultingSize) < Math.abs(position.size)
+      && (resultingSize === 0 || Math.sign(resultingSize) === Math.sign(position.size));
+    return position.state === 'DRIFT' && position.delta_size !== 0
+      && Math.sign(position.delta_size) === Math.sign(fullDelta)
+      && Math.abs(position.delta_size) <= Math.abs(fullDelta)
+      && position.intent?.delta_size === position.delta_size
+      && position.intent?.reduce_only === reducesExposure;
   });
 }

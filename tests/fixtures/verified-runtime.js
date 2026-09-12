@@ -17,6 +17,7 @@ export const migrationFiles = [
   '20260911062432_admin_new_operation.sql',
   '20260911065800_new_operation_confirmation_window.sql',
   '20260911100000_new_operation_current_master_copy.sql',
+  '20260912100000_resume_copy_attribution.sql',
 ];
 export async function createVerifiedDatabase() {
   const db = new PGlite();

@@ -13,7 +13,7 @@ import {
 import { aggregateMemberPerformance, kstDayRange } from './performance.js';
 import {
   resumePositions, sameResumePositions, validateResumeSnapshot, validateResumePreview,
-  validateCurrentMasterSyncPreview, RESUME_MAX_AGE_MS,
+  deriveProtectedMemberPositions, validateCurrentMasterSyncPreview, RESUME_MAX_AGE_MS,
 } from './member-resume.js';
 import { assertFreshAccount, assertOrderIdentity, assertSubmissionSnapshot, exchangeTradeAlert } from './execution-safety.js';
 
@@ -461,14 +461,17 @@ export class TradingRunner {
       const first = await this.readResumeSnapshot(masterContext, memberContext);
       reason = validateResumeSnapshot({ ...first, contracts });
       if (reason) throw new Error(reason);
+      const protectedMemberPositions = syncCurrentMaster
+        ? deriveProtectedMemberPositions(first.member.positions, session.platform_positions || [])
+        : resumePositions(first.member.positions);
       const preview = planMemberPositions({
         cycleId: randomUUID(), system: { emergency_halted: false }, contracts, master: first.master,
         member: { ...first.member, copy_paused: false, resume_required: false, previous_states: [],
           master_baselines: syncCurrentMaster ? [] : resumePositions(first.master.positions),
-          member_position_baselines: resumePositions(first.member.positions) },
+          member_position_baselines: protectedMemberPositions },
       });
       const previewValid = syncCurrentMaster
-        ? validateCurrentMasterSyncPreview(preview, first.member.positions)
+        ? validateCurrentMasterSyncPreview(preview, first.member.positions, protectedMemberPositions)
         : validateResumePreview(preview, first.member.positions);
       if (!previewValid) throw new Error(syncCurrentMaster
         ? 'RESUME_CURRENT_MASTER_PREVIEW_INVALID' : 'RESUME_PREVIEW_NOT_ZERO');
@@ -480,7 +483,9 @@ export class TradingRunner {
         // current Master/member equity ratio. Raw Master quantities are still
         // compared twice above before activation.
         master_positions: syncCurrentMaster ? [] : resumePositions(snapshot.master.positions),
-        member_positions: resumePositions(snapshot.member.positions),
+        member_positions: syncCurrentMaster
+          ? deriveProtectedMemberPositions(snapshot.member.positions, session.platform_positions || [])
+          : resumePositions(snapshot.member.positions),
         settings: { copy_ratio: Number(snapshot.member.copy_ratio ?? 100), max_position_ratio: Number(snapshot.member.max_position_ratio ?? 30),
           daily_loss_limit_pct: Number(snapshot.member.daily_loss_limit_pct ?? 5), max_drawdown_pct: Number(snapshot.member.max_drawdown_pct ?? 15),
           max_leverage: Number(snapshot.member.max_leverage ?? 10) },
