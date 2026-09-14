@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { TradingRunner, planMemberPositions } from './trading-runner.js';
 import {
-  deriveProtectedMemberPositions, resumePositions, sameResumePositions,
+  resumePositions, sameResumePositions,
   validateCurrentMasterSyncPreview, validateResumeSnapshot,
 } from './member-resume.js';
 const contracts = new Map([['BTC_USDT', { quantoMultiplier: 0.001, sizeStep: 1, orderSizeMin: 1 }]]);
@@ -15,7 +15,13 @@ function fixture(mode = 'LIVE') {
     return { startedAt: now, openOrders: [], master: { positions: positions(100), total: 10_000, positionMode: 'single', observed_at: new Date(now).toISOString() },
       member: { user_id: 'member', positions: positions(7), total: 10_000, positionMode: 'single', copy_ratio: 100, max_position_ratio: 30, observed_at: new Date(now).toISOString() } };
   };
-  runner.rpc = async (name, params) => { calls.push({ name, params }); return { state: name.startsWith('activate') ? 'ACTIVE' : 'VALIDATED' }; };
+  runner.rpc = async (name, params) => {
+    // Synthetic fill-free ownership response; calls below track mutations.
+    if (name === 'get_member_copy_resume_ownership') return { revision: 0, source_resume_version: null,
+      master_positions: params.p_master_positions, member_positions: params.p_member_positions,
+      copy_positions: [], target_anchors: [] };
+    calls.push({ name, params }); return { state: name.startsWith('activate') ? 'ACTIVE' : 'VALIDATED' };
+  };
   const input = { session: { state: 'REQUESTED', version: 'v1', expires_at: new Date(Date.now() + 60_000).toISOString(), unresolved_orders: 0 },
     masterContext: {}, memberContext: { trading_account_id: 'account', user_id: 'member' }, contracts,
     system: { execution_enabled: true, emergency_halted: false } };
@@ -122,50 +128,7 @@ test('new operation validates a full current-Master preview and stores no Master
   assert.deepEqual(calls[0].params.p_snapshot.member_positions, []);
 });
 
-test('resume attribution keeps only quantities not filled by the platform as protected', () => {
-  assert.deepEqual(deriveProtectedMemberPositions([
-    { contract: 'BTC_USDT', positionSide: 'LONG', size: 84 },
-    { contract: 'HYPE_USDT', positionSide: 'LONG', size: 73 },
-    { contract: 'HOOD_USDT', positionSide: 'LONG', size: 30 },
-  ], [
-    { contract: 'BTC_USDT', positionSide: 'LONG', size: 84 },
-    { contract: 'HOOD_USDT', positionSide: 'LONG', size: 11 },
-  ], [
-    { contract: 'BTC_USDT', positionSide: 'LONG', size: 100 },
-    { contract: 'HOOD_USDT', positionSide: 'LONG', size: 100 },
-  ]), [
-    { contract: 'HOOD_USDT', position_side: 'LONG', size: 19 },
-    { contract: 'HYPE_USDT', position_side: 'LONG', size: 73 },
-  ]);
-});
-
-test('resume attribution ignores historical fill sums opposite to the current leg', () => {
-  assert.deepEqual(deriveProtectedMemberPositions([
-    { contract: 'SOXL_USDT', positionSide: 'LONG', size: 25 },
-    { contract: 'DELL_USDT', positionSide: 'SHORT', size: -71 },
-  ], [
-    { contract: 'SOXL_USDT', positionSide: 'LONG', size: -355 },
-    { contract: 'DELL_USDT', positionSide: 'SHORT', size: -52 },
-  ], [
-    { contract: 'SOXL_USDT', positionSide: 'LONG', size: 100 },
-    { contract: 'DELL_USDT', positionSide: 'SHORT', size: -100 },
-  ]), [
-    { contract: 'DELL_USDT', position_side: 'SHORT', size: -19 },
-    { contract: 'SOXL_USDT', position_side: 'LONG', size: 25 },
-  ]);
-});
-
-test('resume attribution preserves an entire member-only leg as personal', () => {
-  assert.deepEqual(deriveProtectedMemberPositions([
-    { contract: 'HYPE_USDT', positionSide: 'LONG', size: 37 },
-  ], [
-    { contract: 'HYPE_USDT', positionSide: 'LONG', size: 21 },
-  ], []), [
-    { contract: 'HYPE_USDT', position_side: 'LONG', size: 37 },
-  ]);
-});
-
-test('ordinary resume ignores historical fill attribution and preserves all holdings', async () => {
+test('fill-free enrollment uses validated protection evidence, not historical-fill diagnostics', async () => {
   const { runner, calls, input } = fixture();
   input.session.platform_positions = positions(5);
 

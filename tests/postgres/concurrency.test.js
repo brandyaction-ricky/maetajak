@@ -29,6 +29,37 @@ test('twelve independent PostgreSQL connections claim and authorize a single ord
   assert.equal(permits.filter((r)=>r.rows[0].allowed).length,1);
 });
 
+for (const absent of [false,true]) {
+  test(`twelve workers acquire exactly one ${absent ? 'absent' : 'expired'} PostgreSQL lease`, async () => {
+    if (absent) await db.exec('delete from private.copy_worker_runtime');
+    else await db.exec("update private.copy_worker_runtime set worker_id='expired-owner',heartbeat_at=clock_timestamp()-interval '1 minute'");
+    const results = await Promise.allSettled(Array.from({length:12},(_,n)=>db.query(
+      "select public.copy_worker_heartbeat($1,'0.5.0','https://api.gateio.ws','192.0.2.1','maetajak','LIVE',false) value", [`qa-lease-${n}`])));
+    assert.equal(results.filter(r=>r.status==='fulfilled').length,1);
+    const rejected=results.filter(r=>r.status==='rejected'); assert.equal(rejected.length,11);
+    for(const result of rejected) assert.match(result.reason.message,/WORKER_LEASE_HELD/);
+    const owner=(await db.query('select worker_id from private.copy_worker_runtime')).rows[0].worker_id;
+    await db.query("select public.copy_worker_heartbeat($1,'0.5.0','https://api.gateio.ws','192.0.2.1','maetajak','LIVE',false)",[owner]);
+    assert.equal((await db.query('select worker_id from private.copy_worker_runtime')).rows[0].worker_id,owner);
+  });
+}
+
+test('concurrent verification consumes a confirmed ownership fill exactly once',async()=>{
+  const exchange={masterSize:40,memberSize:0,posts:0,orders:[]};
+  const runner=faultRunner(db,exchange).runner;
+  await runner.syncOnce(); await runner.submitOrders(); await runner.syncOnce();
+  await db.exec("update private.copy_order_intents set position_match_at=clock_timestamp()-interval '3 seconds'");
+  await runner.syncOnce();
+  const results=await Promise.allSettled(Array.from({length:12},()=>record(db,cyclePayload({actualSize:10}))));
+  // Older competing snapshots may be rejected; accepted snapshots cannot
+  // apply the same fill twice or create an unexplained ownership transition.
+  assert.ok(results.some(r=>r.status==='fulfilled'));
+  assert.equal(Number((await db.query('select count(*) n from private.copy_ownership_fills')).rows[0].n),1);
+  const proof=(await db.query('select status,copy_positions from private.copy_ownership_checkpoints')).rows[0];
+  assert.equal(proof.status,'CONFIRMED'); assert.equal(proof.copy_positions[0].size,10);
+  assert.equal(exchange.posts,1);
+});
+
 test('different symbol legs cannot claim the same member margin concurrently',async()=>{
   const p=cyclePayload({master:{positions:[position(40),{...position(40,'SOXL_USDT'),markPrice:50}]}});
   await record(db,p);

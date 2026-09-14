@@ -1,5 +1,10 @@
 # UNAUTHORIZED_REBALANCE: resume consent boundary
 
+Follow-up: the original protect-all policy below failed independent lifecycle
+QA (`CT-QA-RESUME-OWNERSHIP-001`). It is superseded by
+[the ownership-preserving fix](RESUME_OWNERSHIP_QA.md). Do not treat the original
+self-checks as current QA approval or use protect-all for confirmed COPY.
+
 Base: `15dd0b29bea07e2db69ccfa54895ece0bac50216`.
 Scope: code/test changes only. This document contains no production account evidence.
 
