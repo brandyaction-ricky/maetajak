@@ -265,6 +265,16 @@ export function planMemberPositions({ cycleId, system, master, member, contracts
     // until reconciliation resolves it and a later observation replans.
     const hasUnresolvedOrder = Boolean(previous?.has_unresolved_order);
     const hasOpenExchangeOrder = (member.open_orders || []).some((order) => order.contract === contract);
+    const oppositeKey = `${contract}:${positionSide === 'LONG' ? 'SHORT' : 'LONG'}`;
+    // A dual-mode reversal is two executions with a fill/observation dependency.
+    // Never reserve an entry while the retiring COPY leg is still present or
+    // unresolved. Protected holdings and a Master that keeps both legs are
+    // separate cases; neither is permission to liquidate the member's hedge.
+    const reversalCloseRequired = !member.close_positions_requested
+      && Math.abs(target.targetSize) > Math.abs(memberPosition.size)
+      && Number(masterPositions.get(oppositeKey)?.size || 0) === 0
+      && (Number(memberPositions.get(oppositeKey)?.size || 0) !== (memberPositionBaselines.get(oppositeKey) || 0)
+        || Boolean(previousStates.get(oppositeKey)?.has_unresolved_order));
     const protectedOppositePosition = !String(member.positionMode || 'single').startsWith('dual')
       && [...memberPositionBaselines.entries()].some(([baselineKey, size]) => {
         const baselineLeg = parsePositionKey(baselineKey);
@@ -295,7 +305,7 @@ export function planMemberPositions({ cycleId, system, master, member, contracts
     }
     let budgetReason = null;
     if (!member.close_positions_requested && !hasUnresolvedOrder && !hasOpenExchangeOrder
-      && !member.resume_required && !manual.detected) {
+      && !member.resume_required && !manual.detected && !reversalCloseRequired) {
       const price = memberPosition.markPrice || markPrice;
       const unitNotional = price * contractInfo.quantoMultiplier;
       const otherLegNotional = member.positions.filter((position) => position.contract === contract
@@ -333,7 +343,7 @@ export function planMemberPositions({ cycleId, system, master, member, contracts
     const reduceOnly = Boolean(member.reduce_only) || Boolean(member.close_positions_requested) || contractInfo.inDelisting === true;
     const state = deriveCopyState({
       systemHalted: Boolean(system.emergency_halted) && !simulateSystemHalt, memberHalted: Boolean(member.halted),
-      symbolPaused: Boolean(member.resume_required) || hasUnresolvedOrder || hasOpenExchangeOrder
+      symbolPaused: Boolean(member.resume_required) || hasUnresolvedOrder || hasOpenExchangeOrder || reversalCloseRequired
         || ((Boolean(member.copy_paused) || protectedOppositePosition) && !member.close_positions_requested),
       manualOverride: manual.detected || previous?.state === 'MANUAL_OVERRIDE', reduceOnly,
       targetSize: target.targetSize, actualSize: memberPosition.size, driftToleranceSize: contractInfo.sizeStep,
@@ -365,7 +375,7 @@ export function planMemberPositions({ cycleId, system, master, member, contracts
       target_resume_version: member.resume_version || null,
       target_lock_reason: target.targetLockReason,
       anchor_update_allowed: !hasUnresolvedOrder && !hasOpenExchangeOrder && !member.resume_required
-        && !manual.detected && previous?.state !== 'MANUAL_OVERRIDE',
+        && !manual.detected && !reversalCloseRequired && previous?.state !== 'MANUAL_OVERRIDE',
       sizing_reason: budgetReason,
       execution_reason: delta.reason,
       master_actual_size: Number(observedMasterPosition.size),
@@ -373,6 +383,7 @@ export function planMemberPositions({ cycleId, system, master, member, contracts
       baseline_clear_requested: baseline.clearBaseline,
       pause_reason: member.resume_required ? 'MEMBER_RESUME_VALIDATION_REQUIRED'
         : manual.detected ? 'MEMBER_POSITION_CHANGED_OUTSIDE_PLATFORM'
+        : reversalCloseRequired ? 'COPY_REVERSAL_CLOSE_REQUIRED'
         : hasUnresolvedOrder ? 'UNRESOLVED_PLATFORM_ORDER'
           : hasOpenExchangeOrder ? 'OPEN_EXCHANGE_ORDER'
           : protectedOppositePosition ? 'PROTECTED_EXISTING_POSITION_OPPOSITE_SIDE'
@@ -833,7 +844,13 @@ export class TradingRunner {
           this.readAccount({ ...memberContext, ...job, expected_contracts: [job.contract] }),
           this.readAccount({ ...context.master, expected_contracts: [job.contract] }),
         ]);
-        assertSubmissionSnapshot(job, memberSnapshot, masterSnapshot);
+        const opposite = (p) => p.contract === job.contract
+          && (p.positionSide || p.position_side || (Number(p.size) < 0 ? 'SHORT' : 'LONG')) !== job.position_side
+          && Number(p.size) !== 0;
+        const reversalContext = !job.reduce_only && memberSnapshot.positions.some(opposite)
+          && !masterSnapshot.positions.some(opposite)
+          ? await this.rpc('get_copy_reversal_entry_context', { p_intent_id: job.intent_id, p_version: job.resume_version }) : null;
+        assertSubmissionSnapshot(job, memberSnapshot, masterSnapshot, reversalContext);
         if (!job.reduce_only && Number(job.target_leverage) > 0) {
           await setFuturesLeverage({
             ...auth, contract: job.contract, leverage: job.target_leverage,

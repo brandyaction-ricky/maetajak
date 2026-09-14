@@ -8,6 +8,7 @@ import { once } from 'node:events';
 import { postgresClient as db } from '../fixtures/postgres-client.js';
 import { migrationFiles,seedVerifiedAccount,cyclePayload,record,ids,position } from '../fixtures/verified-runtime.js';
 import { faultRunner } from '../fixtures/fault-runner.js';
+import { reversalRuntime } from '../fixtures/reversal-runtime.js';
 
 before(async()=>{
   await db.exec(readFileSync('tests/fixtures/copy-runtime-schema.sql','utf8'));
@@ -136,3 +137,30 @@ for(const phase of ['before_authorization','after_authorization','after_exchange
     } finally {clearTimeout(timeout); if(child.exitCode==null && child.signalCode==null)child.kill('SIGKILL'); rmSync(dir,{recursive:true,force:true});}
   });
 }
+
+for (const sign of [1,-1]) for (const entryFirst of [true,false]) test(`${sign}: twelve PostgreSQL claimers enforce observed close dependency with entry UUID ${entryFirst ? 'first' : 'last'}`, async()=>{
+  const f=reversalRuntime(db,sign); await f.initialize(); f.exchange.masterSize=-sign*40;
+  const runner=f.makeRunner({},true); await runner.syncOnce(); await f.orderCandidates(entryFirst);
+  const claim=async()=> (await Promise.all(Array.from({length:12},()=>db.query('select * from public.claim_copy_order_intents(1)')))).flatMap(r=>r.rows);
+  const authorize=async job=> (await Promise.all(Array.from({length:12},()=>db.query('select public.authorize_copy_order_submission($1,$2) allowed',[job.intent_id,ids.version])))).filter(r=>r.rows[0].allowed).length;
+  const [close,...extra]=await claim(); assert.ok(close); assert.equal(extra.length,0); assert.equal(close.reduce_only,true);
+  assert.equal(Number(close.delta_size),-sign*10); assert.equal(await authorize(close),1);
+  assert.equal((await claim()).length,0,'SUBMITTING close blocks every competing entry');
+  // Synthetic terminal exchange result; only fixture exposure changes here.
+  await db.query("select public.complete_copy_order_attempt($1,'FILLED','TEST_CLOSE',$2,50100,201,'filled',null,$3)",
+    [close.intent_id,-sign*10,{finish_as:'filled',left:0,terminal:true}]);
+  f.legs[f.oldSide]=0;
+  assert.equal((await claim()).length,0,'terminal fill still needs safe observations');
+  await f.confirm(runner); await runner.syncOnce();
+  const [entry,...duplicates]=await claim(); assert.ok(entry); assert.equal(duplicates.length,0); assert.equal(entry.reduce_only,false);
+  assert.equal(Number(entry.delta_size),-sign*10); assert.equal(await authorize(entry),1);
+});
+
+for (const sign of [1,-1]) test(`${sign}: concurrent PostgreSQL workers cannot enter opposite leg while a close outcome is UNKNOWN`, async()=>{
+  const f=reversalRuntime(db,sign); await f.initialize(); f.exchange.masterSize=-sign*40;
+  const runner=f.makeRunner({exchange:'timeout'},true); await runner.syncOnce(); await runner.submitOrders();
+  assert.equal((await db.query('select status from private.copy_order_intents where reduce_only')).rows[0].status,'UNKNOWN');
+  const restarted=f.makeRunner({},true); await restarted.syncOnce();
+  const results=await Promise.all(Array.from({length:12},()=>db.query('select * from public.claim_copy_order_intents(1)')));
+  assert.equal(results.flatMap(r=>r.rows).length,0); assert.equal(f.submissions.length,2); assert.equal(f.legs[f.newSide],0);
+});

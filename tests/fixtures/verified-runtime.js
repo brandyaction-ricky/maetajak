@@ -20,6 +20,7 @@ export const migrationFiles = [
   '20260912100000_resume_copy_attribution.sql',
   '20260914154037_resume_requires_explicit_rebalance_consent.sql',
   '20260914163259_preserve_confirmed_copy_ownership_on_resume.sql',
+  '20260914172954_require_observed_copy_close_before_reversal.sql',
 ];
 export async function createVerifiedDatabase() {
   const db = new PGlite();
