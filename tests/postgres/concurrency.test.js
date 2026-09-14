@@ -37,6 +37,37 @@ test('different symbol legs cannot claim the same member margin concurrently',as
   assert.equal(results.flatMap((r)=>r.rows).length,1);
 });
 
+test('twelve independent connections cannot claim an unreceipted current-seed intent',async()=>{
+  await record(db,cyclePayload());
+  await db.query('update private.copy_resume_sessions set sync_current_master=true where trading_account_id=$1',[ids.member]);
+  const results=await Promise.all(Array.from({length:12},()=>db.query('select * from public.claim_copy_order_intents(10)')));
+  assert.equal(results.flatMap(r=>r.rows).length,0);
+  const intent=(await db.query('select status,submit_attempts,submission_authorized_at from private.copy_order_intents')).rows[0];
+  assert.equal(intent.status,'PLANNED'); assert.equal(intent.submit_attempts,0); assert.equal(intent.submission_authorized_at,null);
+});
+
+test('concurrent authorization cannot revive a claim after resume consent is invalidated',async()=>{
+  await record(db,cyclePayload());
+  const [job]=(await db.query('select * from public.claim_copy_order_intents(10)')).rows;
+  await db.query('update private.copy_resume_sessions set sync_current_master=true where trading_account_id=$1',[ids.member]);
+  const results=await Promise.all(Array.from({length:12},()=>db.query('select public.authorize_copy_order_submission($1,$2) allowed',[job.intent_id,ids.version])));
+  assert.equal(results.filter(r=>r.rows[0].allowed).length,0);
+  const intent=(await db.query('select status,submission_authorized_at,last_error_code from private.copy_order_intents')).rows[0];
+  assert.equal(intent.status,'CANCELLED'); assert.equal(intent.submission_authorized_at,null);
+  assert.equal(intent.last_error_code,'SUBMISSION_AUTHORIZATION_REVOKED');
+});
+
+test('concurrent ordinary RESUME requests share one future-only generation without implicit consent',async()=>{
+  await db.query("update private.copy_resume_sessions set state='PAUSED' where trading_account_id=$1",[ids.member]);
+  await db.query('update public.profiles set copy_paused=true where id=$1',[ids.user]);
+  const results=await Promise.all(Array.from({length:12},()=>db.query('select private.request_member_copy_resume($1) value',[ids.user])));
+  const versions=new Set(results.map(r=>r.rows[0].value.sessions[0].version));
+  assert.equal(versions.size,1); assert.ok(!versions.has(ids.version));
+  const session=(await db.query('select state,sync_current_master from private.copy_resume_sessions')).rows[0];
+  assert.equal(session.state,'REQUESTED'); assert.equal(session.sync_current_master,false);
+  assert.equal(Number((await db.query('select count(*) n from private.copy_operation_history')).rows[0].n),0);
+});
+
 test('a fresh cycle supersedes an unsubmitted plan without weakening duplicate auto-halt',async()=>{
   await record(db,cyclePayload());
   await record(db,cyclePayload());

@@ -13,7 +13,7 @@ import {
 import { aggregateMemberPerformance, kstDayRange } from './performance.js';
 import {
   resumePositions, sameResumePositions, validateResumeSnapshot, validateResumePreview,
-  deriveProtectedMemberPositions, validateCurrentMasterSyncPreview, RESUME_MAX_AGE_MS,
+  validateCurrentMasterSyncPreview, RESUME_MAX_AGE_MS,
 } from './member-resume.js';
 import { assertFreshAccount, assertOrderIdentity, assertSubmissionSnapshot, exchangeTradeAlert } from './execution-safety.js';
 
@@ -455,15 +455,24 @@ export class TradingRunner {
     const syncCurrentMaster = session.sync_current_master === true;
     let reason;
     try {
+      // A resume flag is not consent to rebalance. The DB supplies a receipt
+      // bound to this account and resume generation only for NEW_OPERATION.
+      if (session.resume_authorized === false || (syncCurrentMaster
+        && !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(session.current_master_operation_id || ''))) {
+        throw new Error('RESUME_CURRENT_MASTER_AUTHORIZATION_REQUIRED');
+      }
       if (Date.parse(session.expires_at) <= Date.now()) throw new Error('RESUME_REQUEST_EXPIRED');
       if (Number(session.unresolved_orders) !== 0) throw new Error('RESUME_UNRESOLVED_ORDERS');
       if (session.state === 'VALIDATED' && (this.mode !== 'LIVE' || system?.emergency_halted || !system?.execution_enabled)) return { validated: true };
       const first = await this.readResumeSnapshot(masterContext, memberContext);
       reason = validateResumeSnapshot({ ...first, contracts });
       if (reason) throw new Error(reason);
-      const protectedMemberPositions = syncCurrentMaster
-        ? deriveProtectedMemberPositions(first.member.positions, session.platform_positions || [], first.master.positions)
-        : resumePositions(first.member.positions);
+      // Ordinary RESUME protects every existing leg, including historical copy
+      // and personal exposure. Historical fill sums cannot establish ownership.
+      // NEW_OPERATION already requires a flat account in the admin preview;
+      // enforce that again against fresh exchange observations.
+      const protectedMemberPositions = resumePositions(first.member.positions);
+      if (syncCurrentMaster && protectedMemberPositions.length) throw new Error('RESUME_NEW_OPERATION_NOT_FLAT');
       const preview = planMemberPositions({
         cycleId: randomUUID(), system: { emergency_halted: false }, contracts, master: first.master,
         member: { ...first.member, copy_paused: false, resume_required: false, previous_states: [],
@@ -476,6 +485,11 @@ export class TradingRunner {
       if (!previewValid) throw new Error(syncCurrentMaster
         ? 'RESUME_CURRENT_MASTER_PREVIEW_INVALID' : 'RESUME_PREVIEW_NOT_ZERO');
       const payload = (snapshot) => ({
+        resume_policy_version: 1,
+        resume_mode: syncCurrentMaster ? 'CURRENT_MASTER' : 'FUTURE_ONLY',
+        current_master_operation_id: syncCurrentMaster ? session.current_master_operation_id : null,
+        observed_master_positions: resumePositions(snapshot.master.positions),
+        observed_member_positions: resumePositions(snapshot.member.positions),
         started_at: new Date(snapshot.startedAt).toISOString(),
         observed_at: new Date().toISOString(),
         // New-operation sessions intentionally use an empty Master baseline:
@@ -483,9 +497,7 @@ export class TradingRunner {
         // current Master/member equity ratio. Raw Master quantities are still
         // compared twice above before activation.
         master_positions: syncCurrentMaster ? [] : resumePositions(snapshot.master.positions),
-        member_positions: syncCurrentMaster
-          ? deriveProtectedMemberPositions(snapshot.member.positions, session.platform_positions || [], snapshot.master.positions)
-          : resumePositions(snapshot.member.positions),
+        member_positions: resumePositions(snapshot.member.positions),
         settings: { copy_ratio: Number(snapshot.member.copy_ratio ?? 100), max_position_ratio: Number(snapshot.member.max_position_ratio ?? 30),
           daily_loss_limit_pct: Number(snapshot.member.daily_loss_limit_pct ?? 5), max_drawdown_pct: Number(snapshot.member.max_drawdown_pct ?? 15),
           max_leverage: Number(snapshot.member.max_leverage ?? 10) },
@@ -633,6 +645,8 @@ export class TradingRunner {
         memberContext.expected_contracts = session?.expected_contracts || [];
         memberContext.resume_required = session?.state === 'CLOSING' ? !memberContext.close_positions_requested
           : session?.state !== 'ACTIVE' || session?.baseline_version !== session?.version;
+        if (session?.resume_authorized === false
+          || (session?.sync_current_master === true && !session?.current_master_operation_id)) memberContext.resume_required = true;
         memberContext.resume_version = session?.version || null;
         memberContext.target_anchors = anchorsByAccount.get(memberContext.trading_account_id) || [];
         if (['REQUESTED', 'VALIDATED'].includes(session?.state)) {
@@ -654,7 +668,8 @@ export class TradingRunner {
         memberStage = 'BASELINE_INIT';
         const baseline = session?.state === 'CLOSING' ? { positions: [], member_positions: [] }
           : {
-            positions: session?.sync_current_master === true ? [] : (session?.positions || []),
+            // Use the validated, persisted baseline, never override it from a flag.
+            positions: session?.positions || [],
             member_positions: session?.member_positions || [],
           };
         if (!member.resume_required) await this.rpc('confirm_copy_order_observation', {

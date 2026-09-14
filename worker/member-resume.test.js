@@ -94,6 +94,7 @@ test('protected holdings count toward the position cap without being automatical
 test('new operation validates a full current-Master preview and stores no Master baseline', async () => {
   const { runner, calls, input } = fixture();
   input.session.sync_current_master = true;
+  input.session.current_master_operation_id = '40000000-0000-4000-8000-000000000001';
   runner.readResumeSnapshot = async () => {
     const now = Date.now();
     return {
@@ -164,16 +165,15 @@ test('resume attribution preserves an entire member-only leg as personal', () =>
   ]);
 });
 
-test('ordinary current-Master resume preserves personal residual and reconciles copied exposure', async () => {
+test('ordinary resume ignores historical fill attribution and preserves all holdings', async () => {
   const { runner, calls, input } = fixture();
-  input.session.sync_current_master = true;
   input.session.platform_positions = positions(5);
 
   const result = await runner.processMemberResume(input);
 
   assert.equal(result.activated, true);
-  assert.deepEqual(calls[0].params.p_snapshot.master_positions, []);
-  assert.deepEqual(calls[0].params.p_snapshot.member_positions, positions(2).map(({ contract, positionSide, size }) => ({
+  assert.equal(calls[0].params.p_snapshot.master_positions[0].size, 100);
+  assert.deepEqual(calls[0].params.p_snapshot.member_positions, positions(7).map(({ contract, positionSide, size }) => ({
     contract, position_side: positionSide, size,
   })));
 });
