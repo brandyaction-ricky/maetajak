@@ -34,7 +34,7 @@ export function assertOrderIdentity(job, order) {
   return summary;
 }
 
-export function assertSubmissionSnapshot(job, account, master) {
+export function assertSubmissionSnapshot(job, account, master, reversalContext = null) {
   assertFreshAccount(account);
   assertFreshAccount(master);
   if (account.open_orders.length) throw new GateApiError('미체결 주문 확인이 필요합니다.', { code: 'OPEN_EXCHANGE_ORDER' });
@@ -68,6 +68,21 @@ export function assertSubmissionSnapshot(job, account, master) {
   if (account.positionMode === 'single' && account.positions.some((position) => position.contract === job.contract
     && positionSide(position) !== job.position_side && Number(position.size) !== 0)) {
     throw new GateApiError('반대 방향 포지션 확인이 필요합니다.', { code: 'OPPOSITE_POSITION_EXISTS' });
+  }
+  const opposite = account.positions.find((p) => p.contract === job.contract && positionSide(p) !== job.position_side && Number(p.size) !== 0);
+  const masterKeepsOpposite = master.positions.some((p) => p.contract === job.contract && positionSide(p) !== job.position_side && Number(p.size) !== 0);
+  if (opposite && !masterKeepsOpposite) {
+    // Check fresh exchange observations against server-owned per-leg proof.
+    // In particular, a Master can stop its other leg after a dual plan/claim.
+    const proof = reversalContext;
+    if (proof?.guard_version !== 1 || proof.allowed !== true || proof.ownership_verified !== true
+      || proof.intent_id !== job.intent_id || proof.trading_account_id !== job.trading_account_id
+      || proof.resume_version !== job.resume_version || proof.opposite_side !== positionSide(opposite)
+      || proof.copy_opposite_size == null || Number(proof.copy_opposite_size) !== 0
+      || proof.protected_opposite_size == null || !Number.isFinite(Number(proof.protected_opposite_size))
+      || Number(proof.protected_opposite_size) !== Number(opposite.size)) {
+      throw new GateApiError('기존 카피 포지션의 청산 확인이 필요합니다.', { code: 'COPY_REVERSAL_CLOSE_REQUIRED' });
+    }
   }
   if (account.halted || account.reduce_only) {
     throw new GateApiError('회원 위험 한도로 신규 진입을 차단했습니다.', { code: 'MEMBER_RISK_LIMIT' });

@@ -13,7 +13,7 @@ import {
 import { aggregateMemberPerformance, kstDayRange } from './performance.js';
 import {
   resumePositions, sameResumePositions, validateResumeSnapshot, validateResumePreview,
-  deriveProtectedMemberPositions, validateCurrentMasterSyncPreview, RESUME_MAX_AGE_MS,
+  validateCurrentMasterSyncPreview, RESUME_MAX_AGE_MS,
 } from './member-resume.js';
 import { assertFreshAccount, assertOrderIdentity, assertSubmissionSnapshot, exchangeTradeAlert } from './execution-safety.js';
 
@@ -129,6 +129,7 @@ export function planMemberPositions({ cycleId, system, master, member, contracts
   const masterBaselines = new Map((member.master_baselines || []).map((position) => [positionKey(position), Number(position.size || 0)]));
   const memberPositionBaselines = new Map((member.member_position_baselines || []).map((position) => [positionKey(position), Number(position.size || 0)]));
   const targetAnchors = new Map((member.target_anchors || []).map((anchor) => [positionKey(anchor), anchor]));
+  const continuedCopyLegs = new Set((member.continued_copy_positions || []).map(positionKey));
   const symbols = new Set([...masterPositions.keys(), ...memberPositions.keys(), ...previousStates.keys(), ...masterBaselines.keys(), ...memberPositionBaselines.keys(), ...targetAnchors.keys()]);
   const planned = [];
   const reservedNotional = new Map();
@@ -206,7 +207,28 @@ export function planMemberPositions({ cycleId, system, master, member, contracts
       && Math.abs(Number(masterPosition.size)) < Math.abs(Number(anchor.master_copyable_size))
       && (Number(masterPosition.size) === 0
         || Math.sign(Number(masterPosition.size)) === Math.sign(Number(anchor.master_copyable_size)));
-    if (masterQuantityUnchanged || masterQuantityReduced) {
+    const continuedIncrease = anchorMatchesResume && continuedCopyLegs.has(symbol)
+      && Math.abs(masterPosition.size) > Math.abs(Number(anchor.master_copyable_size))
+      && (!Number(anchor.master_copyable_size) || Math.sign(masterPosition.size) === Math.sign(Number(anchor.master_copyable_size)));
+    if (continuedIncrease) {
+      // Resume establishes today's quantity as the new signal origin, without
+      // replaying changes during HOLD or re-sizing the carried COPY to equity.
+      const incremental = calculateTargetPosition({
+        masterSize: masterPosition.size - Number(anchor.master_copyable_size), masterEquity: master.total,
+        masterMarkPrice: markPrice, masterQuantoMultiplier: contractInfo.quantoMultiplier,
+        memberEquity: member.total, memberMarkPrice: markPrice, memberQuantoMultiplier: contractInfo.quantoMultiplier,
+        copyRatio: member.copy_ratio, maxPositionRatio: Math.max(0, member.max_position_ratio - protectedRatio), sizeStep: contractInfo.sizeStep,
+      });
+      const carried = Math.sign(Number(anchor.target_size) - protectedMemberSize)
+        * Math.min(Math.abs(Number(anchor.target_size) - protectedMemberSize),
+          Math.max(0, Math.abs(memberPosition.size) - Math.abs(protectedMemberSize)));
+      target.targetSize = capLockedTargetToCurrentRisk({
+        lockedTargetSize: protectedMemberSize + carried + incremental.targetSize, protectedSize: protectedMemberSize,
+        memberEquity: member.total, memberMarkPrice: markPrice, memberQuantoMultiplier: contractInfo.quantoMultiplier,
+        maxPositionRatio: member.max_position_ratio, sizeStep: contractInfo.sizeStep,
+      });
+      target.targetLockReason = 'CONFIRMED_COPY_FUTURE_INCREASE';
+    } else if (masterQuantityUnchanged || masterQuantityReduced) {
       const lockedTargetSize = masterQuantityReduced
         ? calculateReducedCopyTarget({
           previousMasterSize: anchor.master_copyable_size,
@@ -243,6 +265,16 @@ export function planMemberPositions({ cycleId, system, master, member, contracts
     // until reconciliation resolves it and a later observation replans.
     const hasUnresolvedOrder = Boolean(previous?.has_unresolved_order);
     const hasOpenExchangeOrder = (member.open_orders || []).some((order) => order.contract === contract);
+    const oppositeKey = `${contract}:${positionSide === 'LONG' ? 'SHORT' : 'LONG'}`;
+    // A dual-mode reversal is two executions with a fill/observation dependency.
+    // Never reserve an entry while the retiring COPY leg is still present or
+    // unresolved. Protected holdings and a Master that keeps both legs are
+    // separate cases; neither is permission to liquidate the member's hedge.
+    const reversalCloseRequired = !member.close_positions_requested
+      && Math.abs(target.targetSize) > Math.abs(memberPosition.size)
+      && Number(masterPositions.get(oppositeKey)?.size || 0) === 0
+      && (Number(memberPositions.get(oppositeKey)?.size || 0) !== (memberPositionBaselines.get(oppositeKey) || 0)
+        || Boolean(previousStates.get(oppositeKey)?.has_unresolved_order));
     const protectedOppositePosition = !String(member.positionMode || 'single').startsWith('dual')
       && [...memberPositionBaselines.entries()].some(([baselineKey, size]) => {
         const baselineLeg = parsePositionKey(baselineKey);
@@ -273,7 +305,7 @@ export function planMemberPositions({ cycleId, system, master, member, contracts
     }
     let budgetReason = null;
     if (!member.close_positions_requested && !hasUnresolvedOrder && !hasOpenExchangeOrder
-      && !member.resume_required && !manual.detected) {
+      && !member.resume_required && !manual.detected && !reversalCloseRequired) {
       const price = memberPosition.markPrice || markPrice;
       const unitNotional = price * contractInfo.quantoMultiplier;
       const otherLegNotional = member.positions.filter((position) => position.contract === contract
@@ -311,7 +343,7 @@ export function planMemberPositions({ cycleId, system, master, member, contracts
     const reduceOnly = Boolean(member.reduce_only) || Boolean(member.close_positions_requested) || contractInfo.inDelisting === true;
     const state = deriveCopyState({
       systemHalted: Boolean(system.emergency_halted) && !simulateSystemHalt, memberHalted: Boolean(member.halted),
-      symbolPaused: Boolean(member.resume_required) || hasUnresolvedOrder || hasOpenExchangeOrder
+      symbolPaused: Boolean(member.resume_required) || hasUnresolvedOrder || hasOpenExchangeOrder || reversalCloseRequired
         || ((Boolean(member.copy_paused) || protectedOppositePosition) && !member.close_positions_requested),
       manualOverride: manual.detected || previous?.state === 'MANUAL_OVERRIDE', reduceOnly,
       targetSize: target.targetSize, actualSize: memberPosition.size, driftToleranceSize: contractInfo.sizeStep,
@@ -343,7 +375,7 @@ export function planMemberPositions({ cycleId, system, master, member, contracts
       target_resume_version: member.resume_version || null,
       target_lock_reason: target.targetLockReason,
       anchor_update_allowed: !hasUnresolvedOrder && !hasOpenExchangeOrder && !member.resume_required
-        && !manual.detected && previous?.state !== 'MANUAL_OVERRIDE',
+        && !manual.detected && !reversalCloseRequired && previous?.state !== 'MANUAL_OVERRIDE',
       sizing_reason: budgetReason,
       execution_reason: delta.reason,
       master_actual_size: Number(observedMasterPosition.size),
@@ -351,6 +383,7 @@ export function planMemberPositions({ cycleId, system, master, member, contracts
       baseline_clear_requested: baseline.clearBaseline,
       pause_reason: member.resume_required ? 'MEMBER_RESUME_VALIDATION_REQUIRED'
         : manual.detected ? 'MEMBER_POSITION_CHANGED_OUTSIDE_PLATFORM'
+        : reversalCloseRequired ? 'COPY_REVERSAL_CLOSE_REQUIRED'
         : hasUnresolvedOrder ? 'UNRESOLVED_PLATFORM_ORDER'
           : hasOpenExchangeOrder ? 'OPEN_EXCHANGE_ORDER'
           : protectedOppositePosition ? 'PROTECTED_EXISTING_POSITION_OPPOSITE_SIDE'
@@ -455,19 +488,36 @@ export class TradingRunner {
     const syncCurrentMaster = session.sync_current_master === true;
     let reason;
     try {
+      if (session.ownership_status === 'UNKNOWN') throw new Error('RESUME_COPY_OWNERSHIP_UNKNOWN');
+      // A resume flag is not consent to rebalance. The DB supplies a receipt
+      // bound to this account and resume generation only for NEW_OPERATION.
+      if (session.resume_authorized === false || (syncCurrentMaster
+        && !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(session.current_master_operation_id || ''))) {
+        throw new Error('RESUME_CURRENT_MASTER_AUTHORIZATION_REQUIRED');
+      }
       if (Date.parse(session.expires_at) <= Date.now()) throw new Error('RESUME_REQUEST_EXPIRED');
       if (Number(session.unresolved_orders) !== 0) throw new Error('RESUME_UNRESOLVED_ORDERS');
       if (session.state === 'VALIDATED' && (this.mode !== 'LIVE' || system?.emergency_halted || !system?.execution_enabled)) return { validated: true };
       const first = await this.readResumeSnapshot(masterContext, memberContext);
       reason = validateResumeSnapshot({ ...first, contracts });
       if (reason) throw new Error(reason);
-      const protectedMemberPositions = syncCurrentMaster
-        ? deriveProtectedMemberPositions(first.member.positions, session.platform_positions || [], first.master.positions)
-        : resumePositions(first.member.positions);
+      const observedMemberPositions = resumePositions(first.member.positions);
+      if (syncCurrentMaster && observedMemberPositions.length) throw new Error('RESUME_NEW_OPERATION_NOT_FLAT');
+      // Only the database's generation-linked observation journal may carry
+      // COPY across resume. Historical fill sums are never subtracted here.
+      const ownership = syncCurrentMaster ? null : await this.rpc('get_member_copy_resume_ownership', {
+        p_trading_account_id: memberContext.trading_account_id, p_version: session.version,
+        p_master_positions: resumePositions(first.master.positions), p_member_positions: observedMemberPositions,
+      });
+      if (!syncCurrentMaster && (!ownership || !Array.isArray(ownership.copy_positions)
+        || !Array.isArray(ownership.target_anchors))) throw new Error('RESUME_COPY_OWNERSHIP_UNKNOWN');
+      const protectedMemberPositions = syncCurrentMaster ? [] : ownership.member_positions;
       const preview = planMemberPositions({
         cycleId: randomUUID(), system: { emergency_halted: false }, contracts, master: first.master,
         member: { ...first.member, copy_paused: false, resume_required: false, previous_states: [],
-          master_baselines: syncCurrentMaster ? [] : resumePositions(first.master.positions),
+          resume_version: session.version, target_anchors: ownership?.target_anchors || [],
+          continued_copy_positions: ownership?.copy_positions || [],
+          master_baselines: syncCurrentMaster ? [] : ownership.master_positions,
           member_position_baselines: protectedMemberPositions },
       });
       const previewValid = syncCurrentMaster
@@ -476,16 +526,20 @@ export class TradingRunner {
       if (!previewValid) throw new Error(syncCurrentMaster
         ? 'RESUME_CURRENT_MASTER_PREVIEW_INVALID' : 'RESUME_PREVIEW_NOT_ZERO');
       const payload = (snapshot) => ({
+        resume_policy_version: syncCurrentMaster ? 1 : 2,
+        ...(ownership ? { ownership } : {}),
+        resume_mode: syncCurrentMaster ? 'CURRENT_MASTER' : 'FUTURE_ONLY',
+        current_master_operation_id: syncCurrentMaster ? session.current_master_operation_id : null,
+        observed_master_positions: resumePositions(snapshot.master.positions),
+        observed_member_positions: resumePositions(snapshot.member.positions),
         started_at: new Date(snapshot.startedAt).toISOString(),
         observed_at: new Date().toISOString(),
         // New-operation sessions intentionally use an empty Master baseline:
         // the first active cycle copies the full current portfolio at the
         // current Master/member equity ratio. Raw Master quantities are still
         // compared twice above before activation.
-        master_positions: syncCurrentMaster ? [] : resumePositions(snapshot.master.positions),
-        member_positions: syncCurrentMaster
-          ? deriveProtectedMemberPositions(snapshot.member.positions, session.platform_positions || [], snapshot.master.positions)
-          : resumePositions(snapshot.member.positions),
+        master_positions: syncCurrentMaster ? [] : ownership.master_positions,
+        member_positions: protectedMemberPositions,
         settings: { copy_ratio: Number(snapshot.member.copy_ratio ?? 100), max_position_ratio: Number(snapshot.member.max_position_ratio ?? 30),
           daily_loss_limit_pct: Number(snapshot.member.daily_loss_limit_pct ?? 5), max_drawdown_pct: Number(snapshot.member.max_drawdown_pct ?? 15),
           max_leverage: Number(snapshot.member.max_leverage ?? 10) },
@@ -507,7 +561,7 @@ export class TradingRunner {
       this.resumeAlerts.delete(memberContext.trading_account_id);
       return { validated: true, activated: activation?.state === 'ACTIVE' };
     } catch (error) {
-      const code = /^RESUME_[A-Z_]+$/.test(error.message) ? error.message : safeError(error, 'RESUME');
+      const code = error.message?.match(/\bRESUME_[A-Z_]+\b/)?.[0] || safeError(error, 'RESUME');
       await this.rpc('report_member_copy_resume_blocker', {
         p_trading_account_id: memberContext.trading_account_id, p_version: session.version, p_reason: code,
       });
@@ -633,6 +687,8 @@ export class TradingRunner {
         memberContext.expected_contracts = session?.expected_contracts || [];
         memberContext.resume_required = session?.state === 'CLOSING' ? !memberContext.close_positions_requested
           : session?.state !== 'ACTIVE' || session?.baseline_version !== session?.version;
+        if (session?.ownership_status === 'UNKNOWN' || session?.resume_authorized === false
+          || (session?.sync_current_master === true && !session?.current_master_operation_id)) memberContext.resume_required = true;
         memberContext.resume_version = session?.version || null;
         memberContext.target_anchors = anchorsByAccount.get(memberContext.trading_account_id) || [];
         if (['REQUESTED', 'VALIDATED'].includes(session?.state)) {
@@ -644,7 +700,7 @@ export class TradingRunner {
         const memberRead = memberReads[memberIndex];
         if (memberRead.status === 'rejected') throw memberRead.reason;
         let member = { ...memberRead.value, resume_required: memberContext.resume_required, resume_version: memberContext.resume_version,
-          target_anchors: memberContext.target_anchors };
+          target_anchors: memberContext.target_anchors, continued_copy_positions: session?.copy_positions || [] };
         assertFreshAccount(member);
         // Concurrent account reads reduce skew; any remaining slow snapshot is
         // observed without producing an executable plan.
@@ -654,7 +710,8 @@ export class TradingRunner {
         memberStage = 'BASELINE_INIT';
         const baseline = session?.state === 'CLOSING' ? { positions: [], member_positions: [] }
           : {
-            positions: session?.sync_current_master === true ? [] : (session?.positions || []),
+            // Use the validated, persisted baseline, never override it from a flag.
+            positions: session?.positions || [],
             member_positions: session?.member_positions || [],
           };
         if (!member.resume_required) await this.rpc('confirm_copy_order_observation', {
@@ -787,7 +844,13 @@ export class TradingRunner {
           this.readAccount({ ...memberContext, ...job, expected_contracts: [job.contract] }),
           this.readAccount({ ...context.master, expected_contracts: [job.contract] }),
         ]);
-        assertSubmissionSnapshot(job, memberSnapshot, masterSnapshot);
+        const opposite = (p) => p.contract === job.contract
+          && (p.positionSide || p.position_side || (Number(p.size) < 0 ? 'SHORT' : 'LONG')) !== job.position_side
+          && Number(p.size) !== 0;
+        const reversalContext = !job.reduce_only && memberSnapshot.positions.some(opposite)
+          && !masterSnapshot.positions.some(opposite)
+          ? await this.rpc('get_copy_reversal_entry_context', { p_intent_id: job.intent_id, p_version: job.resume_version }) : null;
+        assertSubmissionSnapshot(job, memberSnapshot, masterSnapshot, reversalContext);
         if (!job.reduce_only && Number(job.target_leverage) > 0) {
           await setFuturesLeverage({
             ...auth, contract: job.contract, leverage: job.target_leverage,

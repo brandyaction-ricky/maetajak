@@ -8,6 +8,7 @@ import { once } from 'node:events';
 import { postgresClient as db } from '../fixtures/postgres-client.js';
 import { migrationFiles,seedVerifiedAccount,cyclePayload,record,ids,position } from '../fixtures/verified-runtime.js';
 import { faultRunner } from '../fixtures/fault-runner.js';
+import { reversalRuntime } from '../fixtures/reversal-runtime.js';
 
 before(async()=>{
   await db.exec(readFileSync('tests/fixtures/copy-runtime-schema.sql','utf8'));
@@ -29,12 +30,74 @@ test('twelve independent PostgreSQL connections claim and authorize a single ord
   assert.equal(permits.filter((r)=>r.rows[0].allowed).length,1);
 });
 
+for (const absent of [false,true]) {
+  test(`twelve workers acquire exactly one ${absent ? 'absent' : 'expired'} PostgreSQL lease`, async () => {
+    if (absent) await db.exec('delete from private.copy_worker_runtime');
+    else await db.exec("update private.copy_worker_runtime set worker_id='expired-owner',heartbeat_at=clock_timestamp()-interval '1 minute'");
+    const results = await Promise.allSettled(Array.from({length:12},(_,n)=>db.query(
+      "select public.copy_worker_heartbeat($1,'0.5.0','https://api.gateio.ws','192.0.2.1','maetajak','LIVE',false) value", [`qa-lease-${n}`])));
+    assert.equal(results.filter(r=>r.status==='fulfilled').length,1);
+    const rejected=results.filter(r=>r.status==='rejected'); assert.equal(rejected.length,11);
+    for(const result of rejected) assert.match(result.reason.message,/WORKER_LEASE_HELD/);
+    const owner=(await db.query('select worker_id from private.copy_worker_runtime')).rows[0].worker_id;
+    await db.query("select public.copy_worker_heartbeat($1,'0.5.0','https://api.gateio.ws','192.0.2.1','maetajak','LIVE',false)",[owner]);
+    assert.equal((await db.query('select worker_id from private.copy_worker_runtime')).rows[0].worker_id,owner);
+  });
+}
+
+test('concurrent verification consumes a confirmed ownership fill exactly once',async()=>{
+  const exchange={masterSize:40,memberSize:0,posts:0,orders:[]};
+  const runner=faultRunner(db,exchange).runner;
+  await runner.syncOnce(); await runner.submitOrders(); await runner.syncOnce();
+  await db.exec("update private.copy_order_intents set position_match_at=clock_timestamp()-interval '3 seconds'");
+  await runner.syncOnce();
+  const results=await Promise.allSettled(Array.from({length:12},()=>record(db,cyclePayload({actualSize:10}))));
+  // Older competing snapshots may be rejected; accepted snapshots cannot
+  // apply the same fill twice or create an unexplained ownership transition.
+  assert.ok(results.some(r=>r.status==='fulfilled'));
+  assert.equal(Number((await db.query('select count(*) n from private.copy_ownership_fills')).rows[0].n),1);
+  const proof=(await db.query('select status,copy_positions from private.copy_ownership_checkpoints')).rows[0];
+  assert.equal(proof.status,'CONFIRMED'); assert.equal(proof.copy_positions[0].size,10);
+  assert.equal(exchange.posts,1);
+});
+
 test('different symbol legs cannot claim the same member margin concurrently',async()=>{
   const p=cyclePayload({master:{positions:[position(40),{...position(40,'SOXL_USDT'),markPrice:50}]}});
   await record(db,p);
   assert.equal(Number((await db.query('select count(*) n from private.copy_order_intents')).rows[0].n),2);
   const results=await Promise.all(Array.from({length:12},()=>db.query('select * from public.claim_copy_order_intents(10)')));
   assert.equal(results.flatMap((r)=>r.rows).length,1);
+});
+
+test('twelve independent connections cannot claim an unreceipted current-seed intent',async()=>{
+  await record(db,cyclePayload());
+  await db.query('update private.copy_resume_sessions set sync_current_master=true where trading_account_id=$1',[ids.member]);
+  const results=await Promise.all(Array.from({length:12},()=>db.query('select * from public.claim_copy_order_intents(10)')));
+  assert.equal(results.flatMap(r=>r.rows).length,0);
+  const intent=(await db.query('select status,submit_attempts,submission_authorized_at from private.copy_order_intents')).rows[0];
+  assert.equal(intent.status,'PLANNED'); assert.equal(intent.submit_attempts,0); assert.equal(intent.submission_authorized_at,null);
+});
+
+test('concurrent authorization cannot revive a claim after resume consent is invalidated',async()=>{
+  await record(db,cyclePayload());
+  const [job]=(await db.query('select * from public.claim_copy_order_intents(10)')).rows;
+  await db.query('update private.copy_resume_sessions set sync_current_master=true where trading_account_id=$1',[ids.member]);
+  const results=await Promise.all(Array.from({length:12},()=>db.query('select public.authorize_copy_order_submission($1,$2) allowed',[job.intent_id,ids.version])));
+  assert.equal(results.filter(r=>r.rows[0].allowed).length,0);
+  const intent=(await db.query('select status,submission_authorized_at,last_error_code from private.copy_order_intents')).rows[0];
+  assert.equal(intent.status,'CANCELLED'); assert.equal(intent.submission_authorized_at,null);
+  assert.equal(intent.last_error_code,'SUBMISSION_AUTHORIZATION_REVOKED');
+});
+
+test('concurrent ordinary RESUME requests share one future-only generation without implicit consent',async()=>{
+  await db.query("update private.copy_resume_sessions set state='PAUSED' where trading_account_id=$1",[ids.member]);
+  await db.query('update public.profiles set copy_paused=true where id=$1',[ids.user]);
+  const results=await Promise.all(Array.from({length:12},()=>db.query('select private.request_member_copy_resume($1) value',[ids.user])));
+  const versions=new Set(results.map(r=>r.rows[0].value.sessions[0].version));
+  assert.equal(versions.size,1); assert.ok(!versions.has(ids.version));
+  const session=(await db.query('select state,sync_current_master from private.copy_resume_sessions')).rows[0];
+  assert.equal(session.state,'REQUESTED'); assert.equal(session.sync_current_master,false);
+  assert.equal(Number((await db.query('select count(*) n from private.copy_operation_history')).rows[0].n),0);
 });
 
 test('a fresh cycle supersedes an unsubmitted plan without weakening duplicate auto-halt',async()=>{
@@ -74,3 +137,30 @@ for(const phase of ['before_authorization','after_authorization','after_exchange
     } finally {clearTimeout(timeout); if(child.exitCode==null && child.signalCode==null)child.kill('SIGKILL'); rmSync(dir,{recursive:true,force:true});}
   });
 }
+
+for (const sign of [1,-1]) for (const entryFirst of [true,false]) test(`${sign}: twelve PostgreSQL claimers enforce observed close dependency with entry UUID ${entryFirst ? 'first' : 'last'}`, async()=>{
+  const f=reversalRuntime(db,sign); await f.initialize(); f.exchange.masterSize=-sign*40;
+  const runner=f.makeRunner({},true); await runner.syncOnce(); await f.orderCandidates(entryFirst);
+  const claim=async()=> (await Promise.all(Array.from({length:12},()=>db.query('select * from public.claim_copy_order_intents(1)')))).flatMap(r=>r.rows);
+  const authorize=async job=> (await Promise.all(Array.from({length:12},()=>db.query('select public.authorize_copy_order_submission($1,$2) allowed',[job.intent_id,ids.version])))).filter(r=>r.rows[0].allowed).length;
+  const [close,...extra]=await claim(); assert.ok(close); assert.equal(extra.length,0); assert.equal(close.reduce_only,true);
+  assert.equal(Number(close.delta_size),-sign*10); assert.equal(await authorize(close),1);
+  assert.equal((await claim()).length,0,'SUBMITTING close blocks every competing entry');
+  // Synthetic terminal exchange result; only fixture exposure changes here.
+  await db.query("select public.complete_copy_order_attempt($1,'FILLED','TEST_CLOSE',$2,50100,201,'filled',null,$3)",
+    [close.intent_id,-sign*10,{finish_as:'filled',left:0,terminal:true}]);
+  f.legs[f.oldSide]=0;
+  assert.equal((await claim()).length,0,'terminal fill still needs safe observations');
+  await f.confirm(runner); await runner.syncOnce();
+  const [entry,...duplicates]=await claim(); assert.ok(entry); assert.equal(duplicates.length,0); assert.equal(entry.reduce_only,false);
+  assert.equal(Number(entry.delta_size),-sign*10); assert.equal(await authorize(entry),1);
+});
+
+for (const sign of [1,-1]) test(`${sign}: concurrent PostgreSQL workers cannot enter opposite leg while a close outcome is UNKNOWN`, async()=>{
+  const f=reversalRuntime(db,sign); await f.initialize(); f.exchange.masterSize=-sign*40;
+  const runner=f.makeRunner({exchange:'timeout'},true); await runner.syncOnce(); await runner.submitOrders();
+  assert.equal((await db.query('select status from private.copy_order_intents where reduce_only')).rows[0].status,'UNKNOWN');
+  const restarted=f.makeRunner({},true); await restarted.syncOnce();
+  const results=await Promise.all(Array.from({length:12},()=>db.query('select * from public.claim_copy_order_intents(1)')));
+  assert.equal(results.flatMap(r=>r.rows).length,0); assert.equal(f.submissions.length,2); assert.equal(f.legs[f.newSide],0);
+});

@@ -2,7 +2,7 @@ import test, { before, after, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
-import { createVerifiedDatabase, seedVerifiedAccount, cyclePayload, record, ids, observedAccount, contracts } from './fixtures/verified-runtime.js';
+import { createVerifiedDatabase, seedVerifiedAccount, cyclePayload, record, ids, observedAccount, contracts, position } from './fixtures/verified-runtime.js';
 import { TradingRunner } from '../worker/trading-runner.js';
 
 let db;
@@ -221,7 +221,7 @@ test('new day resets only the period day baseline and older observations cannot 
   assert.equal(Number((await one('select peak_equity from private.copy_operation_risk')).peak_equity),1800);
 });
 
-test('existing Worker validates the new period twice before activation, with no exchange writes', async () => {
+test('explicit current-Master operation validates twice and remains bound to its receipt, with no exchange writes', async () => {
   await invoke(await preview());
   await actor('', 'service_role');
   const member = (await one('select public.get_copy_worker_context() value')).value.members.find((m) => m.user_id===ids.user);
@@ -234,7 +234,7 @@ test('existing Worker validates the new period twice before activation, with no 
   } });
   const read = runner.readAccount.bind(runner);
   runner.readAccount = async (a) => a.trading_account_id===ids.master
-    ? observedAccount({ ...a,total:10000,positionMode:'single',positions:[] }) : read(a);
+    ? observedAccount({ ...a,total:10000,positionMode:'single',positions:[{...position(40),mode:'single'}] }) : read(a);
   runner.rpc = async (name, params) => {
     assert.match(name,/^[a-z_]+$/);
     const keys = Object.keys(params); const sqlArgs = keys.map((key,i)=>`${key}=>$${i+1}`).join(',');
@@ -247,9 +247,13 @@ test('existing Worker validates the new period twice before activation, with no 
   assert.equal((await one('select copy_paused from public.profiles where id=$1',[ids.user])).copy_paused,false);
   assert.equal(calls.filter((p)=>p.endsWith('/accounts')).length,2);
   assert.equal(await count('private.copy_order_intents'),0);
+  assert.equal((await one('select sync_current_master from private.copy_resume_sessions where trading_account_id=$1',[ids.member])).sync_current_master,true);
+  assert.equal((await one('select private.copy_resume_policy_authorized($1,$2) allowed',[ids.member,session.version])).allowed,true);
+  await db.query('delete from private.copy_operation_risk where trading_account_id=$1',[ids.member]);
+  assert.equal((await one('select private.copy_resume_policy_authorized($1,$2) allowed',[ids.member,session.version])).allowed,false);
 });
 
-test('new-operation and ordinary resume generations both request a current-Master reconciliation', async () => {
+test('only the explicitly confirmed new-operation generation requests current-Master reconciliation', async () => {
   await invoke(await preview());
   await actor('', 'service_role');
   let session = (await one('select public.get_copy_resume_context() value')).value
@@ -262,7 +266,7 @@ test('new-operation and ordinary resume generations both request a current-Maste
   await actor('', 'service_role');
   session = (await one('select public.get_copy_resume_context() value')).value
     .find((item) => item.trading_account_id === ids.member);
-  assert.equal(session.sync_current_master, true);
+  assert.equal(session.sync_current_master, false);
 });
 
 test('resume context exposes net platform fills and blocks unconfirmed fill attribution', async () => {

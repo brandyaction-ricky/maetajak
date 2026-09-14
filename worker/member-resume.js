@@ -59,45 +59,6 @@ export function validateResumePreview(positions, protectedPositions) {
   return expected.size === 0;
 }
 
-export function deriveProtectedMemberPositions(memberPositions, platformPositions, masterPositions = []) {
-  if (!Array.isArray(platformPositions)) throw new Error('RESUME_POSITIONS_INVALID');
-  const platform = new Map();
-  for (const position of platformPositions) {
-    const size = Number(position.size);
-    const side = position.position_side || position.positionSide;
-    if (!/^[A-Z0-9_]{2,80}$/.test(position.contract || '') || position.size == null
-      || !Number.isFinite(size) || Math.abs(size) > Number.MAX_SAFE_INTEGER
-      || !['LONG', 'SHORT'].includes(side)) throw new Error('RESUME_POSITIONS_INVALID');
-    const key = `${position.contract}:${side}`;
-    if (platform.has(key)) throw new Error('RESUME_DUPLICATE_POSITION');
-    // A durable fill sum is a signed history delta, not a Gate position. An
-    // old LONG leg can therefore have a negative net after later closes (and
-    // vice versa). Keep the signed value here; the clamp below only attributes
-    // it when it still has the same direction as the current Gate position.
-    platform.set(key, size);
-  }
-  const currentMaster = new Set(resumePositions(masterPositions)
-    .map((position) => `${position.contract}:${position.position_side}`));
-  return resumePositions(memberPositions).map((position) => {
-    const key = `${position.contract}:${position.position_side}`;
-    // A member-only leg is not part of the current Master portfolio. Treat the
-    // whole current quantity as personal: historical platform fills cannot
-    // prove which part survived later manual reductions or re-entries.
-    if (!currentMaster.has(key)) return position;
-    const platformSize = platform.get(key) || 0;
-    const retainedPlatformSize = Math.sign(platformSize) === Math.sign(position.size)
-      ? Math.sign(position.size) * Math.min(Math.abs(position.size), Math.abs(platformSize))
-      : 0;
-    return {
-      ...position,
-      // Gate exposes one aggregate quantity per leg. The durable sum of fills
-      // submitted by this platform is the copied component; the residual is the
-      // member-owned component that must survive a pause/resume unchanged.
-      size: position.size - retainedPlatformSize,
-    };
-  }).filter((position) => position.size !== 0);
-}
-
 export function validateCurrentMasterSyncPreview(positions, memberPositions, protectedPositions) {
   // Resume is allowed to reconcile the copied component to the Master's
   // current portfolio. It must leave the independently held residual intact.
