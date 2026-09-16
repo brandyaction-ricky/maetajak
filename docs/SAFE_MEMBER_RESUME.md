@@ -1,6 +1,6 @@
 # Safe member resume (worker 0.5.0 / schema 3)
 
-Resuming a member now preserves that member's existing signed contract quantities and follows subsequent changes in the master's exposure. A resume request starts validation; it does not immediately enable orders. USDT display values and mark-price changes do not define position identity. Contract, LONG/SHORT side and contract quantity do.
+Resuming a member preserves existing signed quantities at activation, then follows only subsequent Master changes. Confirmed COPY ownership continues across generations; independently protected pre-existing holdings are not adopted or closed. Missing or conflicting ownership evidence blocks resume. See [ownership policy v2](RESUME_OWNERSHIP_QA.md). A resume request starts validation; it does not immediately enable orders. USDT display values and mark-price changes do not define position identity. Contract, LONG/SHORT side and contract quantity do.
 
 ## Seven stages
 
@@ -8,7 +8,7 @@ Resuming a member now preserves that member's existing signed contract quantitie
 2. Resolve historical outstanding orders against the exchange. Unknown or active partial fills keep this member waiting. Never replay an ambiguous submission automatically.
 3. Read master and member positions and open orders. Require complete, valid responses, snapshots no older than 15 seconds and observation skew no greater than 3 seconds.
 4. Store the master and member protected baseline with the resume version and current risk settings. Settings or credential changes invalidate validation.
-5. Compute a zero-order preview. The initial target must equal the member's protected holdings exactly. DRY_RUN can validate but cannot activate.
+5. Compute a zero-order preview. The initial target must equal actual holdings: protected pre-existing quantities plus journal-confirmed COPY. Seed continuation anchors against the current Master quantities without catch-up. DRY_RUN can validate but cannot activate.
 6. Re-read positions and require unchanged quantities, eligible credentials, matching version/settings and a healthy, explicitly enabled LIVE system. Only then enable this member. Pausing during validation prevents activation.
 7. Authorize each order once immediately before submission. Require the resulting terminal fill to appear in two fresh exchange observations at least two seconds apart before another order for that position.
 
