@@ -255,6 +255,8 @@ tbody tr:hover { background: #141416; }
 .admin-member-identity > span { width: 28px; height: 28px; display: grid; flex: 0 0 auto; place-items: center; border-radius: 8px; background: #202024; color: #aaaab2; font-size: 9px; font-weight: 800; }
 .admin-member-identity b { font-size: 11px; }
 .admin-member-identity small { display: block; color: var(--muted); font-size: 9px; margin-top: 2px; }
+.admin-equity-cell small { display: block; margin-top: 2px; font-size: 9px; font-weight: 700; }
+.admin-members-table tr.admin-master-row td { background: rgba(255, 255, 255, .025); }
 .member-margin-cell { min-width: 130px; }
 .member-margin-cell > div, .member-margin-track { height: 5px; background: #242429; border-radius: 999px; overflow: hidden; margin-top: 6px; }
 .member-margin-cell i, .member-margin-track i { display: block; height: 100%; background: #5a5a64; border-radius: 999px; }
@@ -292,6 +294,9 @@ tbody tr:hover { background: #141416; }
 .copy-risk-inputs label > div > b { flex: 0 0 auto; padding: 0 12px 0 6px; color: var(--text); font-size: 13px; }
 .copy-risk-inputs label:last-child > div { padding: 0 12px; }
 .copy-risk-inputs label:last-child > div > b { padding: 0; }
+.copy-risk-inputs label > div.is-locked { border-style: dashed; background: transparent; cursor: not-allowed; }
+.copy-risk-inputs label > div.is-locked input[type="number"]:disabled { color: var(--muted); -webkit-text-fill-color: var(--muted); opacity: 1; cursor: not-allowed; }
+.copy-risk-inputs label > div.is-locked > b { color: var(--muted); }
 .copy-risk-card { display: flex; flex-direction: column; }
 .copy-risk-card .notice { margin-top: auto; }
 .copy-existing-policy { display: flex; flex-direction: column; align-items: flex-start; justify-content: center; gap: 12px; }

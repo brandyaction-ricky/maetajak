@@ -62,6 +62,7 @@ let memberLiveSnapshot = null;
 let adminOperationsRange = 30;
 let adminOperationsMetrics = null;
 let adminMembersCache = [];
+let adminMasterAccount = null;
 let adminMemberSearch = '';
 let newOperationPanel = null;
 
@@ -207,7 +208,7 @@ function enhanceCopySettingsUi() {
   page.innerHTML = `<div class="copy-settings-layout"><div class="copy-settings-primary">
     <section class="card section copy-control-card"><div class="section-head"><div><small>COPY EXPOSURE</small><h3>카피 비율</h3><p>Master의 포지션 변화를 내 자산 기준으로 복제할 비율입니다.</p></div><strong id="copyRatioValue">100%</strong></div><input id="copyRatioSelect" class="copy-range" type="range" min="50" max="200" step="10" value="100"><div class="copy-range-labels"><span>50%</span><span>100%</span><span>150%</span><span>200%</span></div></section>
     <section class="card section copy-control-card"><div class="section-head"><div><small>POSITION CAP</small><h3>종목당 최대 포지션 비중</h3><p>한 종목이 내 총자산에서 차지할 수 있는 상한입니다.</p></div><strong id="maxPositionRatioValue">30%</strong></div><input id="maxPositionRatioSelect" class="copy-range" type="range" min="20" max="50" step="10" value="30"><div class="copy-range-labels"><span>20% 안전</span><span>30% 균형</span><span>40% 적극</span><span>50% 최대</span></div></section>
-    <section class="card section copy-risk-card"><div class="section-head"><div><small>RISK LIMITS</small><h3>계정 리스크 한도</h3><p>한도 도달 시 Worker가 신규 주문을 자동 차단합니다.</p></div></div><div class="copy-risk-inputs"><label><span>일일 최대 손실</span><div><input id="dailyLossLimitInput" type="number" min="3" max="10" step="1" value="5"><b>%</b></div></label><label><span>최대 Drawdown</span><div><input id="maxDrawdownInput" type="number" min="10" max="20" step="1" value="15"><b>%</b></div></label><label><span>레버리지 정책</span><div><b>Master 자동 추종</b></div></label></div><div class="notice">LONG·SHORT 각 포지션은 Master가 사용한 레버리지와 증거금 모드로 진입합니다.</div></section>
+    <section class="card section copy-risk-card"><div class="section-head"><div><small>RISK LIMITS</small><h3>계정 리스크 한도</h3><p>한도 도달 시 Worker가 신규 주문을 자동 차단합니다. 운영자가 전체 계정에 동일하게 고정한 값으로, 회원이 변경할 수 없습니다.</p></div><span class="chip yellow">운영자 고정</span></div><div class="copy-risk-inputs"><label><span>일일 최대 손실</span><div class="is-locked"><input id="dailyLossLimitInput" type="number" value="15" disabled aria-disabled="true" title="운영자가 고정한 한도입니다"><b>%</b></div></label><label><span>최대 Drawdown</span><div class="is-locked"><input id="maxDrawdownInput" type="number" value="20" disabled aria-disabled="true" title="운영자가 고정한 한도입니다"><b>%</b></div></label><label><span>레버리지 정책</span><div><b>Master 자동 추종</b></div></label></div><div class="notice">LONG·SHORT 각 포지션은 Master가 사용한 레버리지와 증거금 모드로 진입합니다.</div></section>
     </div><div class="copy-settings-secondary"><section class="card section copy-existing-policy"><div><small>EXISTING POSITION MODE</small><h3>기존 포지션 처리</h3><p>API 연결 시점에 Master가 이미 보유한 포지션은 진입하지 않고, 이후 추가·감소 및 신규 진입부터 카피합니다.</p></div><span class="chip">연결 이후만 카피</span></section>
     <aside class="card section copy-setting-summary"><small>SETTING PREVIEW</small><h3>현재 설정 요약</h3><div class="metric"><span>카피 비율</span><b id="copyPreviewRatio">100%</b></div><div class="metric"><span>종목당 최대 비중</span><b id="copyPreviewCap">30%</b></div><div class="metric"><span>포지션 모드</span><b>LONG·SHORT 양방향</b></div><div class="metric"><span>레버리지</span><b>Master 자동 추종</b></div><div class="metric"><span>리스크 차단</span><b id="copyPreviewRisk">-5% · -15%</b></div><div class="notice">설정 변경은 다음 Worker 주기부터 적용됩니다. 기존 포지션을 임의로 확대하지 않습니다.</div><button id="copySettingsSave" class="btn primary full" type="button">설정 저장</button></aside>
   </div></div>`;
@@ -216,8 +217,8 @@ function enhanceCopySettingsUi() {
 function refreshCopySettingPreview() {
   const ratio = Number(byId('copyRatioSelect')?.value || 100);
   const cap = Number(byId('maxPositionRatioSelect')?.value || 30);
-  const daily = Number(byId('dailyLossLimitInput')?.value || 5);
-  const drawdown = Number(byId('maxDrawdownInput')?.value || 15);
+  const daily = Number(byId('dailyLossLimitInput')?.value || 15);
+  const drawdown = Number(byId('maxDrawdownInput')?.value || 20);
   if (byId('copyRatioValue')) byId('copyRatioValue').textContent = `${ratio}%`;
   if (byId('maxPositionRatioValue')) byId('maxPositionRatioValue').textContent = `${cap}%`;
   if (byId('copyPreviewRatio')) byId('copyPreviewRatio').textContent = `${ratio}%`;
@@ -266,7 +267,7 @@ function enhanceAdminApiPage() {
 function enhanceAdminMembersPage() {
   const page = byId('admin-members');
   if (!page) return;
-  page.innerHTML = `<section class="card admin-pending-members"><div class="panel-title"><div><h3>가입 승인 대기</h3><p>승인 전 회원을 확인하고 접근 권한을 관리합니다.</p></div><span id="pendingCount" class="chip yellow">0 PENDING</span></div><div class="table"><table><thead><tr><th>신청자</th><th>이메일</th><th>휴대폰</th><th>신청시간</th><th>관리</th></tr></thead><tbody id="pendingMembers"><tr><td colspan="5" class="empty-cell">승인 대기 회원을 불러오는 중입니다.</td></tr></tbody></table></div></section><section class="card admin-member-directory"><div class="panel-title"><div><h3>전체 회원</h3><p id="memberDirectorySummary">회원 상태와 실제 계좌 지표를 확인합니다.</p></div><input id="adminMemberSearch" class="admin-member-search" type="search" placeholder="회원 검색" aria-label="회원 검색"></div><div class="table"><table class="admin-members-table"><thead><tr><th>회원</th><th>카피 상태</th><th>총 자산</th><th>오늘 PNL</th><th>카피 비율</th><th>증거금 사용</th><th>API 상태</th><th>마지막 동기화</th><th>관리</th></tr></thead><tbody id="memberList"><tr><td colspan="9" class="empty-cell">회원 목록을 불러오는 중입니다.</td></tr></tbody></table></div></section>`;
+  page.innerHTML = `<section class="card admin-pending-members"><div class="panel-title"><div><h3>가입 승인 대기</h3><p>승인 전 회원을 확인하고 접근 권한을 관리합니다.</p></div><span id="pendingCount" class="chip yellow">0 PENDING</span></div><div class="table"><table><thead><tr><th>신청자</th><th>이메일</th><th>휴대폰</th><th>신청시간</th><th>관리</th></tr></thead><tbody id="pendingMembers"><tr><td colspan="5" class="empty-cell">승인 대기 회원을 불러오는 중입니다.</td></tr></tbody></table></div></section><section class="card admin-member-directory"><div class="panel-title"><div><h3>전체 회원</h3><p id="memberDirectorySummary">회원 상태와 실제 계좌 지표를 확인합니다.</p></div><input id="adminMemberSearch" class="admin-member-search" type="search" placeholder="회원 검색" aria-label="회원 검색"></div><div class="table"><table class="admin-members-table"><thead><tr><th>회원</th><th>카피 상태</th><th title="거래소 잔고 · 미실현 손익 제외">총 자산</th><th title="총 자산 + 미실현 손익">현재 자산</th><th>오늘 PNL</th><th>카피 비율</th><th>증거금 사용</th><th>API 상태</th><th>마지막 동기화</th><th>관리</th></tr></thead><tbody id="memberList"><tr><td colspan="10" class="empty-cell">회원 목록을 불러오는 중입니다.</td></tr></tbody></table></div></section>`;
 }
 
 function enhanceMemberDetailModal() {
@@ -450,8 +451,8 @@ function showApp(profile) {
   if (byId('accountNickname')) byId('accountNickname').value = profile.nickname || '';
   if (byId('copyRatioSelect')) byId('copyRatioSelect').value = String(Number(profile.copy_ratio ?? 100));
   if (byId('maxPositionRatioSelect')) byId('maxPositionRatioSelect').value = String(Number(profile.max_position_ratio ?? 30));
-  if (byId('dailyLossLimitInput')) byId('dailyLossLimitInput').value = String(Number(profile.daily_loss_limit_pct ?? 5));
-  if (byId('maxDrawdownInput')) byId('maxDrawdownInput').value = String(Number(profile.max_drawdown_pct ?? 15));
+  if (byId('dailyLossLimitInput')) byId('dailyLossLimitInput').value = String(Number(profile.daily_loss_limit_pct ?? 15));
+  if (byId('maxDrawdownInput')) byId('maxDrawdownInput').value = String(Number(profile.max_drawdown_pct ?? 20));
   refreshCopySettingPreview();
   openPage(role === 'admin' ? 'admin-dashboard' : 'member-dashboard');
   loadCopySystemStatus();
@@ -944,8 +945,8 @@ function renderMemberOpenPositions(openPositions, account) {
   const maxExposure = positions.reduce((max, position) => Math.max(max, totalEquity > 0 ? Math.abs(Number(position.notional || 0)) * 100 / totalEquity : 0), 0);
   if (byId('memberPositionCapUsage')) byId('memberPositionCapUsage').textContent = `현재 최대 사용 ${maxExposure.toFixed(2)}%`;
   if (byId('memberPositionCapLimit')) byId('memberPositionCapLimit').textContent = `${Number(currentProfile?.max_position_ratio ?? 30)}%`;
-  if (byId('memberDailyLossLimit')) byId('memberDailyLossLimit').textContent = `${Number(currentProfile?.daily_loss_limit_pct ?? 5)}%`;
-  if (byId('memberDrawdownLimit')) byId('memberDrawdownLimit').textContent = `${Number(currentProfile?.max_drawdown_pct ?? 15)}%`;
+  if (byId('memberDailyLossLimit')) byId('memberDailyLossLimit').textContent = `${Number(currentProfile?.daily_loss_limit_pct ?? 15)}%`;
+  if (byId('memberDrawdownLimit')) byId('memberDrawdownLimit').textContent = `${Number(currentProfile?.max_drawdown_pct ?? 20)}%`;
   if (byId('memberCopyRatioLimit')) byId('memberCopyRatioLimit').textContent = `${Number(currentProfile?.copy_ratio ?? 100)}%`;
   if (!container) return;
   container.innerHTML = positions.length ? positions.map((position) => {
@@ -1146,6 +1147,7 @@ function renderAdminOperationsMetrics(data) {
   if (byId('adminLiveUnknownCount')) byId('adminLiveUnknownCount').textContent = String(members.filter((member) => ['API_ERROR', 'ERROR'].includes(member.copy_status)).length);
   renderOperationsChart('adminPnlChart', daily, 'pnl', { cumulative: true });
   adminMembersCache = members;
+  adminMasterAccount = data?.master || null;
   renderAdminMemberRows();
 }
 
@@ -1563,13 +1565,15 @@ async function saveCopySettings() {
   if (!supabase || !currentProfile) return;
   const copyRatio = Number(byId('copyRatioSelect').value);
   const maxPositionRatio = Number(byId('maxPositionRatioSelect').value);
-  const dailyLossLimit = Number(byId('dailyLossLimitInput').value);
-  const maxDrawdown = Number(byId('maxDrawdownInput').value);
   const validCopyRatio = copyRatio >= 50 && copyRatio <= 200 && copyRatio % 10 === 0;
   const validPositionRatio = maxPositionRatio >= 20 && maxPositionRatio <= 50 && maxPositionRatio % 10 === 0;
-  if (!validCopyRatio || !validPositionRatio || dailyLossLimit < 3 || dailyLossLimit > 10 || maxDrawdown < 10 || maxDrawdown > 20) {
+  if (!validCopyRatio || !validPositionRatio) {
     return window.toast('설정 범위를 확인해 주세요.');
   }
+  // Risk limits are fixed by the operator for every account and the RPC ignores
+  // these two arguments. Send the stored values only for signature compatibility.
+  const dailyLossLimit = Number(currentProfile.daily_loss_limit_pct ?? 15);
+  const maxDrawdown = Number(currentProfile.max_drawdown_pct ?? 20);
   // Kept for RPC backwards compatibility only. Worker entries always inherit
   // the Master's leverage and no longer enforce a member-side leverage cap.
   const maxLeverage = Number(currentProfile.max_leverage ?? 10);
@@ -1850,12 +1854,30 @@ async function loadAdminMembers() {
     <tr><td>${escapeHtml(profile.full_name || '-')}</td><td>${escapeHtml(profile.email || '-')}</td><td>${escapeHtml(profile.phone || '-')}</td><td>${new Date(profile.created_at).toLocaleString('ko-KR')}</td><td><button class="btn green" data-approval="APPROVED" data-user-id="${profile.id}">승인</button> <button class="btn red" data-approval="REJECTED" data-user-id="${profile.id}">거절</button></td></tr>
   `).join('') : '<tr><td colspan="5" class="empty-cell">승인 대기 회원이 없습니다.</td></tr>';
   const metricRows = new Map((Array.isArray(metricsResult.data?.members) ? metricsResult.data.members : []).map((member) => [member.id, member]));
+  adminMasterAccount = metricsResult.data?.master || null;
   adminMembersCache = data.filter((profile) => profile.role === 'MEMBER' && profile.approval_status !== 'PENDING').map((profile) => {
     const metric = metricRows.get(profile.id) || {};
     const progress = getMemberCopyProgress(profile, connectionByUserId.get(profile.id), statesByEmail.get(String(profile.email || '').toLowerCase()) || []);
     return { ...profile, ...metric, fallback_progress: progress, connection: connectionByUserId.get(profile.id) || null };
   });
   renderAdminMemberRows();
+}
+
+// 총 자산 = exchange balance without unrealised PnL; 현재 자산 = balance + unrealised PnL.
+// The metrics RPC normalises classic vs unified Gate accounts (balance_equity / current_equity).
+function renderAdminEquityCells(account) {
+  const balance = account.balance_equity ?? account.total_equity;
+  const current = account.current_equity;
+  const unrealised = account.unrealised_pnl == null ? null : Number(account.unrealised_pnl);
+  const unrealisedNote = unrealised == null || unrealised === 0 ? ''
+    : `<small class="${unrealised >= 0 ? 'pos' : 'neg'}">미실현 ${formatUsd(unrealised)}</small>`;
+  return `<td><b>${balance == null ? '-' : formatUsd(balance)}</b></td>`
+    + `<td class="admin-equity-cell"><b>${current == null ? '-' : formatUsd(current)}</b>${unrealisedNote}</td>`;
+}
+
+function renderAdminMasterRow(master) {
+  const observed = master.last_observed_at ? new Date(master.last_observed_at).toLocaleString('ko-KR') : '-';
+  return `<tr class="admin-master-row"><td><div class="admin-member-identity"><span>M</span><div><b>Master · 내 계정</b><small>${escapeHtml(master.email || master.full_name || '-')}</small></div></div></td><td><span class="chip">마스터</span></td>${renderAdminEquityCells(master)}<td>-</td><td>-</td><td>-</td><td>-</td><td>${observed}</td><td>-</td></tr>`;
 }
 
 function renderAdminMemberRows() {
@@ -1874,8 +1896,9 @@ function renderAdminMemberRows() {
     const pnl = member.today_pnl == null ? null : Number(member.today_pnl);
     const apiStatus = member.api_status || member.connection?.status || 'NOT_CONNECTED';
     const apiLabel = apiStatus === 'VERIFIED' ? '정상' : apiStatus === 'ERROR' ? '권한 오류' : apiStatus === 'DISABLED' ? '연결 해제' : '확인 필요';
-    return `<tr><td><div class="admin-member-identity"><span>${escapeHtml(String(member.full_name || member.email || '?').slice(0, 1))}</span><div><b>${escapeHtml(member.full_name || '-')}</b><small>${escapeHtml(member.email || '-')}</small></div></div></td><td><span class="${status[1]}">${escapeHtml(status[0])}</span></td><td><b>${member.total_equity == null ? '-' : formatUsd(member.total_equity)}</b></td><td class="${pnl == null ? '' : pnl >= 0 ? 'pos' : 'neg'}"><b>${pnl == null ? '-' : formatUsd(pnl)}</b></td><td>${Number(member.copy_ratio ?? 100)}%</td><td><div class="member-margin-cell"><b>${Number(member.margin_usage_pct || 0).toFixed(1)}%</b><div><i style="width:${Math.min(100, Math.max(0, Number(member.margin_usage_pct || 0)))}%"></i></div></div></td><td class="${apiStatus === 'VERIFIED' ? 'pos' : 'neg'}">${escapeHtml(apiLabel)}</td><td>${member.last_observed_at ? new Date(member.last_observed_at).toLocaleString('ko-KR') : '-'}</td><td><button class="btn" type="button" data-member-detail="${member.id}">상세</button></td></tr>`;
-  }).join('') : '<tr><td colspan="9" class="empty-cell">조건에 맞는 회원이 없습니다.</td></tr>';
+    return `<tr><td><div class="admin-member-identity"><span>${escapeHtml(String(member.full_name || member.email || '?').slice(0, 1))}</span><div><b>${escapeHtml(member.full_name || '-')}</b><small>${escapeHtml(member.email || '-')}</small></div></div></td><td><span class="${status[1]}">${escapeHtml(status[0])}</span></td>${renderAdminEquityCells(member)}<td class="${pnl == null ? '' : pnl >= 0 ? 'pos' : 'neg'}"><b>${pnl == null ? '-' : formatUsd(pnl)}</b></td><td>${Number(member.copy_ratio ?? 100)}%</td><td><div class="member-margin-cell"><b>${Number(member.margin_usage_pct || 0).toFixed(1)}%</b><div><i style="width:${Math.min(100, Math.max(0, Number(member.margin_usage_pct || 0)))}%"></i></div></div></td><td class="${apiStatus === 'VERIFIED' ? 'pos' : 'neg'}">${escapeHtml(apiLabel)}</td><td>${member.last_observed_at ? new Date(member.last_observed_at).toLocaleString('ko-KR') : '-'}</td><td><button class="btn" type="button" data-member-detail="${member.id}">상세</button></td></tr>`;
+  }).join('') : '<tr><td colspan="10" class="empty-cell">조건에 맞는 회원이 없습니다.</td></tr>';
+  if (adminMasterAccount && !query) tableBody.insertAdjacentHTML('afterbegin', renderAdminMasterRow(adminMasterAccount));
   if (byId('memberDirectorySummary')) byId('memberDirectorySummary').textContent = `${adminMembersCache.length}명 · 카피 중 ${adminMembersCache.filter((member) => member.copy_status === 'COPYING').length}명 · 확인 필요 ${adminMembersCache.filter((member) => member.copy_status !== 'COPYING').length}명`;
 }
 

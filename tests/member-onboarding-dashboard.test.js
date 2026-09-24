@@ -41,9 +41,24 @@ test('copy settings expose only worker-backed risk controls and future-only onbo
   assert.match(main, /maxDrawdownInput/);
   assert.match(main, /copyRatioSelect" class="copy-range" type="range" min="50" max="200" step="10"/);
   assert.match(main, /maxPositionRatioSelect" class="copy-range" type="range" min="20" max="50" step="10"/);
-  assert.match(main, /dailyLossLimitInput" type="number" min="3" max="10" step="1"/);
-  assert.match(main, /maxDrawdownInput" type="number" min="10" max="20" step="1"/);
+  assert.match(main, /dailyLossLimitInput" type="number" value="15" disabled/);
+  assert.match(main, /maxDrawdownInput" type="number" value="20" disabled/);
   assert.match(main, /maxLeverageInput/);
   assert.match(migration, /new_daily_loss_limit_pct/);
   assert.doesNotMatch(main, /Take Profit Per Position/);
+});
+
+test('risk limits are operator-fixed: members see disabled inputs and cannot send their own values', () => {
+  const save = main.slice(main.indexOf('async function saveCopySettings'), main.indexOf('function escapeHtml'));
+  assert.doesNotMatch(save, /dailyLossLimitInput|maxDrawdownInput/);
+  assert.match(save, /currentProfile\.daily_loss_limit_pct/);
+  assert.match(save, /currentProfile\.max_drawdown_pct/);
+  assert.match(main, /운영자 고정/);
+  const lock = fs.readFileSync(new URL('../supabase/migrations/20260924122342_fix_member_risk_limits_15_20.sql', import.meta.url), 'utf8');
+  assert.match(lock, /alter column daily_loss_limit_pct set default 15/);
+  assert.match(lock, /alter column max_drawdown_pct set default 20/);
+  const fn = lock.slice(lock.indexOf('create or replace function public.update_my_copy_settings'));
+  assert.ok(fn.length > 0);
+  assert.doesNotMatch(fn, /daily_loss_limit_pct\s*=/);
+  assert.doesNotMatch(fn, /max_drawdown_pct\s*=/);
 });
