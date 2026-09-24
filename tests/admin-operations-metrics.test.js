@@ -24,3 +24,20 @@ test('admin dashboard keeps real member metrics after broker section removal', (
   assert.match(main, /adminPeriodPnl/);
   assert.match(main, /adminMembersCache/);
 });
+
+test('admin member table shows current equity next to the balance and pins the Master account', () => {
+  const current = readFileSync(new URL('../supabase/migrations/20260924123930_admin_metrics_current_equity.sql', import.meta.url), 'utf8');
+  assert.match(current, /security definer/i);
+  assert.match(current, /public\.is_approved_admin\(\)/i);
+  // classic Gate balance excludes unrealised PnL; unified equity already includes it
+  assert.match(current, /when account\.equity_includes_unrealised then account\.total_equity\s+else account\.total_equity \+ coalesce\(account\.unrealised_pnl, 0\)/);
+  assert.match(current, /'current_equity', current_equity/);
+  assert.match(current, /'master', \(select jsonb_build_object/);
+  assert.match(current, /equity\.account_role = 'MASTER'/);
+  assert.match(main, /<th title="거래소 잔고 · 미실현 손익 제외">총 자산<\/th><th title="총 자산 \+ 미실현 손익">현재 자산<\/th>/);
+  assert.match(main, /renderAdminEquityCells\(member\)/);
+  assert.match(main, /renderAdminMasterRow\(adminMasterAccount\)/);
+  assert.match(main, /adminMasterAccount = data\?\.master \|\| null/);
+  assert.match(main, /<tbody id="memberList"><tr><td colspan="10"/);
+  assert.match(main, /<tr><td colspan="10" class="empty-cell">조건에 맞는 회원이 없습니다\./);
+});

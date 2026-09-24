@@ -62,6 +62,7 @@ let memberLiveSnapshot = null;
 let adminOperationsRange = 30;
 let adminOperationsMetrics = null;
 let adminMembersCache = [];
+let adminMasterAccount = null;
 let adminMemberSearch = '';
 let newOperationPanel = null;
 
@@ -266,7 +267,7 @@ function enhanceAdminApiPage() {
 function enhanceAdminMembersPage() {
   const page = byId('admin-members');
   if (!page) return;
-  page.innerHTML = `<section class="card admin-pending-members"><div class="panel-title"><div><h3>가입 승인 대기</h3><p>승인 전 회원을 확인하고 접근 권한을 관리합니다.</p></div><span id="pendingCount" class="chip yellow">0 PENDING</span></div><div class="table"><table><thead><tr><th>신청자</th><th>이메일</th><th>휴대폰</th><th>신청시간</th><th>관리</th></tr></thead><tbody id="pendingMembers"><tr><td colspan="5" class="empty-cell">승인 대기 회원을 불러오는 중입니다.</td></tr></tbody></table></div></section><section class="card admin-member-directory"><div class="panel-title"><div><h3>전체 회원</h3><p id="memberDirectorySummary">회원 상태와 실제 계좌 지표를 확인합니다.</p></div><input id="adminMemberSearch" class="admin-member-search" type="search" placeholder="회원 검색" aria-label="회원 검색"></div><div class="table"><table class="admin-members-table"><thead><tr><th>회원</th><th>카피 상태</th><th>총 자산</th><th>오늘 PNL</th><th>카피 비율</th><th>증거금 사용</th><th>API 상태</th><th>마지막 동기화</th><th>관리</th></tr></thead><tbody id="memberList"><tr><td colspan="9" class="empty-cell">회원 목록을 불러오는 중입니다.</td></tr></tbody></table></div></section>`;
+  page.innerHTML = `<section class="card admin-pending-members"><div class="panel-title"><div><h3>가입 승인 대기</h3><p>승인 전 회원을 확인하고 접근 권한을 관리합니다.</p></div><span id="pendingCount" class="chip yellow">0 PENDING</span></div><div class="table"><table><thead><tr><th>신청자</th><th>이메일</th><th>휴대폰</th><th>신청시간</th><th>관리</th></tr></thead><tbody id="pendingMembers"><tr><td colspan="5" class="empty-cell">승인 대기 회원을 불러오는 중입니다.</td></tr></tbody></table></div></section><section class="card admin-member-directory"><div class="panel-title"><div><h3>전체 회원</h3><p id="memberDirectorySummary">회원 상태와 실제 계좌 지표를 확인합니다.</p></div><input id="adminMemberSearch" class="admin-member-search" type="search" placeholder="회원 검색" aria-label="회원 검색"></div><div class="table"><table class="admin-members-table"><thead><tr><th>회원</th><th>카피 상태</th><th title="거래소 잔고 · 미실현 손익 제외">총 자산</th><th title="총 자산 + 미실현 손익">현재 자산</th><th>오늘 PNL</th><th>카피 비율</th><th>증거금 사용</th><th>API 상태</th><th>마지막 동기화</th><th>관리</th></tr></thead><tbody id="memberList"><tr><td colspan="10" class="empty-cell">회원 목록을 불러오는 중입니다.</td></tr></tbody></table></div></section>`;
 }
 
 function enhanceMemberDetailModal() {
@@ -1146,6 +1147,7 @@ function renderAdminOperationsMetrics(data) {
   if (byId('adminLiveUnknownCount')) byId('adminLiveUnknownCount').textContent = String(members.filter((member) => ['API_ERROR', 'ERROR'].includes(member.copy_status)).length);
   renderOperationsChart('adminPnlChart', daily, 'pnl', { cumulative: true });
   adminMembersCache = members;
+  adminMasterAccount = data?.master || null;
   renderAdminMemberRows();
 }
 
@@ -1852,12 +1854,30 @@ async function loadAdminMembers() {
     <tr><td>${escapeHtml(profile.full_name || '-')}</td><td>${escapeHtml(profile.email || '-')}</td><td>${escapeHtml(profile.phone || '-')}</td><td>${new Date(profile.created_at).toLocaleString('ko-KR')}</td><td><button class="btn green" data-approval="APPROVED" data-user-id="${profile.id}">승인</button> <button class="btn red" data-approval="REJECTED" data-user-id="${profile.id}">거절</button></td></tr>
   `).join('') : '<tr><td colspan="5" class="empty-cell">승인 대기 회원이 없습니다.</td></tr>';
   const metricRows = new Map((Array.isArray(metricsResult.data?.members) ? metricsResult.data.members : []).map((member) => [member.id, member]));
+  adminMasterAccount = metricsResult.data?.master || null;
   adminMembersCache = data.filter((profile) => profile.role === 'MEMBER' && profile.approval_status !== 'PENDING').map((profile) => {
     const metric = metricRows.get(profile.id) || {};
     const progress = getMemberCopyProgress(profile, connectionByUserId.get(profile.id), statesByEmail.get(String(profile.email || '').toLowerCase()) || []);
     return { ...profile, ...metric, fallback_progress: progress, connection: connectionByUserId.get(profile.id) || null };
   });
   renderAdminMemberRows();
+}
+
+// 총 자산 = exchange balance without unrealised PnL; 현재 자산 = balance + unrealised PnL.
+// The metrics RPC normalises classic vs unified Gate accounts (balance_equity / current_equity).
+function renderAdminEquityCells(account) {
+  const balance = account.balance_equity ?? account.total_equity;
+  const current = account.current_equity;
+  const unrealised = account.unrealised_pnl == null ? null : Number(account.unrealised_pnl);
+  const unrealisedNote = unrealised == null || unrealised === 0 ? ''
+    : `<small class="${unrealised >= 0 ? 'pos' : 'neg'}">미실현 ${formatUsd(unrealised)}</small>`;
+  return `<td><b>${balance == null ? '-' : formatUsd(balance)}</b></td>`
+    + `<td class="admin-equity-cell"><b>${current == null ? '-' : formatUsd(current)}</b>${unrealisedNote}</td>`;
+}
+
+function renderAdminMasterRow(master) {
+  const observed = master.last_observed_at ? new Date(master.last_observed_at).toLocaleString('ko-KR') : '-';
+  return `<tr class="admin-master-row"><td><div class="admin-member-identity"><span>M</span><div><b>Master · 내 계정</b><small>${escapeHtml(master.email || master.full_name || '-')}</small></div></div></td><td><span class="chip">마스터</span></td>${renderAdminEquityCells(master)}<td>-</td><td>-</td><td>-</td><td>-</td><td>${observed}</td><td>-</td></tr>`;
 }
 
 function renderAdminMemberRows() {
@@ -1876,8 +1896,9 @@ function renderAdminMemberRows() {
     const pnl = member.today_pnl == null ? null : Number(member.today_pnl);
     const apiStatus = member.api_status || member.connection?.status || 'NOT_CONNECTED';
     const apiLabel = apiStatus === 'VERIFIED' ? '정상' : apiStatus === 'ERROR' ? '권한 오류' : apiStatus === 'DISABLED' ? '연결 해제' : '확인 필요';
-    return `<tr><td><div class="admin-member-identity"><span>${escapeHtml(String(member.full_name || member.email || '?').slice(0, 1))}</span><div><b>${escapeHtml(member.full_name || '-')}</b><small>${escapeHtml(member.email || '-')}</small></div></div></td><td><span class="${status[1]}">${escapeHtml(status[0])}</span></td><td><b>${member.total_equity == null ? '-' : formatUsd(member.total_equity)}</b></td><td class="${pnl == null ? '' : pnl >= 0 ? 'pos' : 'neg'}"><b>${pnl == null ? '-' : formatUsd(pnl)}</b></td><td>${Number(member.copy_ratio ?? 100)}%</td><td><div class="member-margin-cell"><b>${Number(member.margin_usage_pct || 0).toFixed(1)}%</b><div><i style="width:${Math.min(100, Math.max(0, Number(member.margin_usage_pct || 0)))}%"></i></div></div></td><td class="${apiStatus === 'VERIFIED' ? 'pos' : 'neg'}">${escapeHtml(apiLabel)}</td><td>${member.last_observed_at ? new Date(member.last_observed_at).toLocaleString('ko-KR') : '-'}</td><td><button class="btn" type="button" data-member-detail="${member.id}">상세</button></td></tr>`;
-  }).join('') : '<tr><td colspan="9" class="empty-cell">조건에 맞는 회원이 없습니다.</td></tr>';
+    return `<tr><td><div class="admin-member-identity"><span>${escapeHtml(String(member.full_name || member.email || '?').slice(0, 1))}</span><div><b>${escapeHtml(member.full_name || '-')}</b><small>${escapeHtml(member.email || '-')}</small></div></div></td><td><span class="${status[1]}">${escapeHtml(status[0])}</span></td>${renderAdminEquityCells(member)}<td class="${pnl == null ? '' : pnl >= 0 ? 'pos' : 'neg'}"><b>${pnl == null ? '-' : formatUsd(pnl)}</b></td><td>${Number(member.copy_ratio ?? 100)}%</td><td><div class="member-margin-cell"><b>${Number(member.margin_usage_pct || 0).toFixed(1)}%</b><div><i style="width:${Math.min(100, Math.max(0, Number(member.margin_usage_pct || 0)))}%"></i></div></div></td><td class="${apiStatus === 'VERIFIED' ? 'pos' : 'neg'}">${escapeHtml(apiLabel)}</td><td>${member.last_observed_at ? new Date(member.last_observed_at).toLocaleString('ko-KR') : '-'}</td><td><button class="btn" type="button" data-member-detail="${member.id}">상세</button></td></tr>`;
+  }).join('') : '<tr><td colspan="10" class="empty-cell">조건에 맞는 회원이 없습니다.</td></tr>';
+  if (adminMasterAccount && !query) tableBody.insertAdjacentHTML('afterbegin', renderAdminMasterRow(adminMasterAccount));
   if (byId('memberDirectorySummary')) byId('memberDirectorySummary').textContent = `${adminMembersCache.length}명 · 카피 중 ${adminMembersCache.filter((member) => member.copy_status === 'COPYING').length}명 · 확인 필요 ${adminMembersCache.filter((member) => member.copy_status !== 'COPYING').length}명`;
 }
 

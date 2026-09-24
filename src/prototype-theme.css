@@ -255,6 +255,8 @@ tbody tr:hover { background: #141416; }
 .admin-member-identity > span { width: 28px; height: 28px; display: grid; flex: 0 0 auto; place-items: center; border-radius: 8px; background: #202024; color: #aaaab2; font-size: 9px; font-weight: 800; }
 .admin-member-identity b { font-size: 11px; }
 .admin-member-identity small { display: block; color: var(--muted); font-size: 9px; margin-top: 2px; }
+.admin-equity-cell small { display: block; margin-top: 2px; font-size: 9px; font-weight: 700; }
+.admin-members-table tr.admin-master-row td { background: rgba(255, 255, 255, .025); }
 .member-margin-cell { min-width: 130px; }
 .member-margin-cell > div, .member-margin-track { height: 5px; background: #242429; border-radius: 999px; overflow: hidden; margin-top: 6px; }
 .member-margin-cell i, .member-margin-track i { display: block; height: 100%; background: #5a5a64; border-radius: 999px; }
