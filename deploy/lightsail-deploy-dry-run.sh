@@ -15,6 +15,22 @@ if [[ ! -f "${ENV_FILE}" ]]; then
   exit 1
 fi
 
+readonly DEPLOY_LOCK_FILE="/run/maetajak-deploy.lock"
+# One deploy/activation at a time (the 3-minute auto-deploy timer included). A nested call from a
+# script that already holds the lock (auto-deploy -> this script, promotion -> enable-live) inherits it.
+acquire_deploy_lock() {
+  if [[ "${MAETAJAK_DEPLOY_LOCK_HELD:-}" == "1" ]]; then
+    return 0
+  fi
+  exec 9>"${DEPLOY_LOCK_FILE}"
+  if ! flock -w "${DEPLOY_LOCK_WAIT_SECONDS:-900}" 9; then
+    echo "Another maetajak deploy or LIVE activation is running (${DEPLOY_LOCK_FILE})." >&2
+    exit 1
+  fi
+  export MAETAJAK_DEPLOY_LOCK_HELD=1
+}
+acquire_deploy_lock
+
 failed=true
 keep_safe() {
   if [[ "${failed}" == "true" ]]; then

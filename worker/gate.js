@@ -263,11 +263,18 @@ export async function getFuturesAccount(options) {
   const crossMarginBalance = Number(payload?.cross_margin_balance || 0);
   const marginMode = Number(payload?.margin_mode || 0);
   let total;
+  // Unified equity already includes unrealised PnL; the classic futures `total` is the wallet
+  // balance without it. Sizing must compare both accounts on the same basis.
+  let equityIncludesUnrealised = false;
   if (marginMode > 0 || (!(classicTotal > 0) && !(crossMarginBalance > 0))) {
     const unified = await gateRequest({ ...options, path: UNIFIED_ACCOUNT_PATH });
     total = Number(unified.payload?.unified_account_total_equity || 0);
+    equityIncludesUnrealised = true;
   } else {
     total = classicTotal > 0 ? classicTotal : crossMarginBalance;
+    // `cross_margin_balance` is a margin balance (unrealised PnL included); adding the PnL again
+    // would double count it. Only the classic wallet `total` excludes it.
+    equityIncludesUnrealised = !(classicTotal > 0);
   }
   const available = Number(payload?.available ?? payload?.cross_available ?? 0);
   if (!Number.isFinite(total) || !(total > 0) || !Number.isFinite(available) || available < 0
@@ -279,6 +286,7 @@ export async function getFuturesAccount(options) {
     total,
     available,
     unrealisedPnl: Number(payload?.unrealised_pnl ?? payload?.unrealized_pnl ?? payload?.cross_unrealised_pnl ?? 0),
+    equityIncludesUnrealised,
     positionMode: String(payload?.position_mode || (payload?.in_dual_mode ? 'dual' : 'single')),
   };
 }

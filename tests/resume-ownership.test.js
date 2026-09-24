@@ -37,7 +37,8 @@ async function resume(runner) {
     const [master, member] = await Promise.all([runner.readAccount(masterContext), runner.readAccount(memberContext)]);
     return { startedAt, master, member, openOrders: [] };
   };
-  await runner.syncOnce();
+  // Resume validation runs after the order phase (P1-8), as runTradingCycle does.
+  await runner.syncOnce(); await runner.processPendingResumes(5);
 }
 
 test('CT-QA-RESUME-OWNERSHIP-001: confirmed COPY survives ordinary resume and follows later Master close', async () => {

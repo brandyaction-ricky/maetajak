@@ -37,7 +37,11 @@ export function assertOrderIdentity(job, order) {
 export function assertSubmissionSnapshot(job, account, master, reversalContext = null) {
   assertFreshAccount(account);
   assertFreshAccount(master);
-  if (account.open_orders.length) throw new GateApiError('미체결 주문 확인이 필요합니다.', { code: 'OPEN_EXCHANGE_ORDER' });
+  // A resting order on this contract can change the leg before or after this order fills. Orders on
+  // other contracts cannot; their margin is already excluded from `available`, checked below.
+  if (account.open_orders.some((order) => order?.contract === job.contract)) {
+    throw new GateApiError('미체결 주문 확인이 필요합니다.', { code: 'OPEN_EXCHANGE_ORDER' });
+  }
   const actual = account.positions.find((position) => position.contract === job.contract && positionSide(position) === job.position_side);
   const masterPosition = master.positions.find((position) => position.contract === job.contract && positionSide(position) === job.position_side);
   if (!Number.isFinite(Number(job.actual_size_at_plan))

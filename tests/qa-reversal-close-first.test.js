@@ -48,7 +48,7 @@ test('QA-REVERSAL: existing confirmed COPY must close before the opposite entry 
         const [master, member] = await Promise.all([runner.readAccount(masterContext), runner.readAccount(memberContext)]);
         return { startedAt, master, member, openOrders: [] };
       };
-      await runner.syncOnce();
+      await runner.syncOnce(); await runner.processPendingResumes(5);
       assert.equal((await db.query('select state from private.copy_resume_sessions')).rows[0].state, 'ACTIVE');
       await runner.syncOnce(); await runner.submitOrders();
       assert.equal(submissions.length, 1, 'ordinary resume must itself submit zero orders');

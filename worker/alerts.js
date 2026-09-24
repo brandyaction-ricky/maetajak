@@ -17,6 +17,12 @@ const EVENT_MESSAGES = {
   COPY_ORDER_UNCONFIRMED: { title: '주문 결과 확인 중', state: '추가 주문 대기', description: '거래소 응답을 확인하지 못했습니다. 이미 체결되었을 수 있어 같은 주문을 다시 보내지 않습니다.', action: '기존 주문 ID로 거래소 결과를 조회합니다. 확인 전까지 이 회원의 추가 주문을 보류합니다.' },
   OPEN_ORDERS_CANCELLED: { title: '미체결 주문 취소 완료', state: '회원 카피 중단 유지', description: 'Gate.io의 일반 무기한 선물 미체결 주문을 모두 취소하고 0건을 재확인했습니다.', action: '현재 포지션은 유지됩니다. 해당 회원을 다시 안전 검증한 뒤 재개해 주세요.' },
   OPEN_ORDER_CANCEL_FAILED: { title: '미체결 주문 취소 실패', state: '회원 카피 중단 유지', description: 'Gate.io 미체결 주문을 모두 취소했는지 확인하지 못했습니다.', action: '해당 계정은 자동 재개하지 않습니다. 오류와 Gate.io 주문 화면을 확인해 주세요.' },
+  COPY_WORKER_DEGRADED: { title: '카피 주문 일시 보류', state: '신규 주문 보류', description: '연속 오류로 주문 처리를 잠시 멈췄습니다. 정상 회차가 확인되면 자동으로 이어집니다.', action: '오류가 5분 넘게 계속되면 전체 카피가 자동 중단됩니다. 서버·DB·거래소 연결을 확인해 주세요.' },
+  COPY_WORKER_RECOVERED: { title: '카피 동기화 복구', state: '정상 회차 확인', description: '연속 오류 뒤 정상 회차가 확인되었습니다.', action: '아래 현재 처리 내용을 확인해 주세요.' },
+  WORKER_LEASE_CONFLICT: { title: '워커 중복 실행 의심', state: '이 워커 대기', description: '다른 워커가 실행 권한을 계속 보유하고 있어 이 워커는 주문을 처리하지 않습니다.', action: '서버에서 카피 워커가 하나만 실행 중인지 확인해 주세요.' },
+  COPY_FILL_OBSERVATION_STALE: { title: '체결 반영 확인 지연', state: '해당 회원 주문 보류', description: '체결된 주문이 5분 넘게 실제 포지션과 일치하지 않아 해당 회원의 추가 주문이 막혀 있습니다.', action: '회원의 수동 매매·TP/SL·강제청산 여부를 확인하고 원장을 점검해 주세요.' },
+  COPY_ORDER_UNRESOLVED: { title: '주문 결과 미확정 지속', state: '해당 회원 주문 보류', description: '거래소에서 주문을 찾지 못했지만 포지션이 계획 시점과 달라 자동으로 정리할 수 없습니다.', action: '해당 종목의 체결 내역과 포지션을 직접 확인해 주세요.' },
+  AUTO_DEPLOY_PENDING_LIVE: { title: '워커 업데이트 대기', state: 'LIVE 유지 · 자동 배포 보류', description: '실거래 중이라 새 워커 코드를 자동으로 재배포하지 않았습니다.', action: '점검 가능한 시간에 수동 배포 절차(DRY_RUN 배포 → LIVE 재활성화)로 반영해 주세요.' },
 };
 
 const DETAIL_LABELS = {
@@ -26,6 +32,7 @@ const DETAIL_LABELS = {
   gate_uid: 'Gate UID', copy_event_id: '추적 ID', intent_id: '주문 추적 ID',
   cancelled_count: '취소 주문 수', remaining_count: '남은 미체결 주문 수',
   side: '매수·매도', fill_notional_usdt: '체결 금액 (USDT)', gate_order_id: '거래소 주문 ID', evidence: '확인 근거',
+  user_id: '회원 ID', commit: '커밋',
 };
 
 const VALUE_LABELS = {
@@ -38,6 +45,10 @@ const VALUE_LABELS = {
   RESUME_UNRESOLVED_ORDERS: '확인되지 않은 이전 주문이 남아 있음', RESUME_OPEN_EXCHANGE_ORDERS: '거래소에 미체결 주문이 남아 있음',
   RESUME_SNAPSHOT_STALE: '포지션 조회 시간이 오래됨', RESUME_SNAPSHOT_CHANGED: '재확인 중 포지션 수량이 변경됨',
   OPEN_FUTURES_ORDERS_REMAIN: '취소 후에도 거래소에 미체결 주문이 남아 있음',
+  ORDER_NOT_FOUND_POSITION_CHANGED: '거래소 주문 미발견 · 포지션이 계획 시점과 다름',
+  NOT_FOUND_AFTER_EXPIRY: '주문 유효시간 경과 후 거래소 기록 없음 (미실행 확정)',
+  UNSENT_UNKNOWN_RESOLVED: '거래소 전송 전 실패로 확인 (미실행)',
+  UNSENT_CLAIM_EXPIRED: '거래소 전송 전 만료 (미실행)',
 };
 
 function koreanTime(value) {
