@@ -2,7 +2,7 @@ import { createClient } from '@supabase/supabase-js';
 import { randomUUID } from 'node:crypto';
 import { validateGateChannelId, verifyGateAccount } from './gate.js';
 import { TradingRunner, safeError } from './trading-runner.js';
-import { sendWorkerAlert, shouldSendFailureAlert } from './alerts.js';
+import { failureAlertDecision, sendWorkerAlert } from './alerts.js';
 import { syncGateBrokerMetrics } from './broker-metrics.js';
 
 const supabaseUrl = process.env.SUPABASE_URL;
@@ -211,19 +211,11 @@ export async function runTradingCycle() {
       state.failureStreak = Number.isFinite(failures) ? failures : state.failureStreak + 1;
       const details = { copy_event_id: runner.currentCopyEventId, failures: failure?.consecutive_failures,
         error_code: failure?.last_error_code || code };
-      if (failure && Object.prototype.hasOwnProperty.call(failure, 'newly_halted')) {
-        // P1-1: orders stop while failures>0; the database halts only after 5 minutes of failure. A lost
-        // response can hide `newly_halted`, so a LIVE halt first seen during this streak also alerts.
-        const haltSeen = failure.newly_halted || (tradingMode === 'LIVE' && failure.halted && state.lastReportHalted === false);
-        if (haltSeen && !state.haltAlertSent) {
-          state.haltAlertSent = true;
-          await sendAlert({ event: 'COPY_SYSTEM_AUTO_HALTED', severity: 'CRITICAL', details });
-        } else if (failures === 1) await sendAlert({ event: 'WORKER_CYCLE_FAILED', severity: 'CRITICAL', details });
-        else if (failures === 3 && !failure.halted && tradingMode === 'LIVE') await sendAlert({ event: 'COPY_WORKER_DEGRADED', severity: 'CRITICAL', details });
-        state.lastReportHalted = Boolean(failure.halted);
-      } else if (shouldSendFailureAlert(failure?.consecutive_failures)) {
-        await sendAlert({ event: Number(failure?.consecutive_failures) >= 3 ? 'COPY_SYSTEM_AUTO_HALTED' : 'WORKER_CYCLE_FAILED', severity: 'CRITICAL', details });
-      }
+      const decision = failureAlertDecision({ failure, tradingMode, lastReportHalted: state.lastReportHalted,
+        haltAlertSent: state.haltAlertSent });
+      state.lastReportHalted = decision.lastReportHalted;
+      state.haltAlertSent = decision.haltAlertSent;
+      if (decision.event) await sendAlert({ event: decision.event, severity: 'CRITICAL', details });
     }
     catch (reportError) {
       const reportCode = safeError(reportError, 'FAILURE_REPORT');

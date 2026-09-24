@@ -210,6 +210,36 @@ test('P1-4 (review): CLOSE that cannot execute leaves COPY as COPY; a later RESU
   assert.equal(ownership.copy_positions.length, 2, 'the copied legs continue as COPY');
 });
 
+async function closeWhileHalted(adjust) {
+  const { master, held } = await copiedBtcAndSoxl();
+  // The member also held 5 BTC of their own before copying (protected).
+  await db.query(`update private.copy_ownership_checkpoints set protected_positions=$1::jsonb`,
+    [JSON.stringify([{ contract: 'BTC_USDT', position_side: 'LONG', size: 5 }])]);
+  held.set('BTC_USDT', held.get('BTC_USDT') + 5);
+  await db.query("select set_config('request.jwt.claim.sub',$1,false),set_config('request.jwt.claim.role','authenticated',false)", [ids.user]);
+  await db.exec("select public.set_my_copy_pause('CLOSE'); select set_config('request.jwt.claim.role','service_role',false)");
+  await db.exec("update public.copy_system_control set execution_enabled=false,emergency_halted=true,halt_reason='TEST'");
+  await closingCycles(held, master);
+  adjust(held);
+  await closingCycles(held, master);
+  return held;
+}
+
+test('P1-4 (re-review): a manual sale during CLOSE cannot be attributed, so the ledger becomes UNKNOWN (never relabelled)', async () => {
+  await closeWhileHalted((held) => held.set('BTC_USDT', held.get('BTC_USDT') - 5));
+  const proof = await one('select status,reason from private.copy_ownership_checkpoints');
+  assert.deepEqual(proof, { status: 'UNKNOWN', reason: 'CLOSE_OWNERSHIP_AMBIGUOUS' });
+});
+
+test('P1-4 (re-review): a member addition during CLOSE is recorded as the member\'s own', async () => {
+  const held = await closeWhileHalted((h) => h.set('BTC_USDT', h.get('BTC_USDT') + 3));
+  const proof = await one('select status,protected_positions,copy_positions from private.copy_ownership_checkpoints');
+  assert.equal(proof.status, 'CONFIRMED');
+  const btc = (list) => list.find((p) => p.contract === 'BTC_USDT')?.size || 0;
+  assert.equal(btc(proof.protected_positions), 8);
+  assert.equal(btc(proof.protected_positions) + btc(proof.copy_positions), held.get('BTC_USDT'));
+});
+
 test('P1-4 (review): CLOSE pressed seconds after a fill still closes and keeps that fill as COPY', async () => {
   await record(db, cyclePayload({ masterSize: 40, actualSize: 0 }));
   const job = await executeNext({ confirm: false });

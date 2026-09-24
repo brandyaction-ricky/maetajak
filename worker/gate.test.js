@@ -433,14 +433,22 @@ test('a failed confirmation read throws by default and is reported as unconfirme
   assert.deepEqual(positions.unconfirmedContracts, ['BTC_USDT']);
 });
 
-test('a list row contradicted by the single-contract read is never trusted', async () => {
-  const routes = [
+test('the single-contract read only adds omitted legs; the same leg with two sizes is a contradiction', async () => {
+  // Hedge mode may answer with one leg only: a listed leg it does not repeat is kept.
+  const partial = [
     [/\/positions\?holding=true/, { body: [dualLeg('BTC_USDT', 9, 'dual_long')] }],
-    [/\/positions\/BTC_USDT$/, { status: 404, body: { label: 'POSITION_NOT_FOUND' } }],
+    [/\/positions\/BTC_USDT$/, { body: dualLeg('BTC_USDT', 0, 'dual_short') }],
   ];
-  await assert.rejects(() => getFuturesPositions({ apiKey: 'k', secretKey: 's', fetchImpl: positionsFetch(routes).fetchImpl,
+  const kept = await getFuturesPositions({ apiKey: 'k', secretKey: 's', fetchImpl: positionsFetch(partial).fetchImpl,
+    expectedLegs: ['BTC_USDT:SHORT'] });
+  assert.deepEqual(kept.map((p) => [p.positionSide, p.size]), [['LONG', 9]]);
+  const conflicting = [
+    [/\/positions\?holding=true/, { body: [dualLeg('BTC_USDT', 9, 'dual_long')] }],
+    [/\/positions\/BTC_USDT$/, { body: [dualLeg('BTC_USDT', 4, 'dual_long'), dualLeg('BTC_USDT', -2, 'dual_short')] }],
+  ];
+  await assert.rejects(() => getFuturesPositions({ apiKey: 'k', secretKey: 's', fetchImpl: positionsFetch(conflicting).fetchImpl,
     expectedLegs: ['BTC_USDT:SHORT'] }), (error) => error.code === 'POSITIONS_INCONSISTENT');
-  const tolerant = await getFuturesPositions({ apiKey: 'k', secretKey: 's', fetchImpl: positionsFetch(routes).fetchImpl,
+  const tolerant = await getFuturesPositions({ apiKey: 'k', secretKey: 's', fetchImpl: positionsFetch(conflicting).fetchImpl,
     expectedLegs: ['BTC_USDT:SHORT'], tolerateUnconfirmed: true });
   assert.deepEqual(tolerant.map((p) => p.contract), []);
   assert.deepEqual(tolerant.unconfirmedContracts, ['BTC_USDT']);

@@ -22,6 +22,7 @@ const EVENT_MESSAGES = {
   WORKER_LEASE_CONFLICT: { title: '워커 중복 실행 의심', state: '이 워커 대기', description: '다른 워커가 실행 권한을 계속 보유하고 있어 이 워커는 주문을 처리하지 않습니다.', action: '서버에서 카피 워커가 하나만 실행 중인지 확인해 주세요.' },
   COPY_FILL_OBSERVATION_STALE: { title: '체결 반영 확인 지연', state: '해당 회원 주문 보류', description: '체결된 주문이 5분 넘게 실제 포지션과 일치하지 않아 해당 회원의 추가 주문이 막혀 있습니다.', action: '회원의 수동 매매·TP/SL·강제청산 여부를 확인하고 원장을 점검해 주세요.' },
   COPY_ORDER_UNRESOLVED: { title: '주문 결과 미확정 지속', state: '해당 회원 주문 보류', description: '거래소에서 주문을 찾지 못했지만 포지션이 계획 시점과 달라 자동으로 정리할 수 없습니다.', action: '해당 종목의 체결 내역과 포지션을 직접 확인해 주세요.' },
+  MASTER_POSITION_UNCONFIRMED: { title: '마스터 포지션 확인 불가', state: '해당 종목 회원 주문 보류', description: 'Gate가 이 종목의 마스터 포지션을 1분 넘게 확인해 주지 않아, 이 종목의 회원 주문과 기준 갱신을 멈췄습니다.', action: 'Gate 상태와 해당 종목(상장폐지·점검 등)을 확인해 주세요. 확인되면 자동으로 다시 따라갑니다.' },
   AUTO_DEPLOY_RECOVERY_DRY_RUN: { title: '워커 중지 감지 · 자동 복구', state: 'DRY_RUN으로 재기동 (LIVE 해제)', description: 'LIVE 설정인데 워커 서비스가 멈춰 있어 안전 모드(DRY_RUN)로 다시 띄웁니다.', action: '원인을 확인한 뒤 LIVE 재활성화 절차를 진행해 주세요. 의도한 중지라면 /etc/maetajak/maintenance 파일을 먼저 만들어 주세요.' },
   AUTO_DEPLOY_PENDING_LIVE: { title: '워커 업데이트 대기', state: 'LIVE 유지 · 자동 배포 보류', description: '실거래 중이라 새 워커 코드를 자동으로 재배포하지 않았습니다.', action: '점검 가능한 시간에 수동 배포 절차(DRY_RUN 배포 → LIVE 재활성화)로 반영해 주세요.' },
 };
@@ -62,6 +63,27 @@ function readableValue(key, value) {
   const text = VALUE_LABELS[value] || value;
   if (key === 'target_leverage' && /^\d+(?:\.\d+)?$/.test(text)) return `${text}배`;
   return text;
+}
+
+// Which alert a failed cycle sends. With the reliability DB (report returns `newly_halted`): orders
+// stop while failures>0 and the database halts only after 5 minutes, so failure 1 warns, failure 3
+// reports degraded (LIVE), and every halt transition alerts. A lost report response can hide
+// `newly_halted`; a LIVE halt first seen during a streak then alerts once (deduped by haltAlertSent).
+// Older databases keep the original 1st/3rd-failure alerts.
+export function failureAlertDecision({ failure, tradingMode, lastReportHalted = null, haltAlertSent = false }) {
+  const failures = Number(failure?.consecutive_failures);
+  if (!failure || !Object.prototype.hasOwnProperty.call(failure, 'newly_halted')) {
+    return { event: shouldSendFailureAlert(failures) ? (failures >= 3 ? 'COPY_SYSTEM_AUTO_HALTED' : 'WORKER_CYCLE_FAILED') : null,
+      lastReportHalted, haltAlertSent };
+  }
+  const halted = Boolean(failure.halted);
+  const inferredHalt = tradingMode === 'LIVE' && halted && lastReportHalted === false && !haltAlertSent;
+  let event = null;
+  let sent = haltAlertSent;
+  if (failure.newly_halted || inferredHalt) { event = 'COPY_SYSTEM_AUTO_HALTED'; sent = true; }
+  else if (failures === 1) event = 'WORKER_CYCLE_FAILED';
+  else if (failures === 3 && !halted && tradingMode === 'LIVE') event = 'COPY_WORKER_DEGRADED';
+  return { event, lastReportHalted: halted, haltAlertSent: halted ? sent : false };
 }
 
 export function shouldSendFailureAlert(consecutiveFailures) {

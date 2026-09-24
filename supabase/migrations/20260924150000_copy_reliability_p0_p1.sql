@@ -11,15 +11,41 @@
 --        Open -> close -> reopen after confirmed observations is normal trading, not a halt.
 --  P1-4  CLOSE ("stop copy + close positions") works as an exit: the ownership ledger no longer latches
 --        UNKNOWN during CLOSING (closing a protected leg made the per-fill journal invalid) and UNKNOWN no
---        longer blocks close-only orders. During CLOSING the split is reconciled from verified holdings
---        (closes consume COPY first, member additions are protected, nothing moves between them), and an
---        UNKNOWN/legacy ledger is reset only when the account is flat, so a later RESUME can start.
+--        longer blocks close-only orders. During CLOSING the split is reconciled from verified holdings:
+--        the platform's close fills consume COPY first, member additions are protected, an unexplained
+--        reduction makes the ledger UNKNOWN, and an UNKNOWN/legacy ledger is reset only when the account is
+--        flat, so a later RESUME either continues the correct split or is blocked explicitly.
 --  P1-5  Orders that provably never reached Gate stop blocking the account: never-authorized UNKNOWN
 --        intents are cancelled like never-authorized SUBMITTING ones, and "not found after Exptime"
 --        resolutions are accepted only when the Gate expiry has long passed.
 --  P1-6  Read-only feed of fills whose observation never confirmed (alerting).
 --  P0-1  Target anchors can store the Master quantity actually consumed by an incremental member lot, so
 --        rounding remainders accumulate instead of being lost on every Master increase.
+
+set lock_timeout = '5s';
+
+-- Drift guard: every function replaced below must still be the reviewed production body (or this
+-- migration's own body, if re-applied). Functions absent in a fresh test database are skipped.
+do $guard$
+declare f record; current_md5 text;
+begin
+  for f in select * from (values
+    ('public.report_copy_worker_cycle(boolean,text)','14d6890c48c5d1a63ae145e1a1ad9306','2f10674ef0acf725958d762406364610'),
+    ('public.detect_and_halt_copy_order_anomaly()','cd4ef86490d6a783ce89f8f3169b0f9f','7a0dfd1b1a5992bb84b10cfba9e6ccc1'),
+    ('private.copy_resume_policy_authorized(uuid,uuid)','b2b499c3dd856efbad9bb832060578b0','5312c1beed9901dd9e2a4a66dd316221'),
+    ('private.observe_copy_ownership()','14896b3e33341e8e79154f170ba2205a','644f7d0371833cdaa62a72fc186169fb'),
+    ('public.claim_copy_reconciliation_jobs(integer)','f56d88a83c3db1b5a04f07cd81cdad1f','e845abf02088cbc12a33b60c4fe8d87f'),
+    ('public.complete_copy_reconciliation(bigint,text,text,numeric,numeric,jsonb)','6bd9445db153631673a955065db22674','835d25a348d6ab7c94c0253e23a16d4b'),
+    ('public.record_copy_worker_cycle_with_target_anchors(jsonb)','20a983d910a383509aca097e36285c38','fdd1d453edbca973683ad5e1daec314b'),
+    ('public.get_copy_safety_version()','f066fc04091dac47fb51819270b57ab4','53b6cce9e9a7d862f832d377c4ec7f37')
+  ) v(sig, reviewed_md5, applied_md5) loop
+    if to_regprocedure(f.sig) is null then continue; end if;
+    select md5(prosrc) into current_md5 from pg_proc where oid=to_regprocedure(f.sig);
+    if current_md5 not in (f.reviewed_md5, f.applied_md5) then
+      raise exception 'ABORT_FUNCTION_DRIFT % md5=%', f.sig, current_md5;
+    end if;
+  end loop;
+end $guard$;
 
 alter table private.copy_worker_runtime add column if not exists failure_started_at timestamptz;
 
@@ -192,7 +218,7 @@ declare proof private.copy_ownership_checkpoints; baseline private.member_copy_o
   actual jsonb; copied jsonb; expected jsonb; item private.copy_order_intents;
   applied uuid[] := '{}'; invalid boolean := false;
   closing_session private.copy_resume_sessions; closing boolean := false; has_proof boolean := false;
-  protected_next jsonb; copy_next jsonb; copy_base jsonb;
+  protected_next jsonb; copy_next jsonb; copy_base jsonb; ambiguous boolean;
 begin
   if new.status<>'VERIFIED' then return new; end if;
   perform pg_advisory_xact_lock(hashtextextended('maetajak:copy-execution',0));
@@ -225,10 +251,15 @@ begin
     if exists(select 1 from private.copy_order_intents i where i.trading_account_id=new.trading_account_id
       and i.filled_size<>0 and i.observation_confirmed_at is null and i.resume_version is not null) then return new; end if;
     if has_proof and new.observed_at<=proof.observed_at then return new; end if;
-    if has_proof and proof.status='CONFIRMED' then
+    if actual='[]'::jsonb then
+      -- Nothing is held any more: nothing is left to attribute.
+      protected_next:='[]'; copy_next:='[]';
+    elsif not has_proof or proof.status<>'CONFIRMED' then
+      -- Ownership that is unknown is never assigned to anyone while something is still held.
+      return new;
+    else
       -- Fills of the pre-CLOSE generation that the per-fill journal had not consumed yet belong to the
-      -- COPY they created (CLOSE may be pressed seconds after a fill). Later close fills are handled by
-      -- the per-leg reconciliation below, never folded.
+      -- COPY they created (CLOSE may be pressed seconds after a fill).
       if proof.resume_version is distinct from closing_session.version then
         select private.copy_position_sum(proof.copy_positions||coalesce(jsonb_agg(jsonb_build_object(
             'contract',i.contract,'position_side',i.position_side,'size',i.filled_size)),'[]'))
@@ -239,15 +270,10 @@ begin
       else
         copy_base:=proof.copy_positions;
       end if;
-    end if;
-    if not has_proof or proof.status<>'CONFIRMED' or not private.copy_resume_positions_valid(copy_base) then
-      -- Ownership that is unknown is never assigned to anyone while something is still held.
-      if actual<>'[]'::jsonb then return new; end if;
-      protected_next:='[]'; copy_next:='[]';
-    else
-      -- Per leg: the closing orders reduce COPY first; any increase (a member's own trade, since close
-      -- orders are reduce-only) is member-owned. Quantity never moves from COPY to protected or back:
-      --   copy' = least(copy, greatest(0, held - protected)); protected' = held - copy'.
+      -- Per leg, only the platform's own (reduce-only) close fills are explained: they consume COPY
+      -- first, then protected. Holdings above that are a member's own addition (protected). Holdings
+      -- BELOW it (a manual sale, TP/SL, liquidation) cannot be attributed: the ledger becomes UNKNOWN
+      -- and is reset only once the account is flat. Quantity never moves between COPY and protected.
       with legs as (
         select l.c, l.s, case when l.s='SHORT' then -1 else 1 end sg,
           coalesce((select abs((x->>'size')::numeric) from jsonb_array_elements(actual) x
@@ -255,18 +281,30 @@ begin
           coalesce((select abs((x->>'size')::numeric) from jsonb_array_elements(proof.protected_positions) x
             where x->>'contract'=l.c and x->>'position_side'=l.s),0) p_q,
           coalesce((select abs((x->>'size')::numeric) from jsonb_array_elements(copy_base) x
-            where x->>'contract'=l.c and x->>'position_side'=l.s),0) k_q
+            where x->>'contract'=l.c and x->>'position_side'=l.s),0) k_q,
+          coalesce((select (case when l.s='SHORT' then 1 else -1 end)*sum(i.filled_size)
+            from private.copy_order_intents i
+            where i.trading_account_id=new.trading_account_id and i.contract=l.c and i.position_side=l.s
+              and i.resume_version=closing_session.version and i.filled_size<>0
+              and i.observation_confirmed_at is not null
+              and not exists(select 1 from private.copy_ownership_fills f where f.intent_id=i.id)),0) r_q
         from (select x->>'contract' c,x->>'position_side' s from jsonb_array_elements(actual) x
           union select x->>'contract',x->>'position_side' from jsonb_array_elements(proof.protected_positions) x
           union select x->>'contract',x->>'position_side' from jsonb_array_elements(copy_base) x) l
-      ), split as (
-        select c,s,sg,h_q,least(k_q,greatest(0,h_q-p_q)) k_next from legs
+      ), calc as (
+        select c,s,sg,h_q,r_q,greatest(0,k_q-r_q) k1,p_q-greatest(0,r_q-k_q) p1,p_q+k_q-r_q e_q from legs
       )
-      select coalesce(jsonb_agg(jsonb_build_object('contract',c,'position_side',s,'size',sg*(h_q-k_next))
-          order by c,s) filter (where h_q-k_next<>0),'[]'),
-        coalesce(jsonb_agg(jsonb_build_object('contract',c,'position_side',s,'size',sg*k_next)
-          order by c,s) filter (where k_next<>0),'[]')
-        into protected_next,copy_next from split;
+      select coalesce(bool_or(r_q<0 or p1<0 or h_q<e_q),false),
+        coalesce(jsonb_agg(jsonb_build_object('contract',c,'position_side',s,'size',sg*(p1+h_q-e_q))
+          order by c,s) filter (where p1+h_q-e_q<>0),'[]'),
+        coalesce(jsonb_agg(jsonb_build_object('contract',c,'position_side',s,'size',sg*k1)
+          order by c,s) filter (where k1<>0),'[]')
+        into ambiguous,protected_next,copy_next from calc;
+      if ambiguous or not private.copy_resume_positions_valid(copy_base) then
+        update private.copy_ownership_checkpoints set status='UNKNOWN',reason='CLOSE_OWNERSHIP_AMBIGUOUS',
+          revision=revision+1 where trading_account_id=new.trading_account_id;
+        return new;
+      end if;
     end if;
     if not private.copy_resume_positions_valid(protected_next) or not private.copy_resume_positions_valid(copy_next)
       or private.copy_position_sum(protected_next||copy_next) is distinct from actual then return new; end if;

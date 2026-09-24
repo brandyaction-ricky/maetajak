@@ -484,6 +484,9 @@ export class TradingRunner {
     this.resumeAttemptAt = new Map();
     this.staleFillAlerts = new Map();
     this.notFoundAfterExpiry = new Map();
+    this.unconfirmedSince = new Map();
+    this.lastUnconfirmedKey = '';
+    this.lastUnconfirmedAlertAt = 0;
     this.latestPerformanceMembers = [];
   }
   // A FUTURE_ONLY baseline only shrinks, permanently. One empty or partial Master read must not
@@ -496,6 +499,20 @@ export class TradingRunner {
     if (!previous || previous.seq !== this.cycleSeq - 1) return null;
     this.pendingBaselineClears.delete(key);
     return { ...leg, size: Math.abs(previous.size) >= Math.abs(Number(leg.size)) ? previous.size : Number(leg.size) };
+  }
+  // Member legs on an unconfirmed Master contract are paused, so a contract that stays unconfirmed
+  // must reach a person: log on change, alert once it lasts about a minute (then every 30 minutes).
+  trackUnconfirmedMasterContracts(current) {
+    const key = [...current].sort().join(',');
+    if (key !== this.lastUnconfirmedKey && this.logger) this.logger('master_positions_unconfirmed', { contracts: [...current].sort() });
+    this.lastUnconfirmedKey = key;
+    for (const contract of current) if (!this.unconfirmedSince.has(contract)) this.unconfirmedSince.set(contract, this.cycleSeq);
+    for (const contract of [...this.unconfirmedSince.keys()]) if (!current.has(contract)) this.unconfirmedSince.delete(contract);
+    const lasting = [...this.unconfirmedSince].filter(([, seq]) => this.cycleSeq - seq >= 12).map(([contract]) => contract).sort();
+    if (!lasting.length || !this.onSafetyEvent || Date.now() - this.lastUnconfirmedAlertAt < 1_800_000) return;
+    this.lastUnconfirmedAlertAt = Date.now();
+    Promise.resolve(this.onSafetyEvent({ event: 'MASTER_POSITION_UNCONFIRMED', severity: 'CRITICAL',
+      details: { contract: lasting.join(', '), action: '해당 종목 회원 주문 보류' } })).catch(() => {});
   }
   // Contracts and legs the Master read must confirm individually when Gate's list omits them: legs
   // seen in the previous read, contracts seen in roughly the last minute, and every leg that ACTIVE
@@ -784,9 +801,7 @@ export class TradingRunner {
     for (const [contract, seq] of this.recentMasterContracts) {
       if (seq < this.cycleSeq - 12) this.recentMasterContracts.delete(contract);
     }
-    if (unconfirmedMasterContracts.size && this.logger) {
-      this.logger('master_positions_unconfirmed', { contracts: [...unconfirmedMasterContracts] });
-    }
+    this.trackUnconfirmedMasterContracts(unconfirmedMasterContracts);
     // A newly listed or newly traded contract may appear after the hourly
     // contract metadata cache was built. Refresh immediately instead of
     // silently dropping that Master position from every member plan.
@@ -1017,11 +1032,11 @@ export class TradingRunner {
         const memberContext = context.members?.find((member) => member.trading_account_id === job.trading_account_id);
         if (!memberContext) throw new GateApiError('활성 회원 설정을 확인할 수 없습니다.', { code: 'MEMBER_CONTEXT_MISSING' });
         memberLabel = memberContext.nickname || memberContext.full_name || memberLabel;
-        // Both legs of the contract are confirmed individually when the list omits either one.
-        const bothLegs = [`${job.contract}:LONG`, `${job.contract}:SHORT`];
+        // The order's own leg is confirmed individually when the list omits it.
+        const jobLeg = [`${job.contract}:${job.position_side}`];
         const [memberSnapshot, masterSnapshot] = await Promise.all([
-          this.readAccount({ ...memberContext, ...job, expected_contracts: [job.contract], expected_legs: bothLegs }),
-          this.readAccount({ ...context.master, expected_contracts: [job.contract], expected_legs: bothLegs }),
+          this.readAccount({ ...memberContext, ...job, expected_contracts: [job.contract], expected_legs: jobLeg }),
+          this.readAccount({ ...context.master, expected_contracts: [job.contract], expected_legs: jobLeg }),
         ]);
         const opposite = (p) => p.contract === job.contract
           && (p.positionSide || p.position_side || (Number(p.size) < 0 ? 'SHORT' : 'LONG')) !== job.position_side

@@ -296,3 +296,40 @@ test('alerts: a plan superseded before any Gate request is not reported as an or
   assert.equal(sent[0].details.error_code, 'WORKER_MASTER_POSITION_CHANGED_BEFORE_SUBM');
   assert.deepEqual(completed.map((c) => [c.p_alert_id, c.p_sent]), [[1, true], [2, true]]);
 });
+
+test('P1-1 alerts (re-review): every halt transition alerts, the lost-response case once, degraded only in LIVE', async () => {
+  const { failureAlertDecision } = await import('./alerts.js');
+  let state = { lastReportHalted: false, haltAlertSent: false };
+  const step = (failure, mode = 'LIVE') => {
+    const decision = failureAlertDecision({ failure, tradingMode: mode, ...state });
+    state = { lastReportHalted: decision.lastReportHalted, haltAlertSent: decision.haltAlertSent };
+    return decision.event;
+  };
+  assert.equal(step({ consecutive_failures: 1, newly_halted: false, halted: false }), 'WORKER_CYCLE_FAILED');
+  assert.equal(step({ consecutive_failures: 2, newly_halted: false, halted: false }), null);
+  assert.equal(step({ consecutive_failures: 3, newly_halted: false, halted: false }), 'COPY_WORKER_DEGRADED');
+  assert.equal(step({ consecutive_failures: 70, newly_halted: true, halted: true }), 'COPY_SYSTEM_AUTO_HALTED');
+  assert.equal(step({ consecutive_failures: 71, newly_halted: false, halted: true }), null);
+  // Operator re-enables while the worker still fails: the next transition alerts again.
+  state.lastReportHalted = false;
+  assert.equal(step({ consecutive_failures: 72, newly_halted: true, halted: true }), 'COPY_SYSTEM_AUTO_HALTED');
+  // A lost response hid newly_halted: the first halted report in the streak alerts once.
+  state = { lastReportHalted: false, haltAlertSent: false };
+  assert.equal(step({ consecutive_failures: 80, newly_halted: false, halted: true }), 'COPY_SYSTEM_AUTO_HALTED');
+  assert.equal(step({ consecutive_failures: 81, newly_halted: false, halted: true }), null);
+  // DRY_RUN never claims a degraded LIVE state; an old database keeps the original alerts.
+  state = { lastReportHalted: true, haltAlertSent: false };
+  assert.equal(step({ consecutive_failures: 3, newly_halted: false, halted: true }, 'DRY_RUN'), null);
+  assert.equal(failureAlertDecision({ failure: { consecutive_failures: 3 }, tradingMode: 'LIVE' }).event, 'COPY_SYSTEM_AUTO_HALTED');
+});
+
+test('P0-2 (re-review): a Master contract that stays unconfirmed alerts once after about a minute', async () => {
+  const alerts = [];
+  const runner = new TradingRunner({ supabase: {}, mode: 'LIVE', onSafetyEvent: async (alert) => { alerts.push(alert); return { sent: true }; } });
+  for (let i = 0; i < 14; i++) { runner.cycleSeq += 1; runner.trackUnconfirmedMasterContracts(new Set(['OLD_USDT'])); }
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(alerts.length, 1);
+  assert.equal(alerts[0].event, 'MASTER_POSITION_UNCONFIRMED');
+  runner.cycleSeq += 1; runner.trackUnconfirmedMasterContracts(new Set());
+  assert.equal(runner.unconfirmedSince.size, 0);
+});

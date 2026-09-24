@@ -364,32 +364,32 @@ export async function getFuturesPositions({ expectedContracts = [], expectedLegs
     try {
       const single = await gateRequest({ ...options, path: `${FUTURES_POSITIONS_PATH}/${encodeURIComponent(contract)}` });
       const payload = Array.isArray(single.payload) ? single.payload : single.payload ? [single.payload] : [];
-      confirmed.set(contract, { raw: payload, legs: normalizeGatePositions(payload) });
+      normalizeGatePositions(payload);
+      confirmed.set(contract, payload.map((row) => ({ row, leg: normalizeGatePositions([row])[0] || null })));
     } catch (error) {
       const notFound = error instanceof GateApiError
         && (error.status === 404 || String(error.payload?.label || '').toUpperCase() === 'POSITION_NOT_FOUND');
-      if (notFound) { confirmed.set(contract, { raw: [], legs: [] }); continue; }
+      if (notFound) { confirmed.set(contract, []); continue; }
       // The caller may prefer "unknown for this contract" over failing the whole read (Master cycle).
       if (tolerateUnconfirmed) { unconfirmed.add(contract); continue; }
       throw error;
     }
   }
-  // The single-contract read is authoritative for its contract. A list row it contradicts is not
-  // trusted either way: fail, or report the contract as unconfirmed.
-  const merged = rows.filter((row) => !confirmed.has(String(row.contract || '')) && !unconfirmed.has(String(row.contract || '')));
-  for (const [contract, { raw, legs }] of confirmed) {
-    const listed = positions.filter((position) => position.contract === contract);
-    const agrees = listed.every((position) => legs.some((leg) => legKey(leg) === legKey(position) && leg.size === position.size));
-    if (!agrees) {
-      if (!tolerateUnconfirmed) {
-        throw new GateApiError('포지션 목록과 개별 조회 결과가 다릅니다.', { code: 'POSITIONS_INCONSISTENT' });
-      }
+  // The single-contract read only ADDS legs the list omitted; a leg the list shows is kept even if the
+  // single read (which may return one leg in hedge mode) does not repeat it. The same leg with two
+  // different sizes is a contradiction: fail, or report the contract as unconfirmed.
+  const listedByLeg = new Map(positions.map((position) => [legKey(position), position]));
+  const additions = [];
+  for (const [contract, entries] of confirmed) {
+    const conflict = entries.some(({ leg }) => leg && listedByLeg.has(legKey(leg)) && listedByLeg.get(legKey(leg)).size !== leg.size);
+    if (conflict) {
+      if (!tolerateUnconfirmed) throw new GateApiError('포지션 목록과 개별 조회 결과가 다릅니다.', { code: 'POSITIONS_INCONSISTENT' });
       unconfirmed.add(contract);
       continue;
     }
-    merged.push(...raw);
+    additions.push(...entries.filter(({ leg }) => leg && !listedByLeg.has(legKey(leg))).map(({ row }) => row));
   }
-  const result = normalizeGatePositions(merged);
+  const result = normalizeGatePositions([...rows.filter((row) => !unconfirmed.has(String(row.contract || ''))), ...additions]);
   if (unconfirmed.size) Object.defineProperty(result, 'unconfirmedContracts', { value: [...unconfirmed].sort(), enumerable: false });
   return result;
 }
