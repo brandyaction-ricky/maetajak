@@ -25,6 +25,7 @@ export const migrationFiles = [
   '20260921125321_fix_resume_ownership_legacy_fill_qualifier.sql',
   '20260922131020_fix_reversal_guard_legacy_fill_qualifier.sql',
   '20260924162948_copy_reliability_p0_p1.sql',
+  '20260925000000_member_own_position_absorption.sql',
 ];
 export async function createVerifiedDatabase() {
   const db = new PGlite();

@@ -158,10 +158,18 @@ test('open exchange orders still prevent a new reduction after historical fills 
 test('manual member changes remain protected after historical fills confirm', async () => {
   const r = faultRunner(db, exchange, { sqlContext: true }).runner;
   await r.syncOnce(); await r.submitOrders(); await confirmFill(r);
-  exchange.memberSize = 7;
+  assert.equal(exchange.memberSize, 6);
+  exchange.memberSize = 7; // the member buys 1 contract of their own
   await r.syncOnce(); await r.submitOrders();
   assert.equal(exchange.posts, 1);
-  assert.equal((await previousStates())[0].state, 'MANUAL_OVERRIDE');
+  // K4: the unexplained leg is held while the DB attributes it to the member's own quantity.
+  assert.equal((await one('select pause_reason from public.copy_position_states')).pause_reason, 'MEMBER_POSITION_RECONCILING');
+  const proof = await one('select status,protected_positions,copy_positions from private.copy_ownership_checkpoints');
+  assert.deepEqual([proof.status, proof.protected_positions[0].size, proof.copy_positions[0].size], ['CONFIRMED', 1, 6]);
+  await r.syncOnce(); await r.submitOrders();
+  assert.equal(exchange.posts, 1, 'the member\'s own contract is never sold off');
+  const state = await one('select state,target_size::float8 target from public.copy_position_states');
+  assert.deepEqual([state.state, state.target], ['SYNCED', 7]);
 });
 
 test('context RPC remains server-only', async () => {

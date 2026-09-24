@@ -163,12 +163,15 @@ for (const [label, change, expected] of [
   });
 }
 
-test('a detected ownership mismatch stays UNKNOWN even if quantity later returns to its old value', async () => {
+test('K4: a member sale of COPY stays sold even if the member buys the quantity back (the purchase is their own)', async () => {
   const { runner, exchange } = await entered();
   exchange.memberSize = 7; await runner.syncOnce();
-  assert.equal((await one('select status from private.copy_ownership_checkpoints')).status, 'UNKNOWN');
-  exchange.memberSize = 10; await resume(runner); await runner.submitOrders();
-  assert.equal((await one('select blocker_reason from private.copy_resume_sessions')).blocker_reason, 'RESUME_COPY_OWNERSHIP_UNKNOWN');
+  let proof = await one('select status,protected_positions,copy_positions from private.copy_ownership_checkpoints');
+  assert.deepEqual([proof.status, proof.protected_positions, proof.copy_positions], ['CONFIRMED', [], resumePositions([position(7)])]);
+  exchange.memberSize = 10; await runner.syncOnce(); await runner.submitOrders();
+  proof = await one('select status,protected_positions,copy_positions from private.copy_ownership_checkpoints');
+  assert.deepEqual([proof.status, proof.protected_positions, proof.copy_positions],
+    ['CONFIRMED', resumePositions([position(3)]), resumePositions([position(7)])]);
   assert.equal(exchange.posts, 1);
 });
 

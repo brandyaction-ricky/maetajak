@@ -156,9 +156,14 @@ export function planMemberPositions({ cycleId, system, master, member, contracts
   const memberPositionBaselines = new Map((member.member_position_baselines || []).map((position) => [positionKey(position), Number(position.size || 0)]));
   const targetAnchors = new Map((member.target_anchors || []).map((anchor) => [positionKey(anchor), anchor]));
   const continuedCopyLegs = new Set((member.continued_copy_positions || []).map(positionKey));
+  // K4: the ownership ledger (member's own + COPY + confirmed fills not yet journaled). When present, a leg
+  // it does not explain was changed by the member (or is still settling): hold it until the DB has
+  // attributed the change, instead of latching MANUAL_OVERRIDE. Absent (older DB, legacy account): as before.
+  const ledger = Array.isArray(member.ledger_positions)
+    ? new Map(member.ledger_positions.map((position) => [positionKey(position), Number(position.size || 0)])) : null;
   // Contracts whose Master legs Gate could not confirm this cycle: no order, no anchor move.
   const unconfirmedMasterContracts = new Set(master.unconfirmed_contracts || []);
-  const symbols = new Set([...masterPositions.keys(), ...memberPositions.keys(), ...previousStates.keys(), ...masterBaselines.keys(), ...memberPositionBaselines.keys(), ...targetAnchors.keys()]);
+  const symbols = new Set([...masterPositions.keys(), ...memberPositions.keys(), ...previousStates.keys(), ...masterBaselines.keys(), ...memberPositionBaselines.keys(), ...targetAnchors.keys(), ...(ledger ? ledger.keys() : [])]);
   const planned = [];
   const reservedNotional = new Map();
   let remainingMargin = Math.max(0, Number(member.available ?? member.total));
@@ -233,6 +238,13 @@ export function planMemberPositions({ cycleId, system, master, member, contracts
     const anchor = targetAnchors.get(symbol);
     const anchorMatchesResume = Boolean(anchor?.resume_version && member.resume_version
       && anchor.resume_version === member.resume_version);
+    // An anchor records COPY + the member's own quantity of its time. The member may change their own
+    // quantity later (K4), so only the COPY part is carried and the current own quantity is added back.
+    const anchorTargetSize = anchor ? Number(anchor.target_size) - Number(anchor.protected_member_size || 0) + protectedMemberSize : 0;
+    // A member sale that reached COPY locks the leg until the member resumes (set by the DB).
+    const copyReducedByMember = anchorMatchesResume && anchor.lock_reason === 'MEMBER_REDUCED_COPY_POSITION';
+    const ledgerSize = ledger ? (ledger.get(symbol) || 0) : null;
+    const ledgerUnexplained = ledger !== null && !member.close_positions_requested && memberPosition.size !== ledgerSize;
     const masterQuantityUnchanged = anchorMatchesResume
       && Number(anchor.master_copyable_size) === Number(masterPosition.size);
     const masterQuantityReduced = anchorMatchesResume
@@ -258,7 +270,7 @@ export function planMemberPositions({ cycleId, system, master, member, contracts
         memberEquity, memberMarkPrice: markPrice, memberQuantoMultiplier: contractInfo.quantoMultiplier,
         copyRatio: member.copy_ratio, maxPositionRatio: Math.max(0, member.max_position_ratio - protectedRatio), sizeStep: contractInfo.sizeStep,
       });
-      const lockedTargetSize = Number(anchor.target_size) + incremental.targetSize;
+      const lockedTargetSize = anchorTargetSize + incremental.targetSize;
       target.targetSize = capLockedTargetToCurrentRisk({
         lockedTargetSize, protectedSize: protectedMemberSize,
         memberEquity: member.total, memberMarkPrice: memberPosition.markPrice || markPrice,
@@ -289,13 +301,13 @@ export function planMemberPositions({ cycleId, system, master, member, contracts
         ? calculateReducedCopyTarget({
           previousMasterSize: anchor.master_copyable_size,
           masterSize: masterPosition.size,
-          lockedTargetSize: protectedMemberSize + Math.sign(Number(anchor.target_size) - protectedMemberSize)
-            * Math.min(Math.abs(Number(anchor.target_size) - protectedMemberSize),
+          lockedTargetSize: protectedMemberSize + Math.sign(anchorTargetSize - protectedMemberSize)
+            * Math.min(Math.abs(anchorTargetSize - protectedMemberSize),
               Math.max(0, Math.abs(memberPosition.size) - Math.abs(protectedMemberSize))),
           protectedSize: protectedMemberSize,
           sizeStep: contractInfo.sizeStep,
         })
-        : Number(anchor.target_size);
+        : anchorTargetSize;
       target.targetSize = capLockedTargetToCurrentRisk({
         lockedTargetSize,
         protectedSize: protectedMemberSize,
@@ -347,21 +359,27 @@ export function planMemberPositions({ cycleId, system, master, member, contracts
       hasUnresolvedPlatformOrder: hasUnresolvedOrder,
       hasBaseline: Boolean(previous) && !['HALTED', 'PAUSED'].includes(previous.state),
     });
+    if (ledger !== null) {
+      // K4: the ledger, not the previous read, decides. A leg it does not explain is held (below) and the
+      // DB attributes the change to the member's own quantity; only a sale that reached COPY stays locked.
+      manual.detected = copyReducedByMember && !member.close_positions_requested;
+      manual.unexplainedDelta = ledgerUnexplained ? memberPosition.size - ledgerSize : 0;
+    }
     // Never buy back a protected holding the member has reduced manually.
-    if (protectedMemberSize && !member.close_positions_requested
+    if (ledger === null && protectedMemberSize && !member.close_positions_requested
       && (Math.sign(memberPosition.size) !== Math.sign(protectedMemberSize)
         || Math.abs(memberPosition.size) < Math.abs(protectedMemberSize))) {
       manual.detected = true;
       manual.unexplainedDelta = memberPosition.size - protectedMemberSize;
     }
-    if (member.resume_version && !previous && !anchor && memberPosition.size !== protectedMemberSize
+    if (ledger === null && member.resume_version && !previous && !anchor && memberPosition.size !== protectedMemberSize
       && !hasUnresolvedOrder && !member.close_positions_requested) {
       manual.detected = true;
       manual.unexplainedDelta = memberPosition.size - protectedMemberSize;
     }
     let budgetReason = null;
     if (!member.close_positions_requested && !hasUnresolvedOrder && !hasOpenExchangeOrder
-      && !member.resume_required && !manual.detected && !reversalCloseRequired && !masterUnconfirmed) {
+      && !member.resume_required && !manual.detected && !reversalCloseRequired && !masterUnconfirmed && !ledgerUnexplained) {
       const price = memberPosition.markPrice || markPrice;
       const unitNotional = price * contractInfo.quantoMultiplier;
       const otherLegNotional = member.positions.filter((position) => position.contract === contract
@@ -400,11 +418,12 @@ export function planMemberPositions({ cycleId, system, master, member, contracts
     const state = deriveCopyState({
       systemHalted: Boolean(system.emergency_halted) && !simulateSystemHalt, memberHalted: Boolean(member.halted),
       symbolPaused: Boolean(member.resume_required) || hasUnresolvedOrder || hasOpenExchangeOrder || reversalCloseRequired
-        || masterUnconfirmed
+        || masterUnconfirmed || ledgerUnexplained
         || ((Boolean(member.copy_paused) || protectedOppositePosition) && !member.close_positions_requested),
       // A member who asked to stop and close wants every leg closed, including one changed outside
       // the platform. Close orders are reduce-only to zero and re-read before submission.
-      manualOverride: !member.close_positions_requested && (manual.detected || previous?.state === 'MANUAL_OVERRIDE'), reduceOnly,
+      manualOverride: !member.close_positions_requested
+        && (manual.detected || (ledger === null && previous?.state === 'MANUAL_OVERRIDE')), reduceOnly,
       targetSize: target.targetSize, actualSize: memberPosition.size, driftToleranceSize: contractInfo.sizeStep,
     });
     const delta = calculateDeltaOrder({ state, targetSize: target.targetSize, actualSize: memberPosition.size, sizeStep: contractInfo.sizeStep });
@@ -434,7 +453,8 @@ export function planMemberPositions({ cycleId, system, master, member, contracts
       target_resume_version: member.resume_version || null,
       target_lock_reason: target.targetLockReason,
       anchor_update_allowed: !hasUnresolvedOrder && !hasOpenExchangeOrder && !member.resume_required
-        && !manual.detected && !reversalCloseRequired && previous?.state !== 'MANUAL_OVERRIDE' && !masterUnconfirmed,
+        && !manual.detected && !reversalCloseRequired && (ledger !== null || previous?.state !== 'MANUAL_OVERRIDE')
+        && !masterUnconfirmed && !ledgerUnexplained,
       ...(anchorMasterCopyableSize == null ? {} : { anchor_master_copyable_size: anchorMasterCopyableSize }),
       sizing_reason: budgetReason,
       execution_reason: delta.reason,
@@ -442,8 +462,12 @@ export function planMemberPositions({ cycleId, system, master, member, contracts
       risk_leverage: riskLeverage, taker_fee_rate: Number(contractInfo.takerFeeRate ?? 0.001),
       baseline_clear_requested: baseline.clearBaseline,
       pause_reason: member.resume_required ? 'MEMBER_RESUME_VALIDATION_REQUIRED'
-        : masterUnconfirmed ? 'MASTER_POSITION_UNCONFIRMED'
+        // The DB attributes a member change only on a leg this worker marked RECONCILING (or latched), so
+        // this reason must win over the other hold reasons below.
+        : manual.detected && copyReducedByMember ? 'MEMBER_REDUCED_COPY_POSITION'
         : manual.detected ? 'MEMBER_POSITION_CHANGED_OUTSIDE_PLATFORM'
+        : ledgerUnexplained ? 'MEMBER_POSITION_RECONCILING'
+        : masterUnconfirmed ? 'MASTER_POSITION_UNCONFIRMED'
         : reversalCloseRequired ? 'COPY_REVERSAL_CLOSE_REQUIRED'
         : hasUnresolvedOrder ? 'UNRESOLVED_PLATFORM_ORDER'
           : hasOpenExchangeOrder ? 'OPEN_EXCHANGE_ORDER'
@@ -483,6 +507,7 @@ export class TradingRunner {
     this.pendingResumes = [];
     this.resumeAttemptAt = new Map();
     this.staleFillAlerts = new Map();
+    this.copyReducedAlerts = new Map();
     this.notFoundAfterExpiry = new Map();
     this.unconfirmedSince = new Map();
     this.lastUnconfirmedKey = '';
@@ -767,6 +792,7 @@ export class TradingRunner {
       anchors.push(anchor);
       anchorsByAccount.set(anchor.trading_account_id, anchors);
     }
+    this.alertCopyReducedByMember(targetAnchors, sessions, memberContexts);
     const contractsStartedAt = Date.now();
     let contracts = memberContexts.length ? await this.loadContracts() : new Map();
     timings.contracts_ms = elapsedMs(contractsStartedAt);
@@ -865,10 +891,13 @@ export class TradingRunner {
         memberStage = 'BASELINE_INIT';
         const baseline = session?.state === 'CLOSING' ? { positions: [], member_positions: [] }
           : {
-            // Use the validated, persisted baseline, never override it from a flag.
+            // Use the validated, persisted baseline, never override it from a flag. The member's own
+            // quantity follows the ownership ledger when the DB provides it (K4).
             positions: session?.positions || [],
-            member_positions: session?.member_positions || [],
+            member_positions: Array.isArray(session?.ledger_protected_positions)
+              ? session.ledger_protected_positions : session?.member_positions || [],
           };
+
         if (!member.resume_required) await this.rpc('confirm_copy_order_observation', {
           p_trading_account_id: member.trading_account_id, p_version: session.version,
           p_positions: resumePositions(member.positions), p_started_at: member.observed_started_at, p_observed_at: member.observed_at,
@@ -922,6 +951,7 @@ export class TradingRunner {
             throw new GateApiError('íì ê³ì  ìë°©í¥ ëª¨ë ì íì íì¸íì§ ëª»íìµëë¤.', { code: 'DUAL_MODE_REQUIRED' });
           }
         }
+        member.ledger_positions = !closing && Array.isArray(session?.ledger_positions) ? session.ledger_positions : null;
         memberStage = 'MEMBER_PLAN';
         const plannedPositions = planMemberPositions({
           cycleId,
@@ -1201,6 +1231,23 @@ export class TradingRunner {
   }
   // P1-6: a fill that never matched a later observation blocks every order of that account and, before
   // this alert, did so silently. Alert once per intent every 30 minutes.
+  // K4: a member sale that reached COPY locks that leg (DB anchor lock). Tell a person once per lock.
+  alertCopyReducedByMember(targetAnchors = [], sessions = new Map(), memberContexts = []) {
+    for (const anchor of targetAnchors || []) {
+      if (anchor?.lock_reason !== 'MEMBER_REDUCED_COPY_POSITION') continue;
+      const session = sessions.get(anchor.trading_account_id);
+      if (!session || session.state !== 'ACTIVE' || session.version !== anchor.resume_version) continue;
+      const key = `${anchor.trading_account_id}:${anchor.contract}:${anchor.position_side}:${anchor.resume_version}`;
+      if (this.copyReducedAlerts.get(key) === anchor.observed_at) continue;
+      this.copyReducedAlerts.set(key, anchor.observed_at);
+      const memberContext = memberContexts.find((m) => m.trading_account_id === anchor.trading_account_id);
+      if (this.logger) this.logger('member_reduced_copy_position', { trading_account_id: anchor.trading_account_id,
+        contract: anchor.contract, position_side: anchor.position_side, copy_size: anchor.target_size });
+      if (this.onSafetyEvent) Promise.resolve(this.onSafetyEvent({ event: 'MEMBER_REDUCED_COPY_POSITION', severity: 'WARNING',
+        details: { user_id: memberContext?.user_id, contract: anchor.contract, position_side: anchor.position_side,
+          copy_size: anchor.target_size, action: '이 종목 카피 중지 (다른 종목은 계속)' } })).catch(() => {});
+    }
+  }
   async alertStaleFillObservations(olderThanSeconds = 300) {
     let stale;
     try { stale = await this.rpc('get_copy_stale_fill_observations', { p_older_than_seconds: olderThanSeconds }); }

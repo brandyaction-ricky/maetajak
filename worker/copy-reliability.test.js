@@ -333,3 +333,71 @@ test('P0-2 (re-review): a Master contract that stays unconfirmed alerts once aft
   runner.cycleSeq += 1; runner.trackUnconfirmedMasterContracts(new Set());
   assert.equal(runner.unconfirmedSince.size, 0);
 });
+
+// K4 (operator decision 2026-09-25): members manage their own holdings by hand while copying continues.
+const ownAnchor = (master, target, own, lock = 'MASTER_QUANTITY_UNCHANGED') => [{ contract: 'BTC_USDT', position_side: 'LONG',
+  resume_version: 'r1', master_copyable_size: master, target_size: target, protected_member_size: own, lock_reason: lock }];
+const ownLeg = (size) => (size ? [{ contract: 'BTC_USDT', position_side: 'LONG', size }] : []);
+
+test('K4: the anchor carries only COPY; the current own quantity is added back (no buy-back of an own sale)', () => {
+  // Anchored: 10 COPY + 20 own. The member sold 5 of their own; the DB ledger now says own 15.
+  const p = plan({ masterSize: 40, actual: 25, anchors: ownAnchor(40, 30, 20),
+    extra: { member_position_baselines: ownLeg(15), ledger_positions: ownLeg(25) } });
+  assert.equal(p.target_size, 25);
+  assert.equal(p.intent, undefined);
+  assert.equal(p.pause_reason, null);
+  assert.equal(p.anchor_update_allowed, true);
+});
+
+test('K4: a leg the ledger does not explain yet is held (no order, no anchor move, not latched)', () => {
+  const p = plan({ masterSize: 60, actual: 25, anchors: ownAnchor(40, 30, 20),
+    extra: { member_position_baselines: ownLeg(20), ledger_positions: ownLeg(30) } });
+  assert.equal(p.intent, undefined);
+  assert.equal(p.pause_reason, 'MEMBER_POSITION_RECONCILING');
+  assert.equal(p.anchor_update_allowed, false);
+  assert.notEqual(p.state, 'MANUAL_OVERRIDE');
+});
+
+test('K4: a leg whose COPY the member sold stays locked whatever the Master does', () => {
+  for (const masterSize of [0, 40, 80]) {
+    const p = plan({ masterSize, actual: 7, anchors: ownAnchor(40, 7, 0, 'MEMBER_REDUCED_COPY_POSITION'),
+      extra: { member_position_baselines: [], ledger_positions: ownLeg(7) } });
+    assert.equal(p.state, 'MANUAL_OVERRIDE');
+    assert.equal(p.pause_reason, 'MEMBER_REDUCED_COPY_POSITION');
+    assert.equal(p.intent, undefined);
+    assert.equal(p.anchor_update_allowed, false);
+  }
+});
+
+test('K4: a leg an older worker latched (MANUAL_OVERRIDE) trades again once the ledger explains it', () => {
+  const p = plan({ masterSize: 80, actual: 25, anchors: ownAnchor(40, 30, 20),
+    extra: { member_position_baselines: ownLeg(15), ledger_positions: ownLeg(25),
+      previous_states: [{ contract: 'BTC_USDT', position_side: 'LONG', actual_size: 25, state: 'MANUAL_OVERRIDE' }] } });
+  assert.notEqual(p.state, 'MANUAL_OVERRIDE');
+  assert.ok(p.target_size > 25, 'the Master increase is copied on top of COPY + own');
+});
+
+test('K4: without a ledger (older DB) a manual change still latches MANUAL_OVERRIDE as before', () => {
+  const p = plan({ masterSize: 40, actual: 25, anchors: ownAnchor(40, 30, 20),
+    extra: { member_position_baselines: ownLeg(20),
+      previous_states: [{ contract: 'BTC_USDT', position_side: 'LONG', actual_size: 30, state: 'SYNCED' }] } });
+  assert.equal(p.state, 'MANUAL_OVERRIDE');
+  assert.equal(p.intent, undefined);
+});
+
+test('K4 alerts: a COPY sale lock alerts once per lock for an ACTIVE session', () => {
+  const events = [];
+  const runner = new TradingRunner({ supabase: null, onSafetyEvent: (e) => events.push(e) });
+  const anchor = { trading_account_id: 'a1', contract: 'BTC_USDT', position_side: 'LONG', resume_version: 'r1',
+    target_size: 7, lock_reason: 'MEMBER_REDUCED_COPY_POSITION', observed_at: 't1' };
+  const sessions = new Map([['a1', { state: 'ACTIVE', version: 'r1' }]]);
+  runner.alertCopyReducedByMember([anchor], sessions, [{ trading_account_id: 'a1', user_id: 'u1' }]);
+  runner.alertCopyReducedByMember([anchor], sessions, []);
+  assert.equal(events.length, 1);
+  assert.equal(events[0].event, 'MEMBER_REDUCED_COPY_POSITION');
+  assert.equal(events[0].details.copy_size, 7);
+  runner.alertCopyReducedByMember([{ ...anchor, observed_at: 't2' }], sessions, []);
+  assert.equal(events.length, 2, 'a further COPY sale re-alerts');
+  runner.alertCopyReducedByMember([{ ...anchor, trading_account_id: 'a2' }], sessions, []);
+  assert.equal(events.length, 2, 'no alert for a session that is not ACTIVE');
+});
