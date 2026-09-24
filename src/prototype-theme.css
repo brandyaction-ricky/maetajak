@@ -292,6 +292,9 @@ tbody tr:hover { background: #141416; }
 .copy-risk-inputs label > div > b { flex: 0 0 auto; padding: 0 12px 0 6px; color: var(--text); font-size: 13px; }
 .copy-risk-inputs label:last-child > div { padding: 0 12px; }
 .copy-risk-inputs label:last-child > div > b { padding: 0; }
+.copy-risk-inputs label > div.is-locked { border-style: dashed; background: transparent; cursor: not-allowed; }
+.copy-risk-inputs label > div.is-locked input[type="number"]:disabled { color: var(--muted); -webkit-text-fill-color: var(--muted); opacity: 1; cursor: not-allowed; }
+.copy-risk-inputs label > div.is-locked > b { color: var(--muted); }
 .copy-risk-card { display: flex; flex-direction: column; }
 .copy-risk-card .notice { margin-top: auto; }
 .copy-existing-policy { display: flex; flex-direction: column; align-items: flex-start; justify-content: center; gap: 12px; }

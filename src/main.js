@@ -207,7 +207,7 @@ function enhanceCopySettingsUi() {
   page.innerHTML = `<div class="copy-settings-layout"><div class="copy-settings-primary">
     <section class="card section copy-control-card"><div class="section-head"><div><small>COPY EXPOSURE</small><h3>카피 비율</h3><p>Master의 포지션 변화를 내 자산 기준으로 복제할 비율입니다.</p></div><strong id="copyRatioValue">100%</strong></div><input id="copyRatioSelect" class="copy-range" type="range" min="50" max="200" step="10" value="100"><div class="copy-range-labels"><span>50%</span><span>100%</span><span>150%</span><span>200%</span></div></section>
     <section class="card section copy-control-card"><div class="section-head"><div><small>POSITION CAP</small><h3>종목당 최대 포지션 비중</h3><p>한 종목이 내 총자산에서 차지할 수 있는 상한입니다.</p></div><strong id="maxPositionRatioValue">30%</strong></div><input id="maxPositionRatioSelect" class="copy-range" type="range" min="20" max="50" step="10" value="30"><div class="copy-range-labels"><span>20% 안전</span><span>30% 균형</span><span>40% 적극</span><span>50% 최대</span></div></section>
-    <section class="card section copy-risk-card"><div class="section-head"><div><small>RISK LIMITS</small><h3>계정 리스크 한도</h3><p>한도 도달 시 Worker가 신규 주문을 자동 차단합니다.</p></div></div><div class="copy-risk-inputs"><label><span>일일 최대 손실</span><div><input id="dailyLossLimitInput" type="number" min="3" max="10" step="1" value="5"><b>%</b></div></label><label><span>최대 Drawdown</span><div><input id="maxDrawdownInput" type="number" min="10" max="20" step="1" value="15"><b>%</b></div></label><label><span>레버리지 정책</span><div><b>Master 자동 추종</b></div></label></div><div class="notice">LONG·SHORT 각 포지션은 Master가 사용한 레버리지와 증거금 모드로 진입합니다.</div></section>
+    <section class="card section copy-risk-card"><div class="section-head"><div><small>RISK LIMITS</small><h3>계정 리스크 한도</h3><p>한도 도달 시 Worker가 신규 주문을 자동 차단합니다. 운영자가 전체 계정에 동일하게 고정한 값으로, 회원이 변경할 수 없습니다.</p></div><span class="chip yellow">운영자 고정</span></div><div class="copy-risk-inputs"><label><span>일일 최대 손실</span><div class="is-locked"><input id="dailyLossLimitInput" type="number" value="15" disabled aria-disabled="true" title="운영자가 고정한 한도입니다"><b>%</b></div></label><label><span>최대 Drawdown</span><div class="is-locked"><input id="maxDrawdownInput" type="number" value="20" disabled aria-disabled="true" title="운영자가 고정한 한도입니다"><b>%</b></div></label><label><span>레버리지 정책</span><div><b>Master 자동 추종</b></div></label></div><div class="notice">LONG·SHORT 각 포지션은 Master가 사용한 레버리지와 증거금 모드로 진입합니다.</div></section>
     </div><div class="copy-settings-secondary"><section class="card section copy-existing-policy"><div><small>EXISTING POSITION MODE</small><h3>기존 포지션 처리</h3><p>API 연결 시점에 Master가 이미 보유한 포지션은 진입하지 않고, 이후 추가·감소 및 신규 진입부터 카피합니다.</p></div><span class="chip">연결 이후만 카피</span></section>
     <aside class="card section copy-setting-summary"><small>SETTING PREVIEW</small><h3>현재 설정 요약</h3><div class="metric"><span>카피 비율</span><b id="copyPreviewRatio">100%</b></div><div class="metric"><span>종목당 최대 비중</span><b id="copyPreviewCap">30%</b></div><div class="metric"><span>포지션 모드</span><b>LONG·SHORT 양방향</b></div><div class="metric"><span>레버리지</span><b>Master 자동 추종</b></div><div class="metric"><span>리스크 차단</span><b id="copyPreviewRisk">-5% · -15%</b></div><div class="notice">설정 변경은 다음 Worker 주기부터 적용됩니다. 기존 포지션을 임의로 확대하지 않습니다.</div><button id="copySettingsSave" class="btn primary full" type="button">설정 저장</button></aside>
   </div></div>`;
@@ -216,8 +216,8 @@ function enhanceCopySettingsUi() {
 function refreshCopySettingPreview() {
   const ratio = Number(byId('copyRatioSelect')?.value || 100);
   const cap = Number(byId('maxPositionRatioSelect')?.value || 30);
-  const daily = Number(byId('dailyLossLimitInput')?.value || 5);
-  const drawdown = Number(byId('maxDrawdownInput')?.value || 15);
+  const daily = Number(byId('dailyLossLimitInput')?.value || 15);
+  const drawdown = Number(byId('maxDrawdownInput')?.value || 20);
   if (byId('copyRatioValue')) byId('copyRatioValue').textContent = `${ratio}%`;
   if (byId('maxPositionRatioValue')) byId('maxPositionRatioValue').textContent = `${cap}%`;
   if (byId('copyPreviewRatio')) byId('copyPreviewRatio').textContent = `${ratio}%`;
@@ -450,8 +450,8 @@ function showApp(profile) {
   if (byId('accountNickname')) byId('accountNickname').value = profile.nickname || '';
   if (byId('copyRatioSelect')) byId('copyRatioSelect').value = String(Number(profile.copy_ratio ?? 100));
   if (byId('maxPositionRatioSelect')) byId('maxPositionRatioSelect').value = String(Number(profile.max_position_ratio ?? 30));
-  if (byId('dailyLossLimitInput')) byId('dailyLossLimitInput').value = String(Number(profile.daily_loss_limit_pct ?? 5));
-  if (byId('maxDrawdownInput')) byId('maxDrawdownInput').value = String(Number(profile.max_drawdown_pct ?? 15));
+  if (byId('dailyLossLimitInput')) byId('dailyLossLimitInput').value = String(Number(profile.daily_loss_limit_pct ?? 15));
+  if (byId('maxDrawdownInput')) byId('maxDrawdownInput').value = String(Number(profile.max_drawdown_pct ?? 20));
   refreshCopySettingPreview();
   openPage(role === 'admin' ? 'admin-dashboard' : 'member-dashboard');
   loadCopySystemStatus();
@@ -944,8 +944,8 @@ function renderMemberOpenPositions(openPositions, account) {
   const maxExposure = positions.reduce((max, position) => Math.max(max, totalEquity > 0 ? Math.abs(Number(position.notional || 0)) * 100 / totalEquity : 0), 0);
   if (byId('memberPositionCapUsage')) byId('memberPositionCapUsage').textContent = `현재 최대 사용 ${maxExposure.toFixed(2)}%`;
   if (byId('memberPositionCapLimit')) byId('memberPositionCapLimit').textContent = `${Number(currentProfile?.max_position_ratio ?? 30)}%`;
-  if (byId('memberDailyLossLimit')) byId('memberDailyLossLimit').textContent = `${Number(currentProfile?.daily_loss_limit_pct ?? 5)}%`;
-  if (byId('memberDrawdownLimit')) byId('memberDrawdownLimit').textContent = `${Number(currentProfile?.max_drawdown_pct ?? 15)}%`;
+  if (byId('memberDailyLossLimit')) byId('memberDailyLossLimit').textContent = `${Number(currentProfile?.daily_loss_limit_pct ?? 15)}%`;
+  if (byId('memberDrawdownLimit')) byId('memberDrawdownLimit').textContent = `${Number(currentProfile?.max_drawdown_pct ?? 20)}%`;
   if (byId('memberCopyRatioLimit')) byId('memberCopyRatioLimit').textContent = `${Number(currentProfile?.copy_ratio ?? 100)}%`;
   if (!container) return;
   container.innerHTML = positions.length ? positions.map((position) => {
@@ -1563,13 +1563,15 @@ async function saveCopySettings() {
   if (!supabase || !currentProfile) return;
   const copyRatio = Number(byId('copyRatioSelect').value);
   const maxPositionRatio = Number(byId('maxPositionRatioSelect').value);
-  const dailyLossLimit = Number(byId('dailyLossLimitInput').value);
-  const maxDrawdown = Number(byId('maxDrawdownInput').value);
   const validCopyRatio = copyRatio >= 50 && copyRatio <= 200 && copyRatio % 10 === 0;
   const validPositionRatio = maxPositionRatio >= 20 && maxPositionRatio <= 50 && maxPositionRatio % 10 === 0;
-  if (!validCopyRatio || !validPositionRatio || dailyLossLimit < 3 || dailyLossLimit > 10 || maxDrawdown < 10 || maxDrawdown > 20) {
+  if (!validCopyRatio || !validPositionRatio) {
     return window.toast('설정 범위를 확인해 주세요.');
   }
+  // Risk limits are fixed by the operator for every account and the RPC ignores
+  // these two arguments. Send the stored values only for signature compatibility.
+  const dailyLossLimit = Number(currentProfile.daily_loss_limit_pct ?? 15);
+  const maxDrawdown = Number(currentProfile.max_drawdown_pct ?? 20);
   // Kept for RPC backwards compatibility only. Worker entries always inherit
   // the Master's leverage and no longer enforce a member-side leverage cap.
   const maxLeverage = Number(currentProfile.max_leverage ?? 10);
