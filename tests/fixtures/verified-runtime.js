@@ -24,7 +24,7 @@ export const migrationFiles = [
   // Production fixes applied 2026-09-21/22 (exact production migration text).
   '20260921125321_fix_resume_ownership_legacy_fill_qualifier.sql',
   '20260922131020_fix_reversal_guard_legacy_fill_qualifier.sql',
-  '20260924150000_copy_reliability_p0_p1.sql',
+  '20260924162948_copy_reliability_p0_p1.sql',
 ];
 export async function createVerifiedDatabase() {
   const db = new PGlite();
