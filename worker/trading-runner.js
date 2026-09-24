@@ -156,6 +156,8 @@ export function planMemberPositions({ cycleId, system, master, member, contracts
   const memberPositionBaselines = new Map((member.member_position_baselines || []).map((position) => [positionKey(position), Number(position.size || 0)]));
   const targetAnchors = new Map((member.target_anchors || []).map((anchor) => [positionKey(anchor), anchor]));
   const continuedCopyLegs = new Set((member.continued_copy_positions || []).map(positionKey));
+  // Contracts whose Master legs Gate could not confirm this cycle: no order, no anchor move.
+  const unconfirmedMasterContracts = new Set(master.unconfirmed_contracts || []);
   const symbols = new Set([...masterPositions.keys(), ...memberPositions.keys(), ...previousStates.keys(), ...masterBaselines.keys(), ...memberPositionBaselines.keys(), ...targetAnchors.keys()]);
   const planned = [];
   const reservedNotional = new Map();
@@ -163,6 +165,7 @@ export function planMemberPositions({ cycleId, system, master, member, contracts
   for (const symbol of symbols) {
     const { contract, positionSide } = parsePositionKey(symbol);
     const contractInfo = contracts.get(contract);
+    const masterUnconfirmed = unconfirmedMasterContracts.has(contract) && !member.close_positions_requested;
     if (!contractInfo) {
       const observedMaster = masterPositions.get(symbol);
       const observedMember = memberPositions.get(symbol);
@@ -241,11 +244,12 @@ export function planMemberPositions({ cycleId, system, master, member, contracts
       && (!Number(anchor.master_copyable_size) || Math.sign(masterPosition.size) === Math.sign(Number(anchor.master_copyable_size)));
     // null: the anchor takes the observed Master copyable size (DB default).
     let anchorMasterCopyableSize = null;
-    let anchorHold = false;
     if (masterQuantityIncreased) {
       // Every anchored leg follows only the Master's CHANGE since its anchor. Re-sizing the whole leg
-      // at the current equity ratio could make a member SELL while the Master BUYS (P0-1). The carried
-      // COPY stays as decided; only the increment is sized at the current ratio.
+      // at the current equity ratio could make a member SELL while the Master BUYS (P0-1). The anchored
+      // COPY decision is kept as decided (a shortfall still completes, as with an unchanged Master) and
+      // only the increment is sized at the current ratio. Reductions keep min(anchor, actual) so a
+      // Master reduction never becomes a member increase.
       const anchorMaster = Number(anchor.master_copyable_size);
       const increment = masterPosition.size - anchorMaster;
       const incremental = calculateTargetPosition({
@@ -254,32 +258,27 @@ export function planMemberPositions({ cycleId, system, master, member, contracts
         memberEquity, memberMarkPrice: markPrice, memberQuantoMultiplier: contractInfo.quantoMultiplier,
         copyRatio: member.copy_ratio, maxPositionRatio: Math.max(0, member.max_position_ratio - protectedRatio), sizeStep: contractInfo.sizeStep,
       });
-      const carried = Math.sign(Number(anchor.target_size) - protectedMemberSize)
-        * Math.min(Math.abs(Number(anchor.target_size) - protectedMemberSize),
-          Math.max(0, Math.abs(memberPosition.size) - Math.abs(protectedMemberSize)));
-      const lockedTargetSize = protectedMemberSize + carried + incremental.targetSize;
+      const lockedTargetSize = Number(anchor.target_size) + incremental.targetSize;
       target.targetSize = capLockedTargetToCurrentRisk({
         lockedTargetSize, protectedSize: protectedMemberSize,
-        memberEquity: member.total, memberMarkPrice: markPrice, memberQuantoMultiplier: contractInfo.quantoMultiplier,
+        memberEquity: member.total, memberMarkPrice: memberPosition.markPrice || markPrice,
+        memberQuantoMultiplier: contractInfo.quantoMultiplier,
         maxPositionRatio: member.max_position_ratio, sizeStep: contractInfo.sizeStep,
       });
-      target.targetLockReason = continuedCopyLegs.has(symbol) ? 'CONFIRMED_COPY_FUTURE_INCREASE' : 'MASTER_QUANTITY_INCREASED';
       const rawLots = Math.abs(incremental.uncappedTargetNotional) / (markPrice * contractInfo.quantoMultiplier);
-      if (!incremental.capped && target.targetSize === lockedTargetSize) {
-        if (incremental.targetSize === 0) {
-          // Smaller than one member lot at the current ratio: behave exactly as if the Master had not
-          // moved (same target as an unchanged anchor) and keep the anchor, so later Master increases
-          // accumulate instead of each rounding to zero.
-          anchorHold = true;
-          target.targetSize = capLockedTargetToCurrentRisk({
-            lockedTargetSize: Number(anchor.target_size), protectedSize: protectedMemberSize,
-            memberEquity: member.total, memberMarkPrice: memberPosition.markPrice || markPrice,
-            memberQuantoMultiplier: contractInfo.quantoMultiplier,
-            maxPositionRatio: member.max_position_ratio, sizeStep: contractInfo.sizeStep,
-          });
-          target.targetLockReason = 'MASTER_INCREASE_BELOW_MEMBER_LOT';
-        } else {
-          // Consume only the Master quantity the member lots represent; the remainder carries over.
+      if (target.targetSize !== lockedTargetSize) {
+        // The current risk cap binds: the whole Master increase is consumed (no later buy-back).
+        target.targetLockReason = 'CURRENT_RISK_CAP_REDUCTION';
+      } else if (incremental.targetSize === 0 && !incremental.capped) {
+        // Smaller than one member lot at the current ratio: same target as an unchanged Master, and
+        // the anchor keeps its Master quantity so later increases accumulate instead of each rounding
+        // to zero (the stored target still records any cut applied below).
+        target.targetLockReason = 'MASTER_INCREASE_BELOW_MEMBER_LOT';
+        anchorMasterCopyableSize = anchorMaster;
+      } else {
+        target.targetLockReason = continuedCopyLegs.has(symbol) ? 'CONFIRMED_COPY_FUTURE_INCREASE' : 'MASTER_QUANTITY_INCREASED';
+        // Consume only the Master quantity the member lots represent; the remainder carries over.
+        if (!incremental.capped) {
           anchorMasterCopyableSize = partialAnchorMasterSize({
             anchorMaster, masterSize: masterPosition.size, lots: incremental.targetSize, rawLots,
           });
@@ -362,7 +361,7 @@ export function planMemberPositions({ cycleId, system, master, member, contracts
     }
     let budgetReason = null;
     if (!member.close_positions_requested && !hasUnresolvedOrder && !hasOpenExchangeOrder
-      && !member.resume_required && !manual.detected && !reversalCloseRequired) {
+      && !member.resume_required && !manual.detected && !reversalCloseRequired && !masterUnconfirmed) {
       const price = memberPosition.markPrice || markPrice;
       const unitNotional = price * contractInfo.quantoMultiplier;
       const otherLegNotional = member.positions.filter((position) => position.contract === contract
@@ -401,6 +400,7 @@ export function planMemberPositions({ cycleId, system, master, member, contracts
     const state = deriveCopyState({
       systemHalted: Boolean(system.emergency_halted) && !simulateSystemHalt, memberHalted: Boolean(member.halted),
       symbolPaused: Boolean(member.resume_required) || hasUnresolvedOrder || hasOpenExchangeOrder || reversalCloseRequired
+        || masterUnconfirmed
         || ((Boolean(member.copy_paused) || protectedOppositePosition) && !member.close_positions_requested),
       // A member who asked to stop and close wants every leg closed, including one changed outside
       // the platform. Close orders are reduce-only to zero and re-read before submission.
@@ -434,7 +434,7 @@ export function planMemberPositions({ cycleId, system, master, member, contracts
       target_resume_version: member.resume_version || null,
       target_lock_reason: target.targetLockReason,
       anchor_update_allowed: !hasUnresolvedOrder && !hasOpenExchangeOrder && !member.resume_required
-        && !manual.detected && !reversalCloseRequired && previous?.state !== 'MANUAL_OVERRIDE' && !anchorHold,
+        && !manual.detected && !reversalCloseRequired && previous?.state !== 'MANUAL_OVERRIDE' && !masterUnconfirmed,
       ...(anchorMasterCopyableSize == null ? {} : { anchor_master_copyable_size: anchorMasterCopyableSize }),
       sizing_reason: budgetReason,
       execution_reason: delta.reason,
@@ -442,6 +442,7 @@ export function planMemberPositions({ cycleId, system, master, member, contracts
       risk_leverage: riskLeverage, taker_fee_rate: Number(contractInfo.takerFeeRate ?? 0.001),
       baseline_clear_requested: baseline.clearBaseline,
       pause_reason: member.resume_required ? 'MEMBER_RESUME_VALIDATION_REQUIRED'
+        : masterUnconfirmed ? 'MASTER_POSITION_UNCONFIRMED'
         : manual.detected ? 'MEMBER_POSITION_CHANGED_OUTSIDE_PLATFORM'
         : reversalCloseRequired ? 'COPY_REVERSAL_CLOSE_REQUIRED'
         : hasUnresolvedOrder ? 'UNRESOLVED_PLATFORM_ORDER'
@@ -482,6 +483,7 @@ export class TradingRunner {
     this.pendingResumes = [];
     this.resumeAttemptAt = new Map();
     this.staleFillAlerts = new Map();
+    this.notFoundAfterExpiry = new Map();
     this.latestPerformanceMembers = [];
   }
   // A FUTURE_ONLY baseline only shrinks, permanently. One empty or partial Master read must not
@@ -495,19 +497,28 @@ export class TradingRunner {
     this.pendingBaselineClears.delete(key);
     return { ...leg, size: Math.abs(previous.size) >= Math.abs(Number(leg.size)) ? previous.size : Number(leg.size) };
   }
-  masterExpectedContracts(resumeContext = [], targetAnchors = []) {
-    // Contracts seen in roughly the last minute of Master reads, plus everything copy state depends on.
+  // Contracts and legs the Master read must confirm individually when Gate's list omits them: legs
+  // seen in the previous read, contracts seen in roughly the last minute, and every leg that ACTIVE
+  // copy state depends on (FUTURE_ONLY baselines, target anchors).
+  masterExpectations(resumeContext = [], targetAnchors = []) {
     const contracts = new Set(this.recentMasterContracts.keys());
+    const legs = new Set([...this.lastMasterSizes].filter(([, size]) => size !== 0).map(([key]) => key));
     const activeAccounts = new Set();
     for (const session of resumeContext || []) {
       if (session?.state !== 'ACTIVE') continue;
       activeAccounts.add(session.trading_account_id);
-      for (const position of session?.positions || []) if (Number(position?.size)) contracts.add(position.contract);
+      for (const position of session?.positions || []) {
+        if (!Number(position?.size) || !position.contract) continue;
+        contracts.add(position.contract);
+        legs.add(positionKey(position));
+      }
     }
     for (const anchor of targetAnchors || []) {
-      if (activeAccounts.has(anchor?.trading_account_id) && Number(anchor?.master_copyable_size)) contracts.add(anchor.contract);
+      if (!activeAccounts.has(anchor?.trading_account_id) || !Number(anchor?.master_copyable_size) || !anchor.contract) continue;
+      contracts.add(anchor.contract);
+      legs.add(positionKey({ ...anchor, size: anchor.master_copyable_size }));
     }
-    return [...contracts].filter(Boolean).sort();
+    return { contracts: [...contracts].sort(), legs: [...legs].sort() };
   }
   async rpc(name, parameters = {}) {
     const { data, error } = await this.supabase.rpc(name, parameters);
@@ -552,7 +563,8 @@ export class TradingRunner {
     const [summary, positions, openOrders] = await Promise.all([
       getFuturesAccount({ ...auth, baseUrl: this.baseUrl, fetchImpl: this.fetchImpl }),
       getFuturesPositions({ ...auth, baseUrl: this.baseUrl, fetchImpl: this.fetchImpl,
-        expectedContracts: account.expected_contracts || (account.previous_states || []).map((p) => p.contract) }),
+        expectedContracts: account.expected_contracts || (account.previous_states || []).map((p) => p.contract),
+        expectedLegs: account.expected_legs || [], tolerateUnconfirmed: account.tolerate_unconfirmed_positions === true }),
       listFuturesOrders({ ...auth, baseUrl: this.baseUrl, fetchImpl: this.fetchImpl, status: 'open', limit: 100 }),
     ]);
     const dayStart = Number(account.day_start_equity || 0);
@@ -564,6 +576,7 @@ export class TradingRunner {
     const riskHalted = dailyLimitHit || drawdownLimitHit;
     if (openOrders.length >= 100) throw new GateApiError('미체결 주문을 모두 확인해야 합니다.', { code: 'OPEN_ORDERS_LIMIT_REACHED' });
     return { ...account, ...summary, positions, open_orders: openOrders,
+      unconfirmed_contracts: positions.unconfirmedContracts || [],
       observed_started_at: startedAt, observed_at: new Date().toISOString(),
       halted: Boolean(account.halted), reduce_only: Boolean(account.reduce_only) || riskHalted,
       risk_halt_reason: dailyLimitHit ? 'DAILY_LOSS_LIMIT' : drawdownLimitHit ? 'MAX_DRAWDOWN_LIMIT' : null,
@@ -572,7 +585,7 @@ export class TradingRunner {
   async readResumeSnapshot(masterContext, memberContext) {
     const startedAt = Date.now();
     const [master, member] = await Promise.all([
-      this.readAccount({ ...masterContext, expected_contracts: this.masterExpectedContracts() }),
+      this.readAccount((({ contracts, legs }) => ({ ...masterContext, expected_contracts: contracts, expected_legs: legs }))(this.masterExpectations())),
       this.readAccount(memberContext),
     ]);
     // Only the member's resting orders can change what the member holds while resume is validated.
@@ -745,25 +758,34 @@ export class TradingRunner {
     // P0-2: an empty or partial position list must not look like a Master close. Every contract the
     // copy state depends on (last seen legs, FUTURE_ONLY baselines, anchors) is confirmed by Gate's
     // single-contract endpoint when the list omits it.
+    const masterExpected = this.masterExpectations(resumeContext, targetAnchors);
     const [master, memberReads] = await Promise.all([
-      this.readAccount({ ...context.master, expected_contracts: this.masterExpectedContracts(resumeContext, targetAnchors) }),
+      this.readAccount({ ...context.master, expected_contracts: masterExpected.contracts, expected_legs: masterExpected.legs,
+        tolerate_unconfirmed_positions: true }),
       Promise.allSettled(memberContexts.map((account) => this.readAccount({
         ...account, expected_contracts: sessions.get(account.trading_account_id)?.expected_contracts || [],
       }))),
     ]);
     timings.master_exchange_ms = elapsedMs(masterReadStartedAt);
     assertFreshAccount(master);
-    const previousMasterSizes = this.lastMasterSizes;
-    const currentMasterSizes = new Map(master.positions.map((position) => [positionKey(position), Number(position.size)]));
-    // A leg that was open last cycle and is absent now is acted on (orders are re-checked against a
-    // fresh single-contract read before submission) but does not move target anchors until a second
-    // read agrees.
-    const masterLegsJustVanished = new Set([...previousMasterSizes]
-      .filter(([key, size]) => size !== 0 && !currentMasterSizes.get(key)).map(([key]) => key));
+    // A contract Gate could not confirm this cycle (its single-contract read failed) has unknown Master
+    // legs: member legs on it are paused and no anchor or baseline moves (planMemberPositions), instead
+    // of one flaky contract failing every member's cycle.
+    const unconfirmedMasterContracts = new Set(master.unconfirmed_contracts || []);
+    const currentMasterSizes = new Map(master.positions
+      .filter((position) => !unconfirmedMasterContracts.has(position.contract))
+      .map((position) => [positionKey(position), Number(position.size)]));
+    for (const [key, size] of this.lastMasterSizes) {
+      if (unconfirmedMasterContracts.has(parsePositionKey(key).contract)) currentMasterSizes.set(key, size);
+    }
     this.lastMasterSizes = currentMasterSizes;
     for (const position of master.positions) this.recentMasterContracts.set(position.contract, this.cycleSeq);
+    for (const contract of unconfirmedMasterContracts) this.recentMasterContracts.set(contract, this.cycleSeq);
     for (const [contract, seq] of this.recentMasterContracts) {
       if (seq < this.cycleSeq - 12) this.recentMasterContracts.delete(contract);
+    }
+    if (unconfirmedMasterContracts.size && this.logger) {
+      this.logger('master_positions_unconfirmed', { contracts: [...unconfirmedMasterContracts] });
     }
     // A newly listed or newly traded contract may appear after the hourly
     // contract metadata cache was built. Refresh immediately instead of
@@ -848,6 +870,7 @@ export class TradingRunner {
             size: Math.sign(currentSize) === Math.sign(Number(position.size)) ? currentSize : 0 };
         });
         const confirmedClears = member.resume_required ? [] : contractsToClear
+          .filter((position) => !unconfirmedMasterContracts.has(position.contract))
           .map((position) => this.confirmBaselineClear(memberContext.trading_account_id, session?.version, position))
           .filter(Boolean);
         if (confirmedClears.length) {
@@ -893,9 +916,6 @@ export class TradingRunner {
           contracts,
           simulateSystemHalt: this.mode === 'DRY_RUN',
         });
-        for (const position of plannedPositions) {
-          if (masterLegsJustVanished.has(positionKey(position))) position.anchor_update_allowed = false;
-        }
         simulatedIntents += plannedPositions.filter((position) => position.intent).length;
         if (this.mode === 'DRY_RUN') {
           dryRunPlans.push(...plannedPositions.map((position) => ({
@@ -966,9 +986,15 @@ export class TradingRunner {
     const selected = pending.slice(0, Math.max(0, limit));
     for (const item of selected) {
       this.resumeAttemptAt.set(item.memberContext.trading_account_id, Date.now());
-      const result = await this.processMemberResume(item);
-      if (result?.validated) validated++;
-      if (result?.activated) activated++;
+      try {
+        const result = await this.processMemberResume(item);
+        if (result?.validated) validated++;
+        if (result?.activated) activated++;
+      } catch (error) {
+        // One member's resume (e.g. a blocker report hitting a DB timeout) must not fail the cycle.
+        if (this.logger) this.logger('member_resume_failed', { trading_account_id: item.memberContext.trading_account_id,
+          user_id: item.memberContext.user_id || null, error_code: safeError(error, 'RESUME') });
+      }
     }
     return { processed: selected.length, validated, activated, waiting: pending.length - selected.length };
   }
@@ -991,9 +1017,11 @@ export class TradingRunner {
         const memberContext = context.members?.find((member) => member.trading_account_id === job.trading_account_id);
         if (!memberContext) throw new GateApiError('활성 회원 설정을 확인할 수 없습니다.', { code: 'MEMBER_CONTEXT_MISSING' });
         memberLabel = memberContext.nickname || memberContext.full_name || memberLabel;
+        // Both legs of the contract are confirmed individually when the list omits either one.
+        const bothLegs = [`${job.contract}:LONG`, `${job.contract}:SHORT`];
         const [memberSnapshot, masterSnapshot] = await Promise.all([
-          this.readAccount({ ...memberContext, ...job, expected_contracts: [job.contract] }),
-          this.readAccount({ ...context.master, expected_contracts: [job.contract] }),
+          this.readAccount({ ...memberContext, ...job, expected_contracts: [job.contract], expected_legs: bothLegs }),
+          this.readAccount({ ...context.master, expected_contracts: [job.contract], expected_legs: bothLegs }),
         ]);
         const opposite = (p) => p.contract === job.contract
           && (p.positionSide || p.position_side || (Number(p.size) < 0 ? 'SHORT' : 'LONG')) !== job.position_side
@@ -1125,11 +1153,14 @@ export class TradingRunner {
     const expiresAt = Date.parse(job.source_observed_at) + RESUME_MAX_AGE_MS;
     if (job.gate_order_id || !Number.isFinite(expiresAt) || Date.now() < expiresAt + 60_000
       || !(Number(job.job_attempts) >= 2) || !Number.isFinite(Number(job.actual_size_at_plan))) return unknown();
-    const positions = await getFuturesPositions({ ...auth, expectedContracts: [job.contract] });
+    for (const [intentId, at] of this.notFoundAfterExpiry) if (Date.now() - at > 86_400_000) this.notFoundAfterExpiry.delete(intentId);
+    const positions = await getFuturesPositions({ ...auth, expectedContracts: [job.contract],
+      expectedLegs: [`${job.contract}:${job.position_side}`] });
     const leg = positions.find((position) => position.contract === job.contract
       && normalizePositionSide(position) === job.position_side);
     const observedSize = Number(leg?.size || 0);
     if (observedSize !== Number(job.actual_size_at_plan)) {
+      this.notFoundAfterExpiry.delete(job.intent_id);
       if (this.onSafetyEvent && this.shouldAlertStuckOrder(job.intent_id)) {
         await this.onSafetyEvent({ event: 'COPY_ORDER_UNRESOLVED', severity: 'CRITICAL', details: {
           intent_id: job.intent_id, contract: job.contract, position_side: job.position_side,
@@ -1137,6 +1168,12 @@ export class TradingRunner {
       }
       return unknown({ position_changed: true });
     }
+    // Two separate lookups after the expiry must both miss it (the first one is only recorded).
+    if (!this.notFoundAfterExpiry.has(job.intent_id)) {
+      this.notFoundAfterExpiry.set(job.intent_id, Date.now());
+      return unknown({ not_found_after_expiry: 1 });
+    }
+    this.notFoundAfterExpiry.delete(job.intent_id);
     return { p_job_id: job.job_id, p_status: 'CANCELLED', p_gate_order_id: null, p_filled_size: 0,
       p_average_fill_price: null, p_safe_response: { found: false, resolution: 'NOT_FOUND_AFTER_EXPIRY',
         terminal: true, observed_size: observedSize } };

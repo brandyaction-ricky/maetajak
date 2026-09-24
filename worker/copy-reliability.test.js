@@ -32,7 +32,7 @@ test('P0-1 (QA s1b): Master adds to a winner while its unified equity includes t
   assert.ok(p.target_size >= 50, `target ${p.target_size} must not fall below the carried 50`);
   assert.equal(p.intent, undefined);
   assert.equal(p.target_lock_reason, 'MASTER_INCREASE_BELOW_MEMBER_LOT');
-  assert.equal(p.anchor_update_allowed, false, 'a sub-lot increase keeps the anchor so it can accumulate');
+  assert.equal(p.anchor_master_copyable_size, 100, 'a sub-lot increase keeps the anchor Master size so it accumulates');
 });
 
 test('P0-1 (QA s1a): member equity fell 10% since the anchor -> a Master BUY is never a member SELL', () => {
@@ -52,7 +52,7 @@ test('P0-1: every anchored leg follows only the Master change, at the current ra
 test('P0-1: Master pyramiding in sub-lot steps accumulates instead of rounding each step to zero', () => {
   // Ratio 0.5. +1 is half a lot: hold, anchor unchanged.
   let p = plan({ masterSize: 101, actual: 50, anchors: anchorAt(100, 50) });
-  assert.equal(p.target_size, 50); assert.equal(p.anchor_update_allowed, false);
+  assert.equal(p.target_size, 50); assert.equal(p.anchor_master_copyable_size, 100);
   // +3 since the unchanged anchor = 1.5 lots -> buy 1; the anchor consumes only 2 Master contracts.
   p = plan({ masterSize: 103, actual: 50, anchors: anchorAt(100, 50) });
   assert.equal(p.target_size, 51); assert.equal(p.intent.delta_size, 1);
@@ -60,7 +60,7 @@ test('P0-1: Master pyramiding in sub-lot steps accumulates instead of rounding e
   assert.equal(p.master_copyable_size, 103, 'plan evidence keeps the observed Master quantity');
   // Next cycle from anchor (102, 51): the remaining half lot waits; +1 more completes it.
   p = plan({ masterSize: 103, actual: 51, anchors: anchorAt(102, 51) });
-  assert.equal(p.target_size, 51); assert.equal(p.intent, undefined); assert.equal(p.anchor_update_allowed, false);
+  assert.equal(p.target_size, 51); assert.equal(p.intent, undefined); assert.equal(p.anchor_master_copyable_size, 102);
   p = plan({ masterSize: 104, actual: 51, anchors: anchorAt(102, 51) });
   assert.equal(p.target_size, 52); assert.equal(p.intent.delta_size, 1);
   assert.equal('anchor_master_copyable_size' in p, false, 'an exact lot consumes the whole increase');
@@ -73,7 +73,35 @@ test('P0-1: a sub-lot Master increase behaves exactly like an unchanged Master (
   assert.equal(p.target_size, unchanged.target_size);
   assert.equal(p.target_size, 50);
   assert.equal(p.intent.delta_size, 5);
+  assert.equal(p.anchor_master_copyable_size, 100);
+});
+
+test('P0-1 (review): a Master increase of one lot or more keeps an unfilled part of the previous decision', () => {
+  // The member's earlier buy filled only 20 of the decided 50. Master +2 (one member lot): 50 + 1, not 20 + 1.
+  const p = plan({ masterSize: 102, actual: 20, anchors: anchorAt(100, 50) });
+  assert.equal(p.target_size, 51);
+  assert.equal(p.intent.delta_size, 31);
+  assert.equal(p.intent.reduce_only, false);
+});
+
+test('P0-1 (review): a risk-cap reduction during a Master increase is labelled as a cap reduction', () => {
+  // Cap 30% of 4,000 = 24 contracts at 50k. Anchor 30 (decided when equity was higher), Master +2.
+  const p = plan({ masterSize: 102, memberTotal: 4_000, actual: 30, anchors: anchorAt(100, 30), maxRatio: 30 });
+  assert.equal(p.target_size, 24);
+  assert.equal(p.target_lock_reason, 'CURRENT_RISK_CAP_REDUCTION');
+  assert.equal(p.intent.reduce_only, true);
+});
+
+test('P0-2 (review): legs on a Master contract Gate could not confirm are paused and keep their anchor', () => {
+  const p = planMemberPositions({ cycleId: 'c-1', system: { emergency_halted: false }, contracts,
+    master: { total: 10_000, positions: [], unconfirmed_contracts: ['BTC_USDT'] },
+    member: { user_id: 'u', total: 5_000, available: 5_000, copy_ratio: 100, max_position_ratio: 100, resume_version: 'r1',
+      positions: [pos(50)], previous_states: [{ contract: 'BTC_USDT', position_side: 'LONG', actual_size: 50, state: 'SYNCED' }],
+      target_anchors: anchorAt(100, 50) } })[0];
+  assert.equal(p.state, 'PAUSED');
+  assert.equal(p.intent, undefined);
   assert.equal(p.anchor_update_allowed, false);
+  assert.equal(p.pause_reason, 'MASTER_POSITION_UNCONFIRMED');
 });
 
 test('P0-1: a pending decision below the actual size still reduces (anchor leads execution)', () => {
@@ -195,13 +223,36 @@ test('P0-2: a real Master reduction advances the baseline after two consistent r
   assert.deepEqual(baseline(), [{ contract: 'BTC_USDT', position_side: 'LONG', size: 70 }]);
 });
 
-test('P0-2: a Master leg that vanishes in one read does not move the target anchor', async () => {
-  const anchors = [{ trading_account_id: 'acct', contract: 'BTC_USDT', position_side: 'LONG', resume_version: 'v1',
-    master_copyable_size: 100, target_size: 50 }];
-  const { runner, calls } = fakeRunner({ masterReads: [[pos(100)], []], baseline: [], anchors });
-  await runner.syncOnce(); await runner.syncOnce();
-  const glitch = calls.recorded.at(-1).members[0].planned_positions.find((p) => p.contract === 'BTC_USDT');
-  assert.equal(glitch.anchor_update_allowed, false);
+test('P0-2 (review): an unconfirmed Master contract pauses its legs and never shrinks the baseline', async () => {
+  const { runner, calls, baseline } = fakeRunner({ masterReads: [[pos(100)], [], []] });
+  const read = runner.readAccount;
+  let cycle = 0;
+  runner.readAccount = async (account) => {
+    const value = await read(account);
+    if (account.trading_account_id === 'master') {
+      assert.equal(account.tolerate_unconfirmed_positions, true);
+      assert.ok(account.expected_legs.includes('BTC_USDT:LONG'));
+      cycle++;
+      if (cycle > 1) value.unconfirmed_contracts = ['BTC_USDT'];
+    }
+    return value;
+  };
+  for (let i = 0; i < 3; i++) await runner.syncOnce();
+  assert.deepEqual(calls.advance, []);
+  assert.deepEqual(baseline(), [{ contract: 'BTC_USDT', position_side: 'LONG', size: 100 }]);
+  const last = calls.recorded.at(-1).members[0].planned_positions[0];
+  assert.equal(last.pause_reason, 'MASTER_POSITION_UNCONFIRMED');
+  assert.equal(last.anchor_update_allowed, false);
+});
+
+test('P1-8 (review): one member\'s resume failure does not fail the cycle', async () => {
+  const runner = new TradingRunner({ supabase: {}, mode: 'LIVE' });
+  runner.processMemberResume = async ({ memberContext }) => {
+    if (memberContext.trading_account_id === 'a') throw new Error('report_member_copy_resume_blocker: statement timeout');
+    return { validated: true };
+  };
+  runner.pendingResumes = [{ memberContext: { trading_account_id: 'a' } }];
+  assert.deepEqual(await runner.processPendingResumes(1), { processed: 1, validated: 0, activated: 0, waiting: 0 });
 });
 
 test('P1-8: resume validation runs after the cycle, one member per call, least recently attempted first', async () => {

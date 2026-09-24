@@ -41,7 +41,8 @@ if (tradingMode === 'LIVE' && !telegramConfigured) throw new Error('LIVE mode re
 
 const supabase = createClient(supabaseUrl, serviceRoleKey, { auth: { persistSession: false, autoRefreshToken: false } });
 const state = { verification: false, trading: false, broker: false, performance: false, stopping: false, lastDatabaseAlertAt: 0,
-  leaseWaitSince: 0, lastLeaseAlertAt: 0, failureStreak: 0, healthyDryRunCycles: 0, lastReadinessAt: 0 };
+  leaseWaitSince: 0, lastLeaseAlertAt: 0, failureStreak: 0, healthyDryRunCycles: 0, lastReadinessAt: 0,
+  lastReportHalted: null, haltAlertSent: false };
 const LEASE_CONFLICT_ALERT_MS = 90_000;
 const READINESS_HEALTHY_CYCLES = 3;
 const READINESS_REFRESH_MS = 600_000;
@@ -156,6 +157,10 @@ export async function runTradingCycle() {
     const resumeMs = Date.now() - resumeStartedAt;
     const alertsDelivered = await runner.deliverEntryAlerts();
     const report = await runner.reportCycle(true);
+    if (report && Object.prototype.hasOwnProperty.call(report, 'halted')) {
+      state.lastReportHalted = Boolean(report.halted);
+      if (!report.halted) state.haltAlertSent = false;
+    }
     if (state.failureStreak >= 3) {
       const haltKnown = report && Object.prototype.hasOwnProperty.call(report, 'halted');
       const resumed = haltKnown && report.halted === false;
@@ -207,10 +212,15 @@ export async function runTradingCycle() {
       const details = { copy_event_id: runner.currentCopyEventId, failures: failure?.consecutive_failures,
         error_code: failure?.last_error_code || code };
       if (failure && Object.prototype.hasOwnProperty.call(failure, 'newly_halted')) {
-        // P1-1: orders stop while failures>0; the database halts only after 5 minutes of failure.
-        if (failure.newly_halted) await sendAlert({ event: 'COPY_SYSTEM_AUTO_HALTED', severity: 'CRITICAL', details });
-        else if (failures === 1) await sendAlert({ event: 'WORKER_CYCLE_FAILED', severity: 'CRITICAL', details });
-        else if (failures === 3 && !failure.halted) await sendAlert({ event: 'COPY_WORKER_DEGRADED', severity: 'CRITICAL', details });
+        // P1-1: orders stop while failures>0; the database halts only after 5 minutes of failure. A lost
+        // response can hide `newly_halted`, so a LIVE halt first seen during this streak also alerts.
+        const haltSeen = failure.newly_halted || (tradingMode === 'LIVE' && failure.halted && state.lastReportHalted === false);
+        if (haltSeen && !state.haltAlertSent) {
+          state.haltAlertSent = true;
+          await sendAlert({ event: 'COPY_SYSTEM_AUTO_HALTED', severity: 'CRITICAL', details });
+        } else if (failures === 1) await sendAlert({ event: 'WORKER_CYCLE_FAILED', severity: 'CRITICAL', details });
+        else if (failures === 3 && !failure.halted && tradingMode === 'LIVE') await sendAlert({ event: 'COPY_WORKER_DEGRADED', severity: 'CRITICAL', details });
+        state.lastReportHalted = Boolean(failure.halted);
       } else if (shouldSendFailureAlert(failure?.consecutive_failures)) {
         await sendAlert({ event: Number(failure?.consecutive_failures) >= 3 ? 'COPY_SYSTEM_AUTO_HALTED' : 'WORKER_CYCLE_FAILED', severity: 'CRITICAL', details });
       }
@@ -237,9 +247,12 @@ export async function runPerformanceSync() {
   state.performance = true;
   try {
     await runner.alertStaleFillObservations(300);
+    // The trading loop may be refreshing contract metadata; skip rather than aggregate without it.
+    const contracts = runner.contracts;
+    if (!contracts) return;
     for (const member of runner.latestPerformanceMembers || []) {
       if (state.stopping) break;
-      try { await runner.syncMemberPerformance(member, runner.contracts, new Date().toISOString()); }
+      try { await runner.syncMemberPerformance(member, contracts, new Date().toISOString()); }
       catch (error) { log('member_performance_sync_failed', { user_id: member.user_id, error_code: safeError(error, 'PERFORMANCE') }); }
     }
   } finally { state.performance = false; }

@@ -22,6 +22,7 @@ const EVENT_MESSAGES = {
   WORKER_LEASE_CONFLICT: { title: '워커 중복 실행 의심', state: '이 워커 대기', description: '다른 워커가 실행 권한을 계속 보유하고 있어 이 워커는 주문을 처리하지 않습니다.', action: '서버에서 카피 워커가 하나만 실행 중인지 확인해 주세요.' },
   COPY_FILL_OBSERVATION_STALE: { title: '체결 반영 확인 지연', state: '해당 회원 주문 보류', description: '체결된 주문이 5분 넘게 실제 포지션과 일치하지 않아 해당 회원의 추가 주문이 막혀 있습니다.', action: '회원의 수동 매매·TP/SL·강제청산 여부를 확인하고 원장을 점검해 주세요.' },
   COPY_ORDER_UNRESOLVED: { title: '주문 결과 미확정 지속', state: '해당 회원 주문 보류', description: '거래소에서 주문을 찾지 못했지만 포지션이 계획 시점과 달라 자동으로 정리할 수 없습니다.', action: '해당 종목의 체결 내역과 포지션을 직접 확인해 주세요.' },
+  AUTO_DEPLOY_RECOVERY_DRY_RUN: { title: '워커 중지 감지 · 자동 복구', state: 'DRY_RUN으로 재기동 (LIVE 해제)', description: 'LIVE 설정인데 워커 서비스가 멈춰 있어 안전 모드(DRY_RUN)로 다시 띄웁니다.', action: '원인을 확인한 뒤 LIVE 재활성화 절차를 진행해 주세요. 의도한 중지라면 /etc/maetajak/maintenance 파일을 먼저 만들어 주세요.' },
   AUTO_DEPLOY_PENDING_LIVE: { title: '워커 업데이트 대기', state: 'LIVE 유지 · 자동 배포 보류', description: '실거래 중이라 새 워커 코드를 자동으로 재배포하지 않았습니다.', action: '점검 가능한 시간에 수동 배포 절차(DRY_RUN 배포 → LIVE 재활성화)로 반영해 주세요.' },
 };
 
@@ -46,7 +47,7 @@ const VALUE_LABELS = {
   RESUME_SNAPSHOT_STALE: '포지션 조회 시간이 오래됨', RESUME_SNAPSHOT_CHANGED: '재확인 중 포지션 수량이 변경됨',
   OPEN_FUTURES_ORDERS_REMAIN: '취소 후에도 거래소에 미체결 주문이 남아 있음',
   ORDER_NOT_FOUND_POSITION_CHANGED: '거래소 주문 미발견 · 포지션이 계획 시점과 다름',
-  NOT_FOUND_AFTER_EXPIRY: '주문 유효시간 경과 후 거래소 기록 없음 (미실행 확정)',
+  NOT_FOUND_AFTER_EXPIRY: '유효시간 경과 후 두 차례 조회에도 거래소 기록 없음·포지션 변화 없음 → 미실행 처리',
   UNSENT_UNKNOWN_RESOLVED: '거래소 전송 전 실패로 확인 (미실행)',
   UNSENT_CLAIM_EXPIRED: '거래소 전송 전 만료 (미실행)',
 };

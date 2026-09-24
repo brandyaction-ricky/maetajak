@@ -163,7 +163,7 @@ test('P1-4 (QA s12): CLOSE closes every copied leg, never latches UNKNOWN, and l
   assert.deepEqual(Object.fromEntries(held), { BTC_USDT: 0, SOXL_USDT: 0 });
   const proof = await one('select status,reason,protected_positions,copy_positions from private.copy_ownership_checkpoints');
   assert.equal(proof.status, 'CONFIRMED');
-  assert.equal(proof.reason, 'CLOSE_OWNERSHIP_RELEASED');
+  assert.equal(proof.reason, 'CLOSE_OWNERSHIP_RECONCILED');
   assert.deepEqual(proof.protected_positions, []); assert.deepEqual(proof.copy_positions, []);
   // A later RESUME can compute ownership for the flat account (this used to raise RESUME_COPY_OWNERSHIP_UNKNOWN).
   await db.query("select set_config('request.jwt.claim.role','authenticated',false)");
@@ -185,6 +185,44 @@ test('P1-4: CLOSE also closes member-protected legs and still works when ownersh
   await closingCycles(held, master);
   assert.deepEqual(Object.fromEntries(held), { BTC_USDT: 0, SOXL_USDT: 0 });
   assert.equal((await one('select status from private.copy_ownership_checkpoints')).status, 'CONFIRMED');
+});
+
+test('P1-4 (review): CLOSE that cannot execute leaves COPY as COPY; a later RESUME continues it', async () => {
+  const { master, held } = await copiedBtcAndSoxl();
+  await db.query("select set_config('request.jwt.claim.sub',$1,false),set_config('request.jwt.claim.role','authenticated',false)", [ids.user]);
+  await db.exec("select public.set_my_copy_pause('CLOSE'); select set_config('request.jwt.claim.role','service_role',false)");
+  // The system is halted, so no close order can run while CLOSING observations continue.
+  await db.exec("update public.copy_system_control set execution_enabled=false,emergency_halted=true,halt_reason='TEST'");
+  await closingCycles(held, master);
+  assert.ok(held.get('BTC_USDT') > 0 && held.get('SOXL_USDT') > 0, 'nothing could be closed');
+  const proof = await one('select status,protected_positions,copy_positions from private.copy_ownership_checkpoints');
+  assert.equal(proof.status, 'CONFIRMED');
+  assert.deepEqual(proof.protected_positions, [], 'copied exposure is never relabelled as the member\'s own');
+  assert.equal(proof.copy_positions.length, 2);
+  await db.query("select set_config('request.jwt.claim.role','authenticated',false)");
+  await db.exec("select public.set_my_copy_pause('RESUME'); select set_config('request.jwt.claim.role','service_role',false)");
+  const session = await one('select version from private.copy_resume_sessions');
+  const members = [...held].map(([c, n]) => ({ contract: c, position_side: 'LONG', size: n }));
+  const ownership = (await one('select public.get_member_copy_resume_ownership($1,$2,$3,$4) o', [ids.member, session.version,
+    JSON.stringify([{ contract: 'BTC_USDT', position_side: 'LONG', size: 40 }, { contract: 'SOXL_USDT', position_side: 'LONG', size: 400 }]),
+    JSON.stringify(members)])).o;
+  assert.deepEqual(ownership.member_positions, []);
+  assert.equal(ownership.copy_positions.length, 2, 'the copied legs continue as COPY');
+});
+
+test('P1-4 (review): CLOSE pressed seconds after a fill still closes and keeps that fill as COPY', async () => {
+  await record(db, cyclePayload({ masterSize: 40, actualSize: 0 }));
+  const job = await executeNext({ confirm: false });
+  await db.query("select set_config('request.jwt.claim.sub',$1,false),set_config('request.jwt.claim.role','authenticated',false)", [ids.user]);
+  await db.exec("select public.set_my_copy_pause('CLOSE'); select set_config('request.jwt.claim.role','service_role',false)");
+  await db.query("update private.copy_order_intents set resolved_at=now()-interval '10 seconds' where id=$1", [job.intent_id]);
+  const held = new Map([['BTC_USDT', 10]]);
+  await closingCycles(held, [position(40)]);
+  assert.equal(held.get('BTC_USDT'), 0);
+  assert.ok((await one('select observation_confirmed_at from private.copy_order_intents where id=$1', [job.intent_id])).observation_confirmed_at);
+  const proof = await one('select status,protected_positions,copy_positions from private.copy_ownership_checkpoints');
+  assert.deepEqual([proof.status, proof.protected_positions, proof.copy_positions], ['CONFIRMED', [], []]);
+  assert.equal((await db.query('select public.get_copy_stale_fill_observations(60) s')).rows[0].s.length, 0);
 });
 
 test('P1-4: UNKNOWN ownership still blocks every order outside CLOSE', async () => {
@@ -251,6 +289,10 @@ test('P1-5: an order Gate never received resolves to CANCELLED only after its ex
     return positionsCall(url, request);
   };
   await runner.reconcileOrders();
+  assert.equal((await one('select status from private.copy_order_intents')).status, 'UNKNOWN',
+    'the first lookup after the expiry is only recorded');
+  await db.exec("update private.copy_reconciliation_jobs set run_after=now()-interval '1 second',claimed_at=null");
+  await runner.reconcileOrders();
   const resolved = await one('select status,exchange_terminal,filled_size,last_error_code from private.copy_order_intents');
   assert.deepEqual({ ...resolved, filled_size: Number(resolved.filled_size) },
     { status: 'CANCELLED', exchange_terminal: true, filled_size: 0, last_error_code: 'NOT_FOUND_AFTER_EXPIRY' });
@@ -281,7 +323,9 @@ test('P1-5: the database refuses a not-found resolution before the Gate expiry h
   const job = (await one('select id from private.copy_reconciliation_jobs')).id;
   await db.query(`select public.complete_copy_reconciliation($1,'CANCELLED',null,0,null,
     '{"found":false,"resolution":"NOT_FOUND_AFTER_EXPIRY","terminal":true}')`, [job]);
-  assert.equal((await one('select status from private.copy_order_intents')).status, 'UNKNOWN');
+  const refused = await one('select status,exchange_terminal from private.copy_order_intents');
+  assert.deepEqual(refused, { status: 'UNKNOWN', exchange_terminal: false }, 'a refused resolution must not end the intent');
+  assert.equal(Number((await one('select count(*) n from private.copy_reconciliation_jobs')).n), 1, 'the job stays alive');
 });
 
 test('P1-5: a pre-send failure (leverage POST timeout) is REJECTED, not UNKNOWN, and the next cycle can trade', async () => {
@@ -314,6 +358,28 @@ test('P1-6: a fill that never matches an observation is reported once', async ()
   assert.equal(await runner.alertStaleFillObservations(300), 1);
   assert.equal(await runner.alertStaleFillObservations(300), 0);
   assert.equal(alerts.filter((a) => a.event === 'COPY_FILL_OBSERVATION_STALE').length, 1);
+});
+
+test('P0-1 (review): Master closes, the member close partially fills, Master reopens -> the member buys', async () => {
+  // Ratio 0.25 (Master 20k / member 5k). Master 40 -> member 10.
+  await record(db, cyclePayload({ masterSize: 40, actualSize: 0 })); await executeNext();
+  await sleep(20);
+  // Master closes; the member's IOC close fills only 6 of 10.
+  await record(db, cyclePayload({ masterSize: 0, actualSize: 10, member: { target_anchors: await anchorsNow(),
+    previous_states: [{ contract: 'BTC_USDT', position_side: 'LONG', actual_size: 10, state: 'SYNCED' }] } }));
+  const [close] = (await db.query('select * from public.claim_copy_order_intents(10)')).rows;
+  assert.equal(Number(close.delta_size), -10);
+  await one('select public.authorize_copy_order_submission($1,$2)', [close.intent_id, ids.version]);
+  await db.query(`select public.complete_copy_order_attempt($1,'FILLED','g-close',-6,50000,201,'ioc',null,'{"terminal":true}')`, [close.intent_id]);
+  await db.query("update private.copy_order_intents set position_match_at=now()-interval '3 seconds', observation_confirmed_at=now() where id=$1", [close.intent_id]);
+  await sleep(20);
+  // Master reopens 24 -> 6 contracts at 0.25. The member holds 4: it must BUY 2, never sell.
+  const payload = cyclePayload({ masterSize: 24, actualSize: 4, member: { target_anchors: await anchorsNow(),
+    previous_states: [{ contract: 'BTC_USDT', position_side: 'LONG', actual_size: 4, state: 'SYNCED' }] } });
+  const plan = payload.members[0].planned_positions[0];
+  assert.equal(plan.target_size, 6);
+  assert.equal(plan.intent.delta_size, 2);
+  assert.equal(plan.intent.reduce_only, false);
 });
 
 test('P0-1: the target anchor stores only the Master quantity consumed by whole member lots', async () => {

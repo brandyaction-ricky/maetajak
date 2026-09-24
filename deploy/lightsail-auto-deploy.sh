@@ -28,7 +28,7 @@ fi
 export MAETAJAK_DEPLOY_LOCK_HELD=1
 
 live_mode=false
-if grep -Eq '^TRADING_MODE=LIVE$' "${ENV_FILE}" 2>/dev/null; then
+if grep -Eq '^[[:space:]]*(export[[:space:]]+)?TRADING_MODE=["'"'"']?LIVE["'"'"']?[[:space:]]*$' <(tr -d '\r' < "${ENV_FILE}") 2>/dev/null; then
   live_mode=true
 fi
 
@@ -38,12 +38,19 @@ if [[ -n "$(git status --porcelain)" ]]; then
   exit 1
 fi
 
-git fetch --quiet origin main
+timeout 120 git fetch --quiet origin main
 local_sha="$(git rev-parse HEAD)"
 remote_sha="$(git rev-parse origin/main)"
 if [[ "${local_sha}" == "${remote_sha}" ]]; then
   if [[ "$(systemctl is-active maetajak-worker.service || true)" != "active" ]]; then
+    # A stopped worker is brought back in DRY_RUN (fail-safe: LIVE needs an operator). Use the
+    # maintenance file to keep it stopped on purpose.
     echo "auto_deploy=recover_inactive_worker"
+    if [[ "${live_mode}" == "true" ]]; then
+      export MAETAJAK_ENV_FILE="${ENV_FILE}"
+      docker compose -f docker-compose.worker.yml run --rm -e DEPLOY_NOTICE_EVENT=AUTO_DEPLOY_RECOVERY_DRY_RUN \
+        -e DEPLOY_NOTICE_COMMIT="${local_sha}" copy-worker node scripts/deploy-notice.js >/dev/null 2>&1 || true
+    fi
     exec "${APP_DIR}/deploy/lightsail-deploy-dry-run.sh"
   fi
   echo "auto_deploy=no_change"

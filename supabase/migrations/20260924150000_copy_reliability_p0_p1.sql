@@ -10,8 +10,10 @@
 --        order was in flight or its fill was not yet observation-confirmed when the later one was planned.
 --        Open -> close -> reopen after confirmed observations is normal trading, not a halt.
 --  P1-4  CLOSE ("stop copy + close positions") works as an exit: the ownership ledger no longer latches
---        UNKNOWN during CLOSING (closing a protected leg made the journal invalid), UNKNOWN no longer blocks
---        close-only orders, and whatever remains is recorded as member-owned so a later RESUME can start.
+--        UNKNOWN during CLOSING (closing a protected leg made the per-fill journal invalid) and UNKNOWN no
+--        longer blocks close-only orders. During CLOSING the split is reconciled from verified holdings
+--        (closes consume COPY first, member additions are protected, nothing moves between them), and an
+--        UNKNOWN/legacy ledger is reset only when the account is flat, so a later RESUME can start.
 --  P1-5  Orders that provably never reached Gate stop blocking the account: never-authorized UNKNOWN
 --        intents are cancelled like never-authorized SUBMITTING ones, and "not found after Exptime"
 --        resolutions are accepted only when the Gate expiry has long passed.
@@ -184,15 +186,13 @@ revoke all on function private.copy_resume_policy_authorized(uuid,uuid) from pub
 -- Base: production body after 20260921125321 (md5 14896b3e33341e8e79154f170ba2205a). Only the CLOSING
 -- branch is new. CLOSE rotates the session version and may close protected legs, which the per-fill
 -- journal cannot express (a negative copy leg), so it latched UNKNOWN after the first closed leg.
--- During CLOSING the platform releases ownership: once no order is in flight, the checkpoint records
--- the verified holdings as member-owned (copy=[]) and journals the confirmed fills, so a later RESUME
--- starts FUTURE_ONLY from what the member actually holds.
 create or replace function private.observe_copy_ownership()
 returns trigger language plpgsql security definer set search_path=pg_catalog as $$
 declare proof private.copy_ownership_checkpoints; baseline private.member_copy_onboarding_baselines;
   actual jsonb; copied jsonb; expected jsonb; item private.copy_order_intents;
   applied uuid[] := '{}'; invalid boolean := false;
   closing_session private.copy_resume_sessions; closing boolean := false; has_proof boolean := false;
+  protected_next jsonb; copy_next jsonb; copy_base jsonb;
 begin
   if new.status<>'VERIFIED' then return new; end if;
   perform pg_advisory_xact_lock(hashtextextended('maetajak:copy-execution',0));
@@ -209,22 +209,80 @@ begin
   select * into proof from private.copy_ownership_checkpoints where trading_account_id=new.trading_account_id for update;
   has_proof := found;
   if closing then
+    -- An order in flight, or a fill of the closing generation not yet observed, is still changing the
+    -- holdings: wait for it.
     if exists(select 1 from private.copy_order_intents i where i.trading_account_id=new.trading_account_id
       and ((i.submit_attempts>0 and i.status in ('SUBMITTING','ACKNOWLEDGED','UNKNOWN','PARTIALLY_FILLED') and not i.exchange_terminal)
-        or (i.filled_size<>0 and i.observation_confirmed_at is null and i.resume_version is not null))) then return new; end if;
-    if (has_proof and new.observed_at<=proof.observed_at) or not private.copy_resume_positions_valid(actual) then return new; end if;
+        or (i.filled_size<>0 and i.observation_confirmed_at is null and i.resume_version=closing_session.version))) then return new; end if;
+    -- A terminal fill of an OLDER generation (e.g. CLOSE pressed seconds after a fill) can no longer be
+    -- confirmed, because confirmation is scoped to the current generation. A verified read that started
+    -- at least 5 s after it resolved already includes it.
+    update private.copy_order_intents i set observation_confirmed_at=new.verified_at
+      where i.trading_account_id=new.trading_account_id and i.filled_size<>0 and i.resume_version is not null
+        and i.resume_version is distinct from closing_session.version and i.observation_confirmed_at is null
+        and (i.exchange_terminal or i.status in ('FILLED','CANCELLED','REJECTED'))
+        and i.resolved_at<new.observed_at-interval '5 seconds';
+    if exists(select 1 from private.copy_order_intents i where i.trading_account_id=new.trading_account_id
+      and i.filled_size<>0 and i.observation_confirmed_at is null and i.resume_version is not null) then return new; end if;
+    if has_proof and new.observed_at<=proof.observed_at then return new; end if;
+    if has_proof and proof.status='CONFIRMED' then
+      -- Fills of the pre-CLOSE generation that the per-fill journal had not consumed yet belong to the
+      -- COPY they created (CLOSE may be pressed seconds after a fill). Later close fills are handled by
+      -- the per-leg reconciliation below, never folded.
+      if proof.resume_version is distinct from closing_session.version then
+        select private.copy_position_sum(proof.copy_positions||coalesce(jsonb_agg(jsonb_build_object(
+            'contract',i.contract,'position_side',i.position_side,'size',i.filled_size)),'[]'))
+          into copy_base from private.copy_order_intents i
+          where i.trading_account_id=new.trading_account_id and i.filled_size<>0
+            and i.resume_version=proof.resume_version
+            and not exists(select 1 from private.copy_ownership_fills f where f.intent_id=i.id);
+      else
+        copy_base:=proof.copy_positions;
+      end if;
+    end if;
+    if not has_proof or proof.status<>'CONFIRMED' or not private.copy_resume_positions_valid(copy_base) then
+      -- Ownership that is unknown is never assigned to anyone while something is still held.
+      if actual<>'[]'::jsonb then return new; end if;
+      protected_next:='[]'; copy_next:='[]';
+    else
+      -- Per leg: the closing orders reduce COPY first; any increase (a member's own trade, since close
+      -- orders are reduce-only) is member-owned. Quantity never moves from COPY to protected or back:
+      --   copy' = least(copy, greatest(0, held - protected)); protected' = held - copy'.
+      with legs as (
+        select l.c, l.s, case when l.s='SHORT' then -1 else 1 end sg,
+          coalesce((select abs((x->>'size')::numeric) from jsonb_array_elements(actual) x
+            where x->>'contract'=l.c and x->>'position_side'=l.s),0) h_q,
+          coalesce((select abs((x->>'size')::numeric) from jsonb_array_elements(proof.protected_positions) x
+            where x->>'contract'=l.c and x->>'position_side'=l.s),0) p_q,
+          coalesce((select abs((x->>'size')::numeric) from jsonb_array_elements(copy_base) x
+            where x->>'contract'=l.c and x->>'position_side'=l.s),0) k_q
+        from (select x->>'contract' c,x->>'position_side' s from jsonb_array_elements(actual) x
+          union select x->>'contract',x->>'position_side' from jsonb_array_elements(proof.protected_positions) x
+          union select x->>'contract',x->>'position_side' from jsonb_array_elements(copy_base) x) l
+      ), split as (
+        select c,s,sg,h_q,least(k_q,greatest(0,h_q-p_q)) k_next from legs
+      )
+      select coalesce(jsonb_agg(jsonb_build_object('contract',c,'position_side',s,'size',sg*(h_q-k_next))
+          order by c,s) filter (where h_q-k_next<>0),'[]'),
+        coalesce(jsonb_agg(jsonb_build_object('contract',c,'position_side',s,'size',sg*k_next)
+          order by c,s) filter (where k_next<>0),'[]')
+        into protected_next,copy_next from split;
+    end if;
+    if not private.copy_resume_positions_valid(protected_next) or not private.copy_resume_positions_valid(copy_next)
+      or private.copy_position_sum(protected_next||copy_next) is distinct from actual then return new; end if;
     insert into private.copy_ownership_checkpoints(trading_account_id,resume_version,status,protected_positions,
       copy_positions,observed_at,source_cycle_id,reason)
-      values(new.trading_account_id,closing_session.version,'CONFIRMED',actual,'[]',new.observed_at,new.cycle_id,
-        'CLOSE_OWNERSHIP_RELEASED')
+      values(new.trading_account_id,closing_session.version,'CONFIRMED',protected_next,copy_next,new.observed_at,
+        new.cycle_id,'CLOSE_OWNERSHIP_RECONCILED')
       on conflict(trading_account_id) do update set resume_version=excluded.resume_version,status='CONFIRMED',
-        protected_positions=excluded.protected_positions,copy_positions='[]',observed_at=excluded.observed_at,
-        source_cycle_id=excluded.source_cycle_id,reason=excluded.reason,
+        protected_positions=excluded.protected_positions,copy_positions=excluded.copy_positions,
+        observed_at=excluded.observed_at,source_cycle_id=excluded.source_cycle_id,reason=excluded.reason,
         revision=private.copy_ownership_checkpoints.revision+1
       where private.copy_ownership_checkpoints.status<>'CONFIRMED'
         or private.copy_ownership_checkpoints.resume_version is distinct from excluded.resume_version
         or private.copy_ownership_checkpoints.protected_positions is distinct from excluded.protected_positions
-        or private.copy_ownership_checkpoints.copy_positions<>'[]'::jsonb;
+        or private.copy_ownership_checkpoints.copy_positions is distinct from excluded.copy_positions;
+    -- The split above is derived from verified holdings that include every confirmed fill.
     insert into private.copy_ownership_fills(intent_id,trading_account_id,resume_version,filled_size,confirmed_at)
       select i.id,i.trading_account_id,i.resume_version,i.filled_size,i.observation_confirmed_at
       from private.copy_order_intents i
@@ -371,10 +429,12 @@ begin
   if coalesce(p_safe_response->>'resolution','')='NOT_FOUND_AFTER_EXPIRY' then
     if p_status='CANCELLED' and coalesce(p_filled_size,0)=0 and nullif(p_gate_order_id,'') is null
       and target.gate_order_id is null and target.filled_size=0 and target.source_observed_at is not null
-      and target.source_observed_at<now()-interval '75 seconds' then
+      and target.source_observed_at<now()-interval '75 seconds' and job.attempts>=2 then
       not_found_resolution:=true;
     else
+      -- Refused: keep it UNKNOWN and keep the job alive (a payload `terminal` flag must not end it).
       p_status:='UNKNOWN';
+      p_safe_response:=coalesce(p_safe_response,'{}'::jsonb)-'terminal'-'resolution';
     end if;
   end if;
   if coalesce(p_safe_response->>'error_code','') ~ 'ORDER_(QUANTITY|IDENTITY)_MISMATCH'
@@ -467,8 +527,14 @@ begin
         coalesce(nullif(position->>'position_side',''),
           case when (position->>'master_copyable_size')::numeric < 0 then 'SHORT' else 'LONG' end),
         (position->>'target_resume_version')::uuid,
-        coalesce((nullif(position->>'anchor_master_copyable_size',''))::numeric,
-          (position->>'master_copyable_size')::numeric),
+        -- The consumed quantity must lie between zero and the observed copyable size, on its side.
+        case when nullif(position->>'anchor_master_copyable_size','') is not null
+          and sign((position->>'anchor_master_copyable_size')::numeric)
+            in (0, sign((position->>'master_copyable_size')::numeric))
+          and abs((position->>'anchor_master_copyable_size')::numeric)
+            <= abs((position->>'master_copyable_size')::numeric)
+          then (position->>'anchor_master_copyable_size')::numeric
+          else (position->>'master_copyable_size')::numeric end,
         (position->>'target_size')::numeric,
         coalesce((position->>'member_baseline_size')::numeric, 0),
         left(coalesce(nullif(position->>'target_lock_reason',''), 'TARGET_ANCHOR_INITIALIZED'), 80),

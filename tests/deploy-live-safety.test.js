@@ -15,7 +15,7 @@ test('auto-deploy never redeploys the worker (DRY_RUN) while LIVE and honours ma
   assert.match(script, /auto_deploy=maintenance/);
   assert.match(script, /flock -n 9/);
   assert.match(script, /auto_deploy=busy/);
-  assert.match(script, /\^TRADING_MODE=LIVE\$/);
+  assert.ok(script.includes('(export[[:space:]]+)?TRADING_MODE='), 'LIVE detection tolerates export/quotes/CRLF');
   const pending = script.indexOf('auto_deploy=pending_live_worker_update');
   assert.ok(pending > 0);
   assert.ok(pending < script.indexOf('database_changes=false'), 'LIVE check runs before the DB readiness container');
@@ -31,31 +31,40 @@ test('manual deploy, update, promotion and LIVE activation share one lock; the d
     execFileSync('bash', ['-n', file]);
     const script = read(file);
     assert.match(script, /acquire_deploy_lock\(\) \{/, file);
-    assert.match(script, /\nacquire_deploy_lock\n/, file);
+    assert.match(script, /\nacquire_deploy_lock( 0)?\n/, file);
   }
   const deploy = read('deploy/lightsail-deploy-dry-run.sh');
   assert.ok(deploy.indexOf('\nacquire_deploy_lock\n') < deploy.indexOf('trap keep_safe EXIT'),
     'a busy lock must exit before the trap that stops the running worker');
+  // Enabling LIVE never waits behind another deploy (it must act on the build the operator checked).
+  for (const file of ['deploy/lightsail-enable-live.sh', 'deploy/process-live-promotion-request.sh']) {
+    assert.match(read(file), /\nacquire_deploy_lock 0\n/, file);
+  }
   const live = read('deploy/lightsail-enable-live.sh');
-  assert.ok(live.indexOf('\nacquire_deploy_lock\n') < live.indexOf('install -m 600'));
+  assert.ok(live.indexOf('\nacquire_deploy_lock 0\n') < live.indexOf('install -m 600'));
+  assert.ok(live.indexOf('release=$(git') < live.indexOf('read -r -p'), 'the commit is shown before the confirmation');
 });
 
-test('the deploy lock serializes operators and is inherited by nested scripts', () => {
+test('the deploy lock serializes operators and is inherited only through the real lock descriptor', () => {
   const script = read('deploy/lightsail-deploy-dry-run.sh');
   const start = script.indexOf('acquire_deploy_lock() {');
   const fn = script.slice(start, script.indexOf('\n}\n', start) + 3);
   const dir = mkdtempSync(join(tmpdir(), 'maetajak-lock-'));
+  const run = (body, env = {}) => spawnSync('bash', ['-c', `DEPLOY_LOCK_FILE="${join(dir, 'deploy.lock')}"; ${fn}\n${body}`],
+    { encoding: 'utf8', env: { PATH: process.env.PATH, ...env } });
   try {
     const lock = join(dir, 'deploy.lock');
     const holder = `(flock 8; sleep 3) 8>"${lock}" & sleep 0.5; `;
-    const busy = spawnSync('bash', ['-c', `DEPLOY_LOCK_FILE="${lock}"; DEPLOY_LOCK_WAIT_SECONDS=1; ${fn}\n${holder}acquire_deploy_lock; echo acquired`],
-      { encoding: 'utf8', env: { PATH: process.env.PATH } });
-    assert.equal(busy.status, 1);
-    assert.match(busy.stderr, /Another maetajak deploy/);
-    const nested = spawnSync('bash', ['-c', `DEPLOY_LOCK_FILE="${lock}"; DEPLOY_LOCK_WAIT_SECONDS=1; ${fn}\n${holder}acquire_deploy_lock; echo acquired`],
-      { encoding: 'utf8', env: { PATH: process.env.PATH, MAETAJAK_DEPLOY_LOCK_HELD: '1' } });
-    assert.equal(nested.status, 0);
-    assert.match(nested.stdout, /acquired/);
+    // Another operator holds the lock: wait 1 s, then give up.
+    let r = run(`${holder}acquire_deploy_lock 1; echo acquired`);
+    assert.equal(r.status, 1); assert.match(r.stderr, /Another maetajak deploy/);
+    // A leaked MAETAJAK_DEPLOY_LOCK_HELD without the descriptor is not trusted.
+    r = run(`${holder}acquire_deploy_lock 1; echo acquired`, { MAETAJAK_DEPLOY_LOCK_HELD: '1' });
+    assert.equal(r.status, 1);
+    // A nested script that inherits FD 9 on the held lock proceeds immediately.
+    r = run(`exec 9>"${lock}"; flock 9; MAETAJAK_DEPLOY_LOCK_HELD=1 bash -c 'DEPLOY_LOCK_FILE="${lock}"; ${fn.replace(/'/g, `'"'"'`)}
+acquire_deploy_lock 1; echo nested-ok'`);
+    assert.equal(r.status, 0, r.stderr); assert.match(r.stdout, /nested-ok/);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 

@@ -324,7 +324,7 @@ export function normalizeGatePositions(payload) {
   return positions;
 }
 
-export async function getFuturesPositions({ expectedContracts = [], ...options }) {
+export async function getFuturesPositions({ expectedContracts = [], expectedLegs = [], tolerateUnconfirmed = false, ...options }) {
   // Gate's official API defines `holding=true` as the explicit real/open
   // position query. Omitting it can return an empty list for unified accounts
   // even while the account has an open perpetual position.
@@ -338,8 +338,14 @@ export async function getFuturesPositions({ expectedContracts = [], ...options }
     if (page === 19) throw new GateApiError('포지션 목록이 완전하지 않습니다.', { code: 'POSITIONS_PAGINATION_LIMIT' });
   }
   const positions = normalizeGatePositions(rows);
-  const known = new Set(positions.map((p) => p.contract));
-  const missingContracts = [...new Set(expectedContracts)].filter((c) => !known.has(c));
+  const legKey = (position) => `${position.contract}:${position.positionSide}`;
+  const knownContracts = new Set(positions.map((p) => p.contract));
+  const knownLegs = new Set(positions.map(legKey));
+  // A contract is re-read on its own when the list omits it, or omits one expected hedge leg of it.
+  const missingContracts = [...new Set([
+    ...expectedContracts.filter((contract) => contract && !knownContracts.has(contract)),
+    ...expectedLegs.filter((leg) => leg && !knownLegs.has(leg)).map((leg) => leg.slice(0, leg.lastIndexOf(':'))),
+  ])].filter(Boolean);
   if (positions.length && !missingContracts.length) return positions;
 
   // Some unified accounts return an empty list here even with open positions.
@@ -352,19 +358,40 @@ export async function getFuturesPositions({ expectedContracts = [], ...options }
   const candidates = [...new Set([...missingContracts, ...recent.payload
     .map((trade) => String(trade.contract || ''))
     .filter(Boolean)])];
-  const singles = [];
+  const confirmed = new Map();
+  const unconfirmed = new Set();
   for (const contract of candidates) {
     try {
       const single = await gateRequest({ ...options, path: `${FUTURES_POSITIONS_PATH}/${encodeURIComponent(contract)}` });
-      if (Array.isArray(single.payload)) singles.push(...single.payload);
-      else if (single.payload) singles.push(single.payload);
+      const payload = Array.isArray(single.payload) ? single.payload : single.payload ? [single.payload] : [];
+      confirmed.set(contract, { raw: payload, legs: normalizeGatePositions(payload) });
     } catch (error) {
       const notFound = error instanceof GateApiError
         && (error.status === 404 || String(error.payload?.label || '').toUpperCase() === 'POSITION_NOT_FOUND');
-      if (!notFound) throw error;
+      if (notFound) { confirmed.set(contract, { raw: [], legs: [] }); continue; }
+      // The caller may prefer "unknown for this contract" over failing the whole read (Master cycle).
+      if (tolerateUnconfirmed) { unconfirmed.add(contract); continue; }
+      throw error;
     }
   }
-  return normalizeGatePositions([...rows, ...singles]);
+  // The single-contract read is authoritative for its contract. A list row it contradicts is not
+  // trusted either way: fail, or report the contract as unconfirmed.
+  const merged = rows.filter((row) => !confirmed.has(String(row.contract || '')) && !unconfirmed.has(String(row.contract || '')));
+  for (const [contract, { raw, legs }] of confirmed) {
+    const listed = positions.filter((position) => position.contract === contract);
+    const agrees = listed.every((position) => legs.some((leg) => legKey(leg) === legKey(position) && leg.size === position.size));
+    if (!agrees) {
+      if (!tolerateUnconfirmed) {
+        throw new GateApiError('포지션 목록과 개별 조회 결과가 다릅니다.', { code: 'POSITIONS_INCONSISTENT' });
+      }
+      unconfirmed.add(contract);
+      continue;
+    }
+    merged.push(...raw);
+  }
+  const result = normalizeGatePositions(merged);
+  if (unconfirmed.size) Object.defineProperty(result, 'unconfirmedContracts', { value: [...unconfirmed].sort(), enumerable: false });
+  return result;
 }
 
 export async function setFuturesPositionMode({ positionMode = 'dual', ...options }) {
