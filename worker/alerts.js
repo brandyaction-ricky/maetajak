@@ -23,7 +23,7 @@ const EVENT_MESSAGES = {
   COPY_FILL_OBSERVATION_STALE: { title: '체결 반영 확인 지연', state: '해당 회원 주문 보류', description: '체결된 주문이 5분 넘게 실제 포지션과 일치하지 않아 해당 회원의 추가 주문이 막혀 있습니다.', action: '회원의 수동 매매·TP/SL·강제청산 여부를 확인하고 원장을 점검해 주세요.' },
   COPY_ORDER_UNRESOLVED: { title: '주문 결과 미확정 지속', state: '해당 회원 주문 보류', description: '거래소에서 주문을 찾지 못했지만 포지션이 계획 시점과 달라 자동으로 정리할 수 없습니다.', action: '해당 종목의 체결 내역과 포지션을 직접 확인해 주세요.' },
   MASTER_POSITION_UNCONFIRMED: { title: '마스터 포지션 확인 불가', state: '해당 종목 회원 주문 보류', description: 'Gate가 이 종목의 마스터 포지션을 1분 넘게 확인해 주지 않아, 이 종목의 회원 주문과 기준 갱신을 멈췄습니다.', action: 'Gate 상태와 해당 종목(상장폐지·점검 등)을 확인해 주세요. 확인되면 자동으로 다시 따라갑니다.' },
-  MEMBER_REDUCED_COPY_POSITION: { title: '회원이 카피분까지 매도', state: '해당 종목 카피 중지', description: '회원이 이 종목을 개인 보유분보다 많이 팔아 플랫폼 카피분까지 줄었습니다. 판 수량을 다시 사지 않도록 이 종목의 카피를 멈췄습니다. 다른 종목은 계속 따라갑니다.', action: '남은 카피 수량은 플랫폼 카피분입니다. 마스터가 이 종목을 정리해도 자동으로 따라 팔지 않으니 회원과 확인하고, 다시 따라가려면 회원 카피 재개를 요청하세요.' },
+  MEMBER_REDUCED_COPY_POSITION: { title: '회원이 카피분까지 매도', state: '해당 종목 카피 중지', description: '회원이 이 종목을 개인 보유분보다 많이 팔아 플랫폼 카피분까지 줄었습니다. 판 수량을 다시 사지 않도록 이 종목의 카피를 멈췄습니다. 다른 종목은 계속 따라갑니다.', action: '남은 카피 수량은 플랫폼 카피분이지만, 마스터가 이 종목을 정리해도 자동으로 따라 팔지 않습니다. 회원과 확인해 주세요. 다시 따라가려면 회원 카피 재개를 요청하세요(마스터가 이미 이 종목을 정리했다면 재개 전에 회원이 남은 수량을 직접 정리해야 합니다).' },
   AUTO_DEPLOY_RECOVERY_DRY_RUN: { title: '워커 중지 감지 · 자동 복구', state: 'DRY_RUN으로 재기동 (LIVE 해제)', description: 'LIVE 설정인데 워커 서비스가 멈춰 있어 안전 모드(DRY_RUN)로 다시 띄웁니다.', action: '원인을 확인한 뒤 LIVE 재활성화 절차를 진행해 주세요. 의도한 중지라면 /etc/maetajak/maintenance 파일을 먼저 만들어 주세요.' },
   AUTO_DEPLOY_PENDING_LIVE: { title: '워커 업데이트 대기', state: 'LIVE 유지 · 자동 배포 보류', description: '실거래 중이라 새 워커 코드를 자동으로 재배포하지 않았습니다.', action: '점검 가능한 시간에 수동 배포 절차(DRY_RUN 배포 → LIVE 재활성화)로 반영해 주세요.' },
 };

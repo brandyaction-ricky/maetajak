@@ -15,6 +15,8 @@ const proof = () => one('select status,reason,protected_positions,copy_positions
 const anchors = async () => (await db.query(`select contract,position_side,resume_version,master_copyable_size::float8 master_copyable_size,
   target_size::float8 target_size,protected_member_size::float8 protected_member_size,lock_reason,observed_at
   from private.copy_target_anchors`)).rows;
+const anchors2 = async () => (await db.query(`select contract,position_side,resume_version,master_copyable_size::float8 master_copyable_size,
+  target_size::float8 target_size,protected_member_size::float8 protected_member_size,lock_reason from private.copy_target_anchors`)).rows;
 const session = async () => (await one('select public.get_copy_resume_context() c')).c
   .find((s) => s.trading_account_id === ids.member);
 
@@ -147,15 +149,45 @@ test('K4: an unexplained leg held by an older worker (MANUAL_OVERRIDE) is still 
   assert.deepEqual([p.status, btc(p.protected_positions)], ['CONFIRMED', 12]);
 });
 
-test('K4: a change an older worker did not latch (it could still trade the leg) keeps the UNKNOWN latch', async () => {
-  await start(20);
-  await cycle(20, 0);
+test('K4: a change an older worker did not notice is still attributed; its buy-back plan is cancelled and never repeats', async () => {
+  const { held, copy } = await ownPlusCopy();
   await sleep(15);
-  // Worker 0.5.0 after a PAUSED cycle skips change detection: the leg is not latched and could be bought back.
-  await record(db, cyclePayload({ masterSize: 0, actualSize: 12, member: {
-    member_position_baselines: [{ contract: 'BTC_USDT', position_side: 'LONG', size: 12 }],
-    previous_states: [{ contract: 'BTC_USDT', position_side: 'LONG', actual_size: 20, state: 'PAUSED' }] } }));
-  assert.equal((await proof()).status, 'UNKNOWN');
+  // Worker 0.5.0 after a PAUSED cycle skips change detection and plans to buy the member's own sale back.
+  const legacy = (actual, previous, own) => cyclePayload({ masterSize: 40, actualSize: actual, member: {
+    member_position_baselines: [{ contract: 'BTC_USDT', position_side: 'LONG', size: own }], target_anchors: anchors,
+    previous_states: [{ contract: 'BTC_USDT', position_side: 'LONG', actual_size: previous, state: 'PAUSED' }] } });
+  const anchors = await (async () => (await db.query(`select contract,position_side,resume_version,master_copyable_size::float8 master_copyable_size,
+    target_size::float8 target_size,protected_member_size::float8 protected_member_size,lock_reason from private.copy_target_anchors`)).rows)();
+  let payload = legacy(held - 3, held, 5);
+  assert.ok(payload.members[0].planned_positions[0].intent, 'the old worker plans a buy-back');
+  await record(db, payload);
+  const p = await proof();
+  assert.deepEqual([p.status, btc(p.protected_positions), btc(p.copy_positions)], ['CONFIRMED', 2, copy]);
+  assert.equal(Number((await one("select count(*) n from private.copy_order_intents where status in ('PLANNED','QUEUED')")).n), 0);
+  assert.equal((await db.query('select * from public.claim_copy_order_intents(10)')).rows.length, 0);
+  const [a] = await anchors2();
+  assert.deepEqual([a.target_size, a.protected_member_size], [copy + 2, 2], 'the anchor carries the new own quantity');
+  // The next 0.5.0 cycle reads own 2 from the baseline and the rewritten anchor: nothing to buy.
+  await sleep(15);
+  payload = cyclePayload({ masterSize: 40, actualSize: held - 3, member: {
+    member_position_baselines: (await one('select member_positions from private.member_copy_onboarding_baselines')).member_positions,
+    target_anchors: await anchors2(),
+    previous_states: [{ contract: 'BTC_USDT', position_side: 'LONG', actual_size: held - 3, state: 'SYNCED' }] } });
+  assert.equal(payload.members[0].planned_positions[0].intent, undefined);
+});
+
+test('K4: a member trade right after a platform fill on the same leg is settled once the fill is 30 s old', async () => {
+  await start(5);
+  await cycle(5, 40);
+  const delta = await fillNext();
+  await db.exec("update private.copy_order_intents set observation_confirmed_at=null, position_match_at=null");
+  // The member sells 2 of their own before the fill was confirmed: the exact confirmation never matches.
+  await cycle(5 + delta - 2, 40, 5);
+  assert.equal((await proof()).status, 'CONFIRMED');
+  await db.exec("update private.copy_order_intents set resolved_at=now()-interval '31 seconds' where filled_size<>0");
+  await cycle(5 + delta - 2, 40, 5 + delta - 2);
+  const p = await proof();
+  assert.deepEqual([p.status, btc(p.protected_positions), btc(p.copy_positions)], ['CONFIRMED', 3, delta]);
 });
 
 test('K4: while the member is not copying (resume required) their own changes are recorded', async () => {

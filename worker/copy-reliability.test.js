@@ -369,12 +369,25 @@ test('K4: a leg whose COPY the member sold stays locked whatever the Master does
   }
 });
 
-test('K4: a leg an older worker latched (MANUAL_OVERRIDE) trades again once the ledger explains it', () => {
+test('K4: a leg latched MANUAL_OVERRIDE stays latched until the member resumes (no catch-up buying)', () => {
   const p = plan({ masterSize: 80, actual: 25, anchors: ownAnchor(40, 30, 20),
     extra: { member_position_baselines: ownLeg(15), ledger_positions: ownLeg(25),
       previous_states: [{ contract: 'BTC_USDT', position_side: 'LONG', actual_size: 25, state: 'MANUAL_OVERRIDE' }] } });
-  assert.notEqual(p.state, 'MANUAL_OVERRIDE');
-  assert.ok(p.target_size > 25, 'the Master increase is copied on top of COPY + own');
+  assert.equal(p.state, 'MANUAL_OVERRIDE');
+  assert.equal(p.intent, undefined);
+  assert.equal(p.anchor_update_allowed, false);
+});
+
+test('K4: a member buying more of their own never makes the platform sell COPY to meet a risk cap', () => {
+  // Cap 30% of 5,000 = 1,500 USDT = 30 contracts at 50 USDT each. Resume: 10 own; COPY 10. The member buys 25 more own.
+  const base = { masterSize: 40, maxRatio: 30, anchors: ownAnchor(40, 20, 10) };
+  const p = plan({ ...base, actual: 45, extra: { member_position_baselines: ownLeg(35), ledger_positions: ownLeg(45),
+    resume_member_positions: ownLeg(10) } });
+  assert.equal(p.intent, undefined, `no sale of COPY (target ${p.target_size})`);
+  assert.equal(p.target_size, 45);
+  // Without the resume reference (older DB) the old behaviour applies: the cap squeezes COPY.
+  const old = plan({ ...base, actual: 45, extra: { member_position_baselines: ownLeg(35), ledger_positions: ownLeg(45) } });
+  assert.ok(old.target_size < 45);
 });
 
 test('K4: without a ledger (older DB) a manual change still latches MANUAL_OVERRIDE as before', () => {

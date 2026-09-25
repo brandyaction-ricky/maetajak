@@ -1199,6 +1199,9 @@ function executionReasonLabel(row) {
   const labels = {
     MANUAL_OVERRIDE: '회원이 직접 포지션을 변경하여 자동 주문이 차단되었습니다.',
     MANUAL_OVERRIDE_DETECTED: '회원이 직접 포지션을 변경하여 자동 주문이 차단되었습니다.',
+    MEMBER_POSITION_RECONCILING: '회원이 직접 매매한 수량을 개인 보유분으로 반영하는 중입니다(해당 종목 잠시 보류).',
+    MEMBER_REDUCED_COPY_POSITION: '회원이 카피분까지 매도해 이 종목의 카피를 멈췄습니다. 다시 따라가려면 재개가 필요합니다.',
+    MEMBER_POSITION_CHANGED: '회원이 직접 매매해 전송 전 주문 계획을 취소했습니다(거래소 미전송).',
     BASELINE_INIT_FAILED: '신규 카피 기준선 초기화에 실패했습니다.',
     DUAL_MODE_REQUIRED: '회원 계정에서 양방향 포지션 설정이 필요합니다.',
     DAILY_LOSS_LIMIT: '일일 손실 한도에 도달했습니다.',

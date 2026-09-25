@@ -18,7 +18,8 @@ import {
 import { assertFreshAccount, assertOrderIdentity, assertSubmissionSnapshot, exchangeTradeAlert } from './execution-safety.js';
 
 // Engine plans cancelled before any Gate request; they are not order failures.
-const NEVER_SENT_CANCELLATIONS = new Set(['SUPERSEDED_BY_FRESH_PLAN', 'SUPERSEDED_BY_RESUME', 'PRE_LIVE_INTENT_DISCARDED']);
+const NEVER_SENT_CANCELLATIONS = new Set(['SUPERSEDED_BY_FRESH_PLAN', 'SUPERSEDED_BY_RESUME', 'PRE_LIVE_INTENT_DISCARDED',
+  'MEMBER_POSITION_CHANGED']);
 
 export function safeError(error, stage = 'WORKER') {
   const safeStage = String(stage).toUpperCase().replace(/[^A-Z0-9_]/g, '_').slice(0, 40) || 'WORKER';
@@ -159,6 +160,10 @@ export function planMemberPositions({ cycleId, system, master, member, contracts
   // K4: the ownership ledger (member's own + COPY + confirmed fills not yet journaled). When present, a leg
   // it does not explain was changed by the member (or is still settling): hold it until the DB has
   // attributed the change, instead of latching MANUAL_OVERRIDE. Absent (older DB, legacy account): as before.
+  // Own quantity at resume: growth of the member's own holding after resume is theirs and never makes the
+  // platform sell COPY to satisfy a risk cap (K4).
+  const resumeOwn = Array.isArray(member.resume_member_positions)
+    ? new Map(member.resume_member_positions.map((position) => [positionKey(position), Number(position.size || 0)])) : null;
   const ledger = Array.isArray(member.ledger_positions)
     ? new Map(member.ledger_positions.map((position) => [positionKey(position), Number(position.size || 0)])) : null;
   // Contracts whose Master legs Gate could not confirm this cycle: no order, no anchor move.
@@ -221,8 +226,14 @@ export function planMemberPositions({ cycleId, system, master, member, contracts
       throw new GateApiError('계약 가격 또는 단위를 확인할 수 없습니다.', { code: 'ORDER_RISK_METADATA_INVALID' });
     }
     const protectedMemberSize = memberPositionBaselines.get(symbol) || 0;
+    const resumeOwnSize = resumeOwn ? (resumeOwn.get(symbol) || 0) : protectedMemberSize;
+    const capOwnSize = Math.sign(resumeOwnSize) === Math.sign(protectedMemberSize)
+      ? Math.sign(protectedMemberSize) * Math.min(Math.abs(protectedMemberSize), Math.abs(resumeOwnSize)) : 0;
+    const ownAboveCap = protectedMemberSize - capOwnSize;
+    const capWithoutOwnGrowth = (params) => capLockedTargetToCurrentRisk({
+      ...params, lockedTargetSize: params.lockedTargetSize - ownAboveCap, protectedSize: capOwnSize }) + ownAboveCap;
     const protectedRatio = member.total > 0
-      ? Math.abs(protectedMemberSize) * (memberPosition.markPrice || markPrice) * contractInfo.quantoMultiplier / member.total * 100 : 0;
+      ? Math.abs(capOwnSize) * (memberPosition.markPrice || markPrice) * contractInfo.quantoMultiplier / member.total * 100 : 0;
     // Proportional sizing only; the member risk caps below keep using `member.total`.
     const masterEquity = sizingEquity(master);
     const memberEquity = sizingEquity(member);
@@ -271,8 +282,8 @@ export function planMemberPositions({ cycleId, system, master, member, contracts
         copyRatio: member.copy_ratio, maxPositionRatio: Math.max(0, member.max_position_ratio - protectedRatio), sizeStep: contractInfo.sizeStep,
       });
       const lockedTargetSize = anchorTargetSize + incremental.targetSize;
-      target.targetSize = capLockedTargetToCurrentRisk({
-        lockedTargetSize, protectedSize: protectedMemberSize,
+      target.targetSize = capWithoutOwnGrowth({
+        lockedTargetSize,
         memberEquity: member.total, memberMarkPrice: memberPosition.markPrice || markPrice,
         memberQuantoMultiplier: contractInfo.quantoMultiplier,
         maxPositionRatio: member.max_position_ratio, sizeStep: contractInfo.sizeStep,
@@ -308,9 +319,8 @@ export function planMemberPositions({ cycleId, system, master, member, contracts
           sizeStep: contractInfo.sizeStep,
         })
         : anchorTargetSize;
-      target.targetSize = capLockedTargetToCurrentRisk({
+      target.targetSize = capWithoutOwnGrowth({
         lockedTargetSize,
-        protectedSize: protectedMemberSize,
         memberEquity: member.total,
         memberMarkPrice: memberPosition.markPrice || markPrice,
         memberQuantoMultiplier: contractInfo.quantoMultiplier,
@@ -387,8 +397,10 @@ export function planMemberPositions({ cycleId, system, master, member, contracts
         sum + Math.abs(position.size) * (position.markPrice || price) * contractInfo.quantoMultiplier, 0);
       const availableSymbolNotional = Math.max(0, member.total * member.max_position_ratio / 100
         - otherLegNotional - (reservedNotional.get(contract) || 0));
-      const grossCapped = Math.sign(target.targetSize) * Math.max(Math.abs(protectedMemberSize),
-        Math.min(Math.abs(target.targetSize), Math.abs(roundTowardZeroToStep(availableSymbolNotional / unitNotional, contractInfo.sizeStep))));
+      const ownGrowth = Math.sign(ownAboveCap) === Math.sign(target.targetSize) ? Math.abs(ownAboveCap) : 0;
+      const grossCapped = Math.sign(target.targetSize) * (Math.max(Math.abs(capOwnSize),
+        Math.min(Math.abs(target.targetSize) - ownGrowth,
+          Math.abs(roundTowardZeroToStep(availableSymbolNotional / unitNotional, contractInfo.sizeStep)))) + ownGrowth);
       if (Math.abs(grossCapped) < Math.abs(target.targetSize)) {
         target.targetSize = grossCapped;
         budgetReason = 'SYMBOL_GROSS_EXPOSURE_LIMIT';
@@ -422,8 +434,7 @@ export function planMemberPositions({ cycleId, system, master, member, contracts
         || ((Boolean(member.copy_paused) || protectedOppositePosition) && !member.close_positions_requested),
       // A member who asked to stop and close wants every leg closed, including one changed outside
       // the platform. Close orders are reduce-only to zero and re-read before submission.
-      manualOverride: !member.close_positions_requested
-        && (manual.detected || (ledger === null && previous?.state === 'MANUAL_OVERRIDE')), reduceOnly,
+      manualOverride: !member.close_positions_requested && (manual.detected || previous?.state === 'MANUAL_OVERRIDE'), reduceOnly,
       targetSize: target.targetSize, actualSize: memberPosition.size, driftToleranceSize: contractInfo.sizeStep,
     });
     const delta = calculateDeltaOrder({ state, targetSize: target.targetSize, actualSize: memberPosition.size, sizeStep: contractInfo.sizeStep });
@@ -453,7 +464,7 @@ export function planMemberPositions({ cycleId, system, master, member, contracts
       target_resume_version: member.resume_version || null,
       target_lock_reason: target.targetLockReason,
       anchor_update_allowed: !hasUnresolvedOrder && !hasOpenExchangeOrder && !member.resume_required
-        && !manual.detected && !reversalCloseRequired && (ledger !== null || previous?.state !== 'MANUAL_OVERRIDE')
+        && !manual.detected && !reversalCloseRequired && previous?.state !== 'MANUAL_OVERRIDE'
         && !masterUnconfirmed && !ledgerUnexplained,
       ...(anchorMasterCopyableSize == null ? {} : { anchor_master_copyable_size: anchorMasterCopyableSize }),
       sizing_reason: budgetReason,
@@ -952,6 +963,8 @@ export class TradingRunner {
           }
         }
         member.ledger_positions = !closing && Array.isArray(session?.ledger_positions) ? session.ledger_positions : null;
+        member.resume_member_positions = !closing && Array.isArray(session?.resume_member_positions)
+          ? session.resume_member_positions : null;
         memberStage = 'MEMBER_PLAN';
         const plannedPositions = planMemberPositions({
           cycleId,

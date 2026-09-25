@@ -151,6 +151,13 @@ begin
     return new;
   end if;
   if proof.status='UNKNOWN' or new.observed_at<=proof.observed_at then return new; end if;
+  -- K4: a member may trade the same leg right after a platform fill, so the worker's exact "held = planned +
+  -- filled" confirmation may never match. A terminal fill of this generation is included in any verified read
+  -- that started 30 s after it resolved; the rest of the difference is then the member's own change.
+  update private.copy_order_intents i set observation_confirmed_at=new.verified_at
+    where i.trading_account_id=new.trading_account_id and i.filled_size<>0 and i.resume_version=proof.resume_version
+      and i.observation_confirmed_at is null and (i.exchange_terminal or i.status in ('FILLED','CANCELLED','REJECTED'))
+      and i.resolved_at<new.observed_at-interval '30 seconds';
   -- A pending/ambiguous fill is not failure and is not reusable ownership.
   if exists(select 1 from private.copy_order_intents i where i.trading_account_id=new.trading_account_id
     and ((i.submit_attempts>0 and i.status in ('SUBMITTING','ACKNOWLEDGED','UNKNOWN','PARTIALLY_FILLED') and not i.exchange_terminal)
@@ -228,14 +235,6 @@ begin
     if exists(select 1 from jsonb_array_elements(changes) x where (x->>'reduced_copy')::boolean
         and not exists(select 1 from private.copy_target_anchors t where t.trading_account_id=new.trading_account_id
           and t.contract=x->>'contract' and t.position_side=x->>'position_side' and t.resume_version=proof.resume_version))
-      -- Attribute only a leg that no worker can trade on the old own quantity: this cycle's worker held it for
-      -- reconciliation (a K4 worker), latched it (MANUAL_OVERRIDE, worker 0.5.0 never trades it again), or the
-      -- member is not copying (resume required). Otherwise (0.5.0 missed the change) keep the UNKNOWN latch.
-      or exists(select 1 from jsonb_array_elements(changes) x where not exists(select 1 from public.copy_position_states ps
-        where ps.trading_account_id=new.trading_account_id and ps.contract=x->>'contract'
-          and ps.position_side=x->>'position_side' and ps.last_cycle_id=new.cycle_id
-          and (ps.state='MANUAL_OVERRIDE'
-            or ps.pause_reason in ('MEMBER_POSITION_RECONCILING','MEMBER_RESUME_VALIDATION_REQUIRED'))))
       or private.copy_position_sum(protected_next||copy_next) is distinct from actual then
       update private.copy_ownership_checkpoints set status='UNKNOWN',reason='OBSERVED_OWNERSHIP_MISMATCH',revision=revision+1
         where trading_account_id=new.trading_account_id;
@@ -246,11 +245,23 @@ begin
         where trading_account_id=new.trading_account_id;
       return new;
     end if;
-    update private.copy_target_anchors t set target_size=(x->>'copy_after')::numeric,protected_member_size=0,
-        lock_reason='MEMBER_REDUCED_COPY_POSITION',observed_at=greatest(t.observed_at,new.observed_at),updated_at=now()
+    -- Every anchor of a changed leg carries the member's new own quantity (its COPY decision is unchanged), so
+    -- no worker version targets the old own quantity: 0.5.0 uses target_size as is, K4 workers rebase it.
+    update private.copy_target_anchors t set
+        target_size=case when (x->>'reduced_copy')::boolean then (x->>'copy_after')::numeric
+          else t.target_size+(x->>'protected_after')::numeric-(x->>'protected_before')::numeric end,
+        protected_member_size=(x->>'protected_after')::numeric,
+        lock_reason=case when (x->>'reduced_copy')::boolean then 'MEMBER_REDUCED_COPY_POSITION' else t.lock_reason end,
+        observed_at=greatest(t.observed_at,new.observed_at),updated_at=now()
       from jsonb_array_elements(changes) x
-      where (x->>'reduced_copy')::boolean and t.trading_account_id=new.trading_account_id
+      where t.trading_account_id=new.trading_account_id
         and t.contract=x->>'contract' and t.position_side=x->>'position_side' and t.resume_version=proof.resume_version;
+    -- A plan made this cycle against the old own quantity (worker 0.5.0 may not have noticed the change) never
+    -- reaches Gate.
+    update private.copy_order_intents i set status='CANCELLED',last_error_code='MEMBER_POSITION_CHANGED',updated_at=now()
+      from jsonb_array_elements(changes) x
+      where i.trading_account_id=new.trading_account_id and i.contract=x->>'contract' and i.position_side=x->>'position_side'
+        and i.status in ('PLANNED','QUEUED') and i.submit_attempts=0;
     -- The worker reads protected sizes from the onboarding baseline; keep it equal to the ledger.
     update private.member_copy_onboarding_baselines set member_positions=protected_next,updated_at=now()
       where trading_account_id=new.trading_account_id;
@@ -281,6 +292,8 @@ begin
   perform private.require_copy_worker_role();
   return (select coalesce(jsonb_agg(s||jsonb_build_object('copy_positions',coalesce(b.copy_positions,'[]'),
     'ownership_status',p.status,
+    'resume_member_positions',(select r.member_positions from private.copy_resume_sessions r
+      where r.trading_account_id=(s->>'trading_account_id')::uuid and r.version::text=s->>'version'),
     'ledger_protected_positions',case when p.status='CONFIRMED' and p.resume_version::text=s->>'version'
       then p.protected_positions end,
     'ledger_positions',case when p.status='CONFIRMED' and p.resume_version::text=s->>'version'
