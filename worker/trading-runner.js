@@ -173,6 +173,14 @@ export function planMemberPositions({ cycleId, system, master, member, contracts
   };
   const ledger = Array.isArray(member.ledger_positions)
     ? new Map(member.ledger_positions.map((position) => [positionKey(position), Number(position.size || 0)])) : null;
+  // Until the DB has attributed a member change, both legs of that contract are held: the other leg's caps
+  // would otherwise count the member's new own holding as exposure and sell COPY.
+  const unexplainedContracts = new Set();
+  if (ledger) {
+    for (const key of new Set([...memberPositions.keys(), ...ledger.keys()])) {
+      if (Number(memberPositions.get(key)?.size || 0) !== (ledger.get(key) || 0)) unexplainedContracts.add(parsePositionKey(key).contract);
+    }
+  }
   // Contracts whose Master legs Gate could not confirm this cycle: no order, no anchor move.
   const unconfirmedMasterContracts = new Set(master.unconfirmed_contracts || []);
   const symbols = new Set([...masterPositions.keys(), ...memberPositions.keys(), ...previousStates.keys(), ...masterBaselines.keys(), ...memberPositionBaselines.keys(), ...targetAnchors.keys(), ...(ledger ? ledger.keys() : [])]);
@@ -262,7 +270,8 @@ export function planMemberPositions({ cycleId, system, master, member, contracts
     // A member sale that reached COPY locks the leg until the member resumes (set by the DB).
     const copyReducedByMember = anchorMatchesResume && anchor.lock_reason === 'MEMBER_REDUCED_COPY_POSITION';
     const ledgerSize = ledger ? (ledger.get(symbol) || 0) : null;
-    const ledgerUnexplained = ledger !== null && !member.close_positions_requested && memberPosition.size !== ledgerSize;
+    const ledgerUnexplained = ledger !== null && !member.close_positions_requested
+      && (memberPosition.size !== ledgerSize || unexplainedContracts.has(contract));
     const masterQuantityUnchanged = anchorMatchesResume
       && Number(anchor.master_copyable_size) === Number(masterPosition.size);
     const masterQuantityReduced = anchorMatchesResume

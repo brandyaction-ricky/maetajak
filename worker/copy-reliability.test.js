@@ -432,3 +432,21 @@ test('K4 (re-review): an own position opened by hand on the opposite leg never m
   assert.equal(p.intent, undefined, `no COPY sale (target ${p.target_size})`);
   assert.equal(p.target_size, 10);
 });
+
+test('K4 (re-review 2): while an opposite-leg own position is not yet attributed, the COPY leg is held too', () => {
+  const p = planMemberPositions({
+    cycleId: 'c-3', system: { emergency_halted: false }, contracts,
+    master: { total: 10_000, positions: [pos(20)] },
+    member: { user_id: 'u', total: 5_000, available: 5_000, copy_ratio: 100, max_position_ratio: 30, resume_version: 'r1',
+      positions: [pos(10), pos(-25)], positionMode: 'dual', member_position_baselines: [], resume_member_positions: [],
+      ledger_positions: [{ contract: 'BTC_USDT', position_side: 'LONG', size: 10 }],
+      previous_states: [{ contract: 'BTC_USDT', position_side: 'LONG', actual_size: 10, state: 'SYNCED' }],
+      target_anchors: [{ contract: 'BTC_USDT', position_side: 'LONG', resume_version: 'r1', master_copyable_size: 20,
+        target_size: 10, protected_member_size: 0, lock_reason: 'MASTER_QUANTITY_UNCHANGED' }] },
+  });
+  const long = p.find((leg) => leg.position_side === 'LONG');
+  assert.equal(long.intent, undefined);
+  assert.equal(long.pause_reason, 'MEMBER_POSITION_RECONCILING');
+  assert.equal(long.anchor_update_allowed, false);
+  assert.equal(p.find((leg) => leg.position_side === 'SHORT').pause_reason, 'MEMBER_POSITION_RECONCILING');
+});
