@@ -263,11 +263,18 @@ export async function getFuturesAccount(options) {
   const crossMarginBalance = Number(payload?.cross_margin_balance || 0);
   const marginMode = Number(payload?.margin_mode || 0);
   let total;
+  // Unified equity already includes unrealised PnL; the classic futures `total` is the wallet
+  // balance without it. Sizing must compare both accounts on the same basis.
+  let equityIncludesUnrealised = false;
   if (marginMode > 0 || (!(classicTotal > 0) && !(crossMarginBalance > 0))) {
     const unified = await gateRequest({ ...options, path: UNIFIED_ACCOUNT_PATH });
     total = Number(unified.payload?.unified_account_total_equity || 0);
+    equityIncludesUnrealised = true;
   } else {
     total = classicTotal > 0 ? classicTotal : crossMarginBalance;
+    // `cross_margin_balance` is a margin balance (unrealised PnL included); adding the PnL again
+    // would double count it. Only the classic wallet `total` excludes it.
+    equityIncludesUnrealised = !(classicTotal > 0);
   }
   const available = Number(payload?.available ?? payload?.cross_available ?? 0);
   if (!Number.isFinite(total) || !(total > 0) || !Number.isFinite(available) || available < 0
@@ -279,6 +286,7 @@ export async function getFuturesAccount(options) {
     total,
     available,
     unrealisedPnl: Number(payload?.unrealised_pnl ?? payload?.unrealized_pnl ?? payload?.cross_unrealised_pnl ?? 0),
+    equityIncludesUnrealised,
     positionMode: String(payload?.position_mode || (payload?.in_dual_mode ? 'dual' : 'single')),
   };
 }
@@ -316,7 +324,7 @@ export function normalizeGatePositions(payload) {
   return positions;
 }
 
-export async function getFuturesPositions({ expectedContracts = [], ...options }) {
+export async function getFuturesPositions({ expectedContracts = [], expectedLegs = [], tolerateUnconfirmed = false, ...options }) {
   // Gate's official API defines `holding=true` as the explicit real/open
   // position query. Omitting it can return an empty list for unified accounts
   // even while the account has an open perpetual position.
@@ -330,8 +338,14 @@ export async function getFuturesPositions({ expectedContracts = [], ...options }
     if (page === 19) throw new GateApiError('포지션 목록이 완전하지 않습니다.', { code: 'POSITIONS_PAGINATION_LIMIT' });
   }
   const positions = normalizeGatePositions(rows);
-  const known = new Set(positions.map((p) => p.contract));
-  const missingContracts = [...new Set(expectedContracts)].filter((c) => !known.has(c));
+  const legKey = (position) => `${position.contract}:${position.positionSide}`;
+  const knownContracts = new Set(positions.map((p) => p.contract));
+  const knownLegs = new Set(positions.map(legKey));
+  // A contract is re-read on its own when the list omits it, or omits one expected hedge leg of it.
+  const missingContracts = [...new Set([
+    ...expectedContracts.filter((contract) => contract && !knownContracts.has(contract)),
+    ...expectedLegs.filter((leg) => leg && !knownLegs.has(leg)).map((leg) => leg.slice(0, leg.lastIndexOf(':'))),
+  ])].filter(Boolean);
   if (positions.length && !missingContracts.length) return positions;
 
   // Some unified accounts return an empty list here even with open positions.
@@ -344,19 +358,40 @@ export async function getFuturesPositions({ expectedContracts = [], ...options }
   const candidates = [...new Set([...missingContracts, ...recent.payload
     .map((trade) => String(trade.contract || ''))
     .filter(Boolean)])];
-  const singles = [];
+  const confirmed = new Map();
+  const unconfirmed = new Set();
   for (const contract of candidates) {
     try {
       const single = await gateRequest({ ...options, path: `${FUTURES_POSITIONS_PATH}/${encodeURIComponent(contract)}` });
-      if (Array.isArray(single.payload)) singles.push(...single.payload);
-      else if (single.payload) singles.push(single.payload);
+      const payload = Array.isArray(single.payload) ? single.payload : single.payload ? [single.payload] : [];
+      normalizeGatePositions(payload);
+      confirmed.set(contract, payload.map((row) => ({ row, leg: normalizeGatePositions([row])[0] || null })));
     } catch (error) {
       const notFound = error instanceof GateApiError
         && (error.status === 404 || String(error.payload?.label || '').toUpperCase() === 'POSITION_NOT_FOUND');
-      if (!notFound) throw error;
+      if (notFound) { confirmed.set(contract, []); continue; }
+      // The caller may prefer "unknown for this contract" over failing the whole read (Master cycle).
+      if (tolerateUnconfirmed) { unconfirmed.add(contract); continue; }
+      throw error;
     }
   }
-  return normalizeGatePositions([...rows, ...singles]);
+  // The single-contract read only ADDS legs the list omitted; a leg the list shows is kept even if the
+  // single read (which may return one leg in hedge mode) does not repeat it. The same leg with two
+  // different sizes is a contradiction: fail, or report the contract as unconfirmed.
+  const listedByLeg = new Map(positions.map((position) => [legKey(position), position]));
+  const additions = [];
+  for (const [contract, entries] of confirmed) {
+    const conflict = entries.some(({ leg }) => leg && listedByLeg.has(legKey(leg)) && listedByLeg.get(legKey(leg)).size !== leg.size);
+    if (conflict) {
+      if (!tolerateUnconfirmed) throw new GateApiError('포지션 목록과 개별 조회 결과가 다릅니다.', { code: 'POSITIONS_INCONSISTENT' });
+      unconfirmed.add(contract);
+      continue;
+    }
+    additions.push(...entries.filter(({ leg }) => leg && !listedByLeg.has(legKey(leg))).map(({ row }) => row));
+  }
+  const result = normalizeGatePositions([...rows.filter((row) => !unconfirmed.has(String(row.contract || ''))), ...additions]);
+  if (unconfirmed.size) Object.defineProperty(result, 'unconfirmedContracts', { value: [...unconfirmed].sort(), enumerable: false });
+  return result;
 }
 
 export async function setFuturesPositionMode({ positionMode = 'dual', ...options }) {

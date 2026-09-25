@@ -25,11 +25,13 @@ test('foreign symbol, wrong direction, wrong ID, and incorrect reduce-only respo
 test('pre-submit checks reject stale snapshots, insufficient margin, changed positions and open orders', () => {
   const master = observedAccount({positions:[position(40)]});
   for (const account of [observedAccount({available:0}),observedAccount({positions:[position(1)]}),
-    observedAccount({open_orders:[{id:'other',contract:'SOXL_USDT'}]}),observedAccount({observed_started_at:'2020-01-01'})]) {
+    observedAccount({open_orders:[{id:'same',contract:'BTC_USDT'}]}),observedAccount({observed_started_at:'2020-01-01'})]) {
     assert.throws(()=>assertSubmissionSnapshot(job,account,master));
   }
   assert.throws(()=>assertSubmissionSnapshot(job,observedAccount(),observedAccount({positions:[]})),/마스터/);
   assertSubmissionSnapshot(job,observedAccount(),master);
+  // A resting order on another contract cannot change this leg; its margin is already outside `available`.
+  assertSubmissionSnapshot(job,observedAccount({open_orders:[{id:'other',contract:'SOXL_USDT'}]}),master);
   assert.throws(()=>assertSubmissionSnapshot({...job,delta_size:11},observedAccount(),master),/변화량/);
 });
 

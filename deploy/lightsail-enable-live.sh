@@ -14,11 +14,31 @@ if [[ ! -f "${ENV_FILE}" ]]; then
   echo "Worker environment file is missing." >&2
   exit 1
 fi
+readonly DEPLOY_LOCK_FILE="/run/maetajak-deploy.lock"
+# One deploy/activation at a time (the 3-minute auto-deploy timer included). A nested call from a
+# script that already holds the lock (auto-deploy -> this script, promotion -> enable-live) inherits it.
+acquire_deploy_lock() {
+  local wait_seconds="${1:-${DEPLOY_LOCK_WAIT_SECONDS:-900}}"
+  # Inherit only a lock that this process really holds on the lock file (FD 9 from the parent).
+  if [[ "${MAETAJAK_DEPLOY_LOCK_HELD:-}" == "1" && /proc/self/fd/9 -ef "${DEPLOY_LOCK_FILE}" ]] && flock -n 9; then
+    return 0
+  fi
+  exec 9>"${DEPLOY_LOCK_FILE}"
+  if ! flock -w "${wait_seconds}" 9; then
+    echo "Another maetajak deploy or LIVE activation is running (${DEPLOY_LOCK_FILE})." >&2
+    exit 1
+  fi
+  export MAETAJAK_DEPLOY_LOCK_HELD=1
+}
+# Never wait behind another deploy: LIVE must be enabled on the build the operator just checked.
+acquire_deploy_lock 0
+
 if ! grep -Eq '^TRADING_MODE=DRY_RUN$' "${ENV_FILE}" || ! grep -Eq '^RUN_READINESS_CHECK=true$' "${ENV_FILE}"; then
   echo "LIVE activation requires a completed DRY_RUN readiness configuration." >&2
   exit 1
 fi
 
+echo "release=$(git -C "${APP_DIR}" rev-parse --short HEAD 2>/dev/null || echo unknown)"
 read -r -p "Type ENABLE_LIVE_COPY_TRADING to enable real Gate orders: " confirmation
 if [[ "${confirmation}" != "ENABLE_LIVE_COPY_TRADING" ]]; then
   echo "LIVE activation cancelled." >&2

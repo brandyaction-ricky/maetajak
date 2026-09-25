@@ -390,3 +390,66 @@ test('empty member accounts can be switched to Gate dual mode', async () => {
   });
   assert.match(requestedUrl, /\/set_position_mode\?position_mode=dual$/);
 });
+
+// P0-2 (QA 2026-09-24 + review): omissions are confirmed per hedge leg; the single-contract read is
+// authoritative for its contract; a Master read may report an unconfirmed contract instead of failing.
+function positionsFetch(routes) {
+  const requested = [];
+  const fetchImpl = async (url) => {
+    requested.push(new URL(url).pathname);
+    for (const [pattern, reply] of routes) {
+      if (pattern.test(url)) {
+        const { status = 200, body } = typeof reply === 'function' ? reply() : reply;
+        return new Response(JSON.stringify(body), { status });
+      }
+    }
+    throw new Error(`unexpected URL: ${url}`);
+  };
+  return { fetchImpl, requested };
+}
+const dualLeg = (contract, size, mode) => ({ contract, size: String(size), mark_price: '50000', lever: '10', mode });
+
+test('a hedge leg missing from the list is confirmed by the single-contract read without duplicating the other leg', async () => {
+  const { fetchImpl, requested } = positionsFetch([
+    [/\/positions\?holding=true/, { body: [dualLeg('BTC_USDT', -5, 'dual_short')] }],
+    [/\/positions\/BTC_USDT$/, { body: [dualLeg('BTC_USDT', 7, 'dual_long'), dualLeg('BTC_USDT', -5, 'dual_short')] }],
+  ]);
+  const positions = await getFuturesPositions({ apiKey: 'k', secretKey: 's', fetchImpl,
+    expectedLegs: ['BTC_USDT:LONG', 'BTC_USDT:SHORT'] });
+  assert.deepEqual(positions.map((p) => [p.positionSide, p.size]).sort(), [['LONG', 7], ['SHORT', -5]]);
+  assert.ok(requested.some((path) => path.endsWith('/positions/BTC_USDT')));
+});
+
+test('a failed confirmation read throws by default and is reported as unconfirmed in tolerant mode', async () => {
+  const routes = [
+    [/\/positions\?holding=true/, { body: [dualLeg('ETH_USDT', 3, 'dual_long')] }],
+    [/\/positions\/BTC_USDT$/, { status: 429, body: { label: 'TOO_MANY_REQUESTS' } }],
+  ];
+  await assert.rejects(() => getFuturesPositions({ apiKey: 'k', secretKey: 's', fetchImpl: positionsFetch(routes).fetchImpl,
+    expectedContracts: ['BTC_USDT'] }), (error) => error instanceof GateApiError);
+  const positions = await getFuturesPositions({ apiKey: 'k', secretKey: 's', fetchImpl: positionsFetch(routes).fetchImpl,
+    expectedContracts: ['BTC_USDT'], tolerateUnconfirmed: true });
+  assert.deepEqual(positions.map((p) => p.contract), ['ETH_USDT']);
+  assert.deepEqual(positions.unconfirmedContracts, ['BTC_USDT']);
+});
+
+test('the single-contract read only adds omitted legs; the same leg with two sizes is a contradiction', async () => {
+  // Hedge mode may answer with one leg only: a listed leg it does not repeat is kept.
+  const partial = [
+    [/\/positions\?holding=true/, { body: [dualLeg('BTC_USDT', 9, 'dual_long')] }],
+    [/\/positions\/BTC_USDT$/, { body: dualLeg('BTC_USDT', 0, 'dual_short') }],
+  ];
+  const kept = await getFuturesPositions({ apiKey: 'k', secretKey: 's', fetchImpl: positionsFetch(partial).fetchImpl,
+    expectedLegs: ['BTC_USDT:SHORT'] });
+  assert.deepEqual(kept.map((p) => [p.positionSide, p.size]), [['LONG', 9]]);
+  const conflicting = [
+    [/\/positions\?holding=true/, { body: [dualLeg('BTC_USDT', 9, 'dual_long')] }],
+    [/\/positions\/BTC_USDT$/, { body: [dualLeg('BTC_USDT', 4, 'dual_long'), dualLeg('BTC_USDT', -2, 'dual_short')] }],
+  ];
+  await assert.rejects(() => getFuturesPositions({ apiKey: 'k', secretKey: 's', fetchImpl: positionsFetch(conflicting).fetchImpl,
+    expectedLegs: ['BTC_USDT:SHORT'] }), (error) => error.code === 'POSITIONS_INCONSISTENT');
+  const tolerant = await getFuturesPositions({ apiKey: 'k', secretKey: 's', fetchImpl: positionsFetch(conflicting).fetchImpl,
+    expectedLegs: ['BTC_USDT:SHORT'], tolerateUnconfirmed: true });
+  assert.deepEqual(tolerant.map((p) => p.contract), []);
+  assert.deepEqual(tolerant.unconfirmedContracts, ['BTC_USDT']);
+});

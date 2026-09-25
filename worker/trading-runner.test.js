@@ -138,9 +138,14 @@ test('a real Master quantity change releases the target lock', () => {
       target_anchors: [{ contract: 'BTC_USDT', position_side: 'LONG', resume_version: 'resume-1', master_copyable_size: 100, target_size: 30 }],
     },
   });
-  assert.equal(position.target_size, 60);
-  assert.equal(position.intent.delta_size, 30);
-  assert.equal(position.target_lock_reason, 'MASTER_QUANTITY_CHANGED');
+  // P0-1: only the Master's change (+20) is sized at the current ratio (0.5 -> +10). The carried 30
+  // is not re-sized to the new equity ratio, so a Master increase can never become a member sale.
+  assert.equal(position.target_size, 40);
+  assert.equal(position.intent.delta_size, 10);
+  assert.equal(position.intent.reduce_only, false);
+  assert.equal(position.target_lock_reason, 'MASTER_QUANTITY_INCREASED');
+  assert.equal(position.anchor_update_allowed, true);
+  assert.equal('anchor_master_copyable_size' in position, false);
 });
 
 test('an anchor from an old resume generation is ignored', () => {
