@@ -1,7 +1,7 @@
 -- K4 (operator decision 2026-09-25): members manage their own pre-copy holdings by hand while copying
 -- continues. A change the platform journal cannot explain is attributed to the member's own quantity
 -- first instead of latching the whole account UNKNOWN. A sale that reaches COPY locks only that leg.
--- Compatible with worker 0.5.0 (it keeps a changed leg in MANUAL_OVERRIDE, which never trades).
+-- With worker 0.5.0 an ACTIVE member's change keeps the old UNKNOWN latch (0.5.0 cannot honour attribution).
 set lock_timeout = '5s';
 
 do $guard$
