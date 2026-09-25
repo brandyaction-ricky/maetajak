@@ -164,6 +164,13 @@ export function planMemberPositions({ cycleId, system, master, member, contracts
   // platform sell COPY to satisfy a risk cap (K4).
   const resumeOwn = Array.isArray(member.resume_member_positions)
     ? new Map(member.resume_member_positions.map((position) => [positionKey(position), Number(position.size || 0)])) : null;
+  const ownGrowthSince = (key) => {
+    if (!resumeOwn) return 0;
+    const now = memberPositionBaselines.get(key) || 0;
+    const atResume = resumeOwn.get(key) || 0;
+    if (!now) return 0;
+    return Math.sign(atResume) === Math.sign(now) ? Math.max(0, Math.abs(now) - Math.abs(atResume)) : Math.abs(now);
+  };
   const ledger = Array.isArray(member.ledger_positions)
     ? new Map(member.ledger_positions.map((position) => [positionKey(position), Number(position.size || 0)])) : null;
   // Contracts whose Master legs Gate could not confirm this cycle: no order, no anchor move.
@@ -392,9 +399,11 @@ export function planMemberPositions({ cycleId, system, master, member, contracts
       && !member.resume_required && !manual.detected && !reversalCloseRequired && !masterUnconfirmed && !ledgerUnexplained) {
       const price = memberPosition.markPrice || markPrice;
       const unitNotional = price * contractInfo.quantoMultiplier;
+      // The member's own growth since resume on the other leg is theirs too and does not consume COPY budget.
       const otherLegNotional = member.positions.filter((position) => position.contract === contract
         && positionKey(position) !== symbol).reduce((sum, position) =>
-        sum + Math.abs(position.size) * (position.markPrice || price) * contractInfo.quantoMultiplier, 0);
+        sum + Math.max(0, Math.abs(position.size) - ownGrowthSince(positionKey(position)))
+          * (position.markPrice || price) * contractInfo.quantoMultiplier, 0);
       const availableSymbolNotional = Math.max(0, member.total * member.max_position_ratio / 100
         - otherLegNotional - (reservedNotional.get(contract) || 0));
       const ownGrowth = Math.sign(ownAboveCap) === Math.sign(target.targetSize) ? Math.abs(ownAboveCap) : 0;
@@ -472,12 +481,12 @@ export function planMemberPositions({ cycleId, system, master, member, contracts
       master_actual_size: Number(observedMasterPosition.size),
       risk_leverage: riskLeverage, taker_fee_rate: Number(contractInfo.takerFeeRate ?? 0.001),
       baseline_clear_requested: baseline.clearBaseline,
-      pause_reason: member.resume_required ? 'MEMBER_RESUME_VALIDATION_REQUIRED'
-        // The DB attributes a member change only on a leg this worker marked RECONCILING (or latched), so
-        // this reason must win over the other hold reasons below.
-        : manual.detected && copyReducedByMember ? 'MEMBER_REDUCED_COPY_POSITION'
-        : manual.detected ? 'MEMBER_POSITION_CHANGED_OUTSIDE_PLATFORM'
+      // For an ACTIVE member the DB attributes a change only on a leg this worker marked with one of the two
+      // K4 reasons (worker 0.5.0 cannot), so they win over every other hold reason.
+      pause_reason: manual.detected && copyReducedByMember ? 'MEMBER_REDUCED_COPY_POSITION'
         : ledgerUnexplained ? 'MEMBER_POSITION_RECONCILING'
+        : member.resume_required ? 'MEMBER_RESUME_VALIDATION_REQUIRED'
+        : manual.detected ? 'MEMBER_POSITION_CHANGED_OUTSIDE_PLATFORM'
         : masterUnconfirmed ? 'MASTER_POSITION_UNCONFIRMED'
         : reversalCloseRequired ? 'COPY_REVERSAL_CLOSE_REQUIRED'
         : hasUnresolvedOrder ? 'UNRESOLVED_PLATFORM_ORDER'

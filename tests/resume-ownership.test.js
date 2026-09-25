@@ -166,9 +166,13 @@ for (const [label, change, expected] of [
 test('K4: a member sale of COPY stays sold even if the member buys the quantity back (the purchase is their own)', async () => {
   const { runner, exchange } = await entered();
   exchange.memberSize = 7; await runner.syncOnce();
+  await db.exec("update private.copy_ownership_checkpoints set pending_member_change_at=pending_member_change_at-interval '3 seconds', observed_at=observed_at-interval '3 seconds'");
+  await runner.syncOnce();
   let proof = await one('select status,protected_positions,copy_positions from private.copy_ownership_checkpoints');
   assert.deepEqual([proof.status, proof.protected_positions, proof.copy_positions], ['CONFIRMED', [], resumePositions([position(7)])]);
   exchange.memberSize = 10; await runner.syncOnce(); await runner.submitOrders();
+  await db.exec("update private.copy_ownership_checkpoints set pending_member_change_at=pending_member_change_at-interval '3 seconds', observed_at=observed_at-interval '3 seconds'");
+  await runner.syncOnce(); await runner.submitOrders();
   proof = await one('select status,protected_positions,copy_positions from private.copy_ownership_checkpoints');
   assert.deepEqual([proof.status, proof.protected_positions, proof.copy_positions],
     ['CONFIRMED', resumePositions([position(3)]), resumePositions([position(7)])]);

@@ -161,6 +161,8 @@ test('manual member changes remain protected after historical fills confirm', as
   assert.equal(exchange.memberSize, 6);
   exchange.memberSize = 7; // the member buys 1 contract of their own
   await r.syncOnce(); await r.submitOrders();
+  await db.exec("update private.copy_ownership_checkpoints set pending_member_change_at=pending_member_change_at-interval '3 seconds', observed_at=observed_at-interval '3 seconds'");
+  await r.syncOnce(); await r.submitOrders(); // a second read >= 2 s later attributes it
   assert.equal(exchange.posts, 1);
   // K4: the unexplained leg is held while the DB attributes it to the member's own quantity.
   assert.equal((await one('select pause_reason from public.copy_position_states')).pause_reason, 'MEMBER_POSITION_RECONCILING');

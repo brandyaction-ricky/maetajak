@@ -19,6 +19,11 @@ begin
   end loop;
 end $guard$;
 
+-- A member change is attributed only after the same holdings were read twice (>= 2 s apart): one lagging Gate
+-- read must not relabel COPY as the member's own or lock a leg.
+alter table private.copy_ownership_checkpoints add column if not exists pending_member_change jsonb;
+alter table private.copy_ownership_checkpoints add column if not exists pending_member_change_at timestamptz;
+
 -- Base: 20260924162948 (md5 644f7d03). Only the normal (non-CLOSING) branch's final block changes.
 create or replace function private.observe_copy_ownership()
 returns trigger language plpgsql security definer set search_path=pg_catalog as $$
@@ -235,13 +240,32 @@ begin
     if exists(select 1 from jsonb_array_elements(changes) x where (x->>'reduced_copy')::boolean
         and not exists(select 1 from private.copy_target_anchors t where t.trading_account_id=new.trading_account_id
           and t.contract=x->>'contract' and t.position_side=x->>'position_side' and t.resume_version=proof.resume_version))
-      or private.copy_position_sum(protected_next||copy_next) is distinct from actual then
+      or private.copy_position_sum(protected_next||copy_next) is distinct from actual
+      -- While the member is copying, only a K4 worker (which marked every changed leg this cycle) targets the
+      -- ledger's own quantity and excludes own growth from its risk caps. Worker 0.5.0 does not: keep its latch.
+      or (exists(select 1 from private.copy_resume_sessions r where r.trading_account_id=new.trading_account_id
+            and r.state='ACTIVE')
+        and exists(select 1 from jsonb_array_elements(changes) x where not exists(select 1 from public.copy_position_states ps
+          where ps.trading_account_id=new.trading_account_id and ps.contract=x->>'contract'
+            and ps.position_side=x->>'position_side' and ps.last_cycle_id=new.cycle_id
+            and ps.pause_reason in ('MEMBER_POSITION_RECONCILING','MEMBER_REDUCED_COPY_POSITION')))) then
       update private.copy_ownership_checkpoints set status='UNKNOWN',reason='OBSERVED_OWNERSHIP_MISMATCH',revision=revision+1
         where trading_account_id=new.trading_account_id;
       update private.copy_order_intents set status='CANCELLED',last_error_code='COPY_OWNERSHIP_UNKNOWN',updated_at=now()
         where trading_account_id=new.trading_account_id and status in ('PLANNED','QUEUED') and submit_attempts=0;
       update public.copy_position_states set state=case when state='MANUAL_OVERRIDE' then state else 'PAUSED' end,
         pause_reason='COPY_OWNERSHIP_UNKNOWN'
+        where trading_account_id=new.trading_account_id;
+      return new;
+    end if;
+    -- Two reads: the first sighting is only remembered (the worker keeps the leg on hold meanwhile).
+    if proof.pending_member_change is distinct from actual or proof.pending_member_change_at is null
+      or proof.pending_member_change_at<=proof.observed_at
+      or proof.pending_member_change_at>new.observed_at-interval '2 seconds' then
+      update private.copy_ownership_checkpoints set pending_member_change=actual,
+        pending_member_change_at=case when pending_member_change is distinct from actual
+          or pending_member_change_at is null or pending_member_change_at<=observed_at
+          then new.observed_at else pending_member_change_at end
         where trading_account_id=new.trading_account_id;
       return new;
     end if;
@@ -277,6 +301,7 @@ begin
     select id,trading_account_id,resume_version,filled_size,observation_confirmed_at
     from private.copy_order_intents where id=any(applied);
   update private.copy_ownership_checkpoints set copy_positions=copied,protected_positions=protected_next,
+    pending_member_change=null,pending_member_change_at=null,
     reason=case when changes is null or changes='[]'::jsonb then reason else 'MEMBER_CHANGE_ABSORBED' end,
     observed_at=new.observed_at,source_cycle_id=new.cycle_id,revision=revision+1 where trading_account_id=new.trading_account_id;
   return new;
