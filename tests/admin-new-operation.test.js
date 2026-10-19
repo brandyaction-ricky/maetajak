@@ -60,9 +60,10 @@ test('explicit admin action records a separate risk period and stays paused for 
   const current = await one('select * from private.copy_operation_risk');
   assert.equal(Number(current.peak_equity), 1500);
   assert.equal(Number(current.day_start_equity), 1500);
+  // 2026-10-19: every resume (a new operation resumes too) restarts the risk baseline at current equity.
   const raw = await one('select peak_equity,day_start_equity from private.copy_current_accounts where trading_account_id=$1', [ids.member]);
-  assert.equal(Number(raw.peak_equity), 6000);
-  assert.equal(Number(raw.day_start_equity), 6000);
+  assert.equal(Number(raw.peak_equity), 1500);
+  assert.equal(Number(raw.day_start_equity), 1500);
   const p = await one('select copy_paused,member_halted,max_drawdown_pct,daily_loss_limit_pct from public.profiles where id=$1', [ids.user]);
   assert.equal(p.copy_paused, true);
   assert.equal(Number(p.max_drawdown_pct), 20);
@@ -181,11 +182,15 @@ test('period peak advances without rewriting historical start or raw account pea
   assert.equal(Number((await one('select peak_equity from private.copy_operation_risk')).peak_equity), 1800);
 });
 
-test('ordinary resume never creates a new operation or resets existing history', async () => {
+test('ordinary resume never creates a new operation; it restarts the risk baseline at current equity', async () => {
   await db.query("select public.set_member_copy_control($1,'RESUME','TEST_ONLY')", [ids.user]);
   assert.equal(await count('private.copy_operation_history'), 0);
   assert.equal(await count('private.copy_operation_risk'), 0);
-  assert.equal(Number((await one('select peak_equity from private.copy_current_accounts where trading_account_id=$1', [ids.member])).peak_equity), 6000);
+  // 2026-10-19 (operator decision): RESUME acknowledges past results, so a stale peak cannot
+  // re-trigger reduce-only on the first cycle after resume.
+  const raw = await one('select peak_equity,day_start_equity from private.copy_current_accounts where trading_account_id=$1', [ids.member]);
+  assert.equal(Number(raw.peak_equity), 1500);
+  assert.equal(Number(raw.day_start_equity), 1500);
 });
 
 test('stale snapshots and failed preview leave no partial operation record', async () => {

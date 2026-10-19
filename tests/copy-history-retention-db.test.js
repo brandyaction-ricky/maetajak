@@ -10,6 +10,8 @@ let db;
 before(async () => {
   db = await createVerifiedDatabase();
   await db.exec(readFileSync(MIGRATION, 'utf8'));
+  // The 2026-10-19 version (5 arguments, noise events do not pin cycles) supersedes it.
+  await db.exec(readFileSync('supabase/migrations/20261019060000_copy_event_noise_retention.sql', 'utf8'));
 });
 after(async () => { await db?.close(); });
 beforeEach(async () => { await db.exec('begin'); await seedVerifiedAccount(db); });
@@ -45,7 +47,7 @@ test('referenced cycles are kept regardless of age (intent, event, position stat
   await db.query(`insert into private.copy_order_intents(cycle_id,user_id,trading_account_id,contract,target_size,actual_size_at_plan,
     delta_size,reduce_only,idempotency_key,gate_order_text,status,position_side)
     values($1,$2,$3,'BTC_USDT',1,0,1,false,$4,'t-x','FILLED','LONG')`, [withIntent, ids.user, ids.member, randomUUID()]);
-  await db.query(`insert into public.copy_events(user_id,event_type,severity,cycle_id,safe_payload) values($1,'ERROR','CRITICAL',$2,'{}')`,
+  await db.query(`insert into public.copy_events(user_id,event_type,severity,cycle_id,safe_payload) values($1,'ORDER_FILLED','INFO',$2,'{}')`,
     [ids.user, withEvent]);
   await db.query(`insert into public.copy_position_states(user_id,trading_account_id,contract,state,target_size,actual_size,delta_size,
     copy_ratio,max_position_ratio,drift_tolerance_size,last_cycle_id,position_side)
@@ -70,7 +72,7 @@ test('a snapshot referenced by a surviving cycle is kept; it goes once the cycle
   await snapshot(ids.master, '1 minute'); // latest
   const s = await snapshot(ids.master, '5 days');
   const c = await cycle('5 days', s);
-  await db.query(`insert into public.copy_events(user_id,event_type,severity,cycle_id,safe_payload) values($1,'ERROR','CRITICAL',$2,'{}')`,
+  await db.query(`insert into public.copy_events(user_id,event_type,severity,cycle_id,safe_payload) values($1,'ORDER_FILLED','INFO',$2,'{}')`,
     [ids.user, c]);
   let r = await prune("interval '1 day'", 1000, false, "interval '3 days'");
   assert.equal(r.account_snapshots, 0);

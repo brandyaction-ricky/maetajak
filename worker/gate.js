@@ -539,10 +539,10 @@ export async function getOrderTrades({ orderId, contract, ...options }) {
   throw new GateApiError('체결 목록이 완전하지 않습니다.', { code: 'TRADES_PAGINATION_LIMIT' });
 }
 
-export async function getFuturesAccountBook({ from, to, limit = 1000, offset = 0, ...options }) {
+export async function getFuturesAccountBook({ from, to, limit = 1000, offset = 0, type, ...options }) {
   const { payload } = await gateRequest({
     ...options, path: FUTURES_ACCOUNT_BOOK_PATH,
-    query: { from, to, limit: Math.min(Math.max(Number(limit) || 100, 1), 1000), offset },
+    query: { from, to, limit: Math.min(Math.max(Number(limit) || 100, 1), 1000), offset, ...(type ? { type } : {}) },
   });
   return Array.isArray(payload) ? payload : [];
 }
