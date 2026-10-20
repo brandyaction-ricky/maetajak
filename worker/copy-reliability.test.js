@@ -267,14 +267,19 @@ test('P1-8: resume validation runs after the cycle, one member per call, least r
   assert.deepEqual(seen, ['a', 'b']);
 });
 
-test('K3: resume snapshot blocks on member open orders only', async () => {
+test('K3 + 2026-10-20: resume snapshot blocks only on resting platform orders of the member account', async () => {
   const runner = new TradingRunner({ supabase: {}, mode: 'LIVE' });
   runner.readAccount = async (account) => ({ ...account, positions: [],
     open_orders: account.role === 'MASTER' ? [{ id: 'm1', contract: 'BTC_USDT' }] : [] });
   let snapshot = await runner.readResumeSnapshot({ role: 'MASTER' }, { role: 'MEMBER' });
   assert.deepEqual(snapshot.openOrders, []);
   runner.readAccount = async (account) => ({ ...account, positions: [],
-    open_orders: account.role === 'MEMBER' ? [{ id: 'u1', contract: 'ETH_USDT' }] : [] });
+    open_orders: account.role === 'MEMBER' ? [{ id: 'u1', contract: 'ETH_USDT', text: 'web' }] : [] });
+  snapshot = await runner.readResumeSnapshot({ role: 'MASTER' }, { role: 'MEMBER' });
+  assert.deepEqual(snapshot.openOrders, []);
+  assert.equal(snapshot.member.open_orders.length, 1);
+  runner.readAccount = async (account) => ({ ...account, positions: [],
+    open_orders: account.role === 'MEMBER' ? [{ id: 'p1', contract: 'ETH_USDT', text: 't-mtj-0123456789abcdef' }] : [] });
   snapshot = await runner.readResumeSnapshot({ role: 'MASTER' }, { role: 'MEMBER' });
   assert.equal(snapshot.openOrders.length, 1);
 });

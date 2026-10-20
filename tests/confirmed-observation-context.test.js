@@ -145,14 +145,24 @@ test('terminal IOC partial fill can continue after confirmation and later close 
   assert.equal(exchange.posts, 3);
 });
 
-test('open exchange orders still prevent a new reduction after historical fills confirm', async () => {
+test('a resting platform order still prevents a new reduction after historical fills confirm', async () => {
   const r = faultRunner(db, exchange, { sqlContext: true }).runner;
   await r.syncOnce(); await r.submitOrders(); await confirmFill(r);
-  exchange.openOrders = [{ contract: 'BTC_USDT' }];
+  exchange.openOrders = [{ contract: 'BTC_USDT', text: 't-mtj-0123456789abcdef' }];
   exchange.masterSize = 0;
   await r.syncOnce(); await r.submitOrders();
   assert.equal(exchange.posts, 1);
   assert.equal((await one('select pause_reason from public.copy_position_states')).pause_reason, 'OPEN_EXCHANGE_ORDER');
+});
+
+test('2026-10-20: a member resting order on the leg does not stop the Master reduction', async () => {
+  const r = faultRunner(db, exchange, { sqlContext: true }).runner;
+  await r.syncOnce(); await r.submitOrders(); await confirmFill(r);
+  exchange.openOrders = [{ contract: 'BTC_USDT', text: 'web' }];
+  exchange.masterSize = 0;
+  await r.syncOnce(); await r.submitOrders();
+  assert.equal(exchange.posts, 2);
+  assert.equal(exchange.memberSize, 0);
 });
 
 test('manual member changes remain protected after historical fills confirm', async () => {

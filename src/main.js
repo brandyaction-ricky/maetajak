@@ -1201,6 +1201,7 @@ function executionReasonLabel(row) {
     MANUAL_OVERRIDE_DETECTED: '회원이 직접 포지션을 변경하여 자동 주문이 차단되었습니다.',
     MEMBER_POSITION_RECONCILING: '회원이 직접 매매한 수량을 개인 보유분으로 반영하는 중입니다(해당 종목 잠시 보류).',
     MEMBER_REDUCED_COPY_POSITION: '회원이 카피분까지 매도해 이 종목의 카피를 멈췄습니다. 다시 따라가려면 재개가 필요합니다.',
+    MEMBER_REDUCED_COPY_ACCEPTED: '회원이 카피분까지 매도했습니다. 판 수량은 다시 사지 않고, 이후 마스터 거래는 계속 따라갑니다.',
     MEMBER_POSITION_CHANGED: '회원이 직접 매매해 전송 전 주문 계획을 취소했습니다(거래소 미전송).',
     BASELINE_INIT_FAILED: '신규 카피 기준선 초기화에 실패했습니다.',
     DUAL_MODE_REQUIRED: '회원 계정에서 양방향 포지션 설정이 필요합니다.',
@@ -1278,6 +1279,48 @@ function auditActionLabel(action) {
     MEMBER_PASSWORD_RESET_REQUESTED: '회원 비밀번호 재설정 요청',
   };
   return labels[action] || String(action || '알 수 없는 작업').replaceAll('_', ' ').toLowerCase();
+}
+
+function weightOptions(min, max, selected) {
+  const options = [];
+  for (let value = min; value <= max; value += 10) {
+    options.push(`<option value="${value}"${value === selected ? ' selected' : ''}>${value}%</option>`);
+  }
+  return options.join('');
+}
+
+// Administrator-managed member weights (2026-10-20). The member can still change their own setting; the
+// last saved value applies. Ranges match the member setting and the DB check.
+function renderAdminMemberWeightSettings(member) {
+  const copyRatio = Number(member.copy_ratio ?? 100);
+  const maxPositionRatio = Number(member.max_position_ratio ?? 30);
+  return `<div class="member-control-actions member-weight-settings"><small>비중 관리</small>
+    <div class="actions">
+      <label>카피 비율 <select id="adminMemberCopyRatio" aria-label="카피 비율">${weightOptions(50, 200, copyRatio)}</select></label>
+      <label>종목당 최대 비중 <select id="adminMemberMaxPositionRatio" aria-label="종목당 최대 비중">${weightOptions(20, 50, maxPositionRatio)}</select></label>
+      <button class="btn" type="button" data-member-weight-save>비중 저장</button>
+    </div>
+    <p class="muted">카피는 멈추지 않고 마스터의 다음 진입·증액부터 적용됩니다. 종목당 최대 비중을 낮추면 초과분은 바로 줄고, 높이면 상한 때문에 덜 샀던 종목은 원래 목표까지 채웁니다. 정지 중인 회원은 보유 비중이 새 상한을 넘으면 재개가 거절되니, 재개 후에 낮춰 주세요.</p></div>`;
+}
+
+async function saveAdminMemberWeights() {
+  if (!selectedMemberId || currentProfile?.role !== 'ADMIN') return;
+  const copyRatio = Number(byId('adminMemberCopyRatio')?.value);
+  const maxPositionRatio = Number(byId('adminMemberMaxPositionRatio')?.value);
+  const validCopyRatio = copyRatio >= 50 && copyRatio <= 200 && copyRatio % 10 === 0;
+  const validPositionRatio = maxPositionRatio >= 20 && maxPositionRatio <= 50 && maxPositionRatio % 10 === 0;
+  if (!validCopyRatio || !validPositionRatio) return window.toast('비중 범위를 확인해 주세요.');
+  if (!window.confirm(`카피 비율 ${copyRatio}%, 종목당 최대 비중 ${maxPositionRatio}%로 저장할까요?\n카피는 멈추지 않고 마스터의 다음 진입·증액부터 적용됩니다. 최대 비중을 낮추면 초과분은 바로 줄고, 높이면 상한 때문에 덜 샀던 종목은 원래 목표까지 채웁니다.`)) return;
+  const button = document.querySelector('[data-member-weight-save]');
+  if (button) button.disabled = true;
+  const { error } = await supabase.rpc('admin_update_member_copy_settings', {
+    p_user_id: selectedMemberId, p_copy_ratio: copyRatio, p_max_position_ratio: maxPositionRatio,
+  });
+  if (button) button.disabled = false;
+  if (error) return window.toast('회원 비중을 저장하지 못했습니다.');
+  window.toast('회원 비중을 저장했습니다.');
+  await openMemberDetail(selectedMemberId);
+  await loadAdminMembers();
 }
 
 async function setAdminMemberControl(mode) {
@@ -1799,6 +1842,7 @@ async function openMemberDetail(userId) {
     <div><small>카피 비율</small><b>${Number(member.copy_ratio ?? 100)}%</b></div>
     <div><small>최대 포지션 비중</small><b>${Number(member.max_position_ratio ?? 30)}%</b></div>
     <div><small>가입일</small><b>${member.created_at ? new Date(member.created_at).toLocaleDateString('ko-KR') : '-'}</b></div>
+    ${member.role === 'MEMBER' ? renderAdminMemberWeightSettings(member) : ''}
     ${member.role === 'MEMBER' ? '<div class="member-control-actions"><small>관리자 카피 제어</small><div class="actions"><button class="btn" type="button" data-member-control="PAUSE">일시중지</button><button class="btn" type="button" data-member-control="REDUCE_ONLY">축소 전용</button><button class="btn red" type="button" data-member-control="HALT">중단</button><button class="btn green" type="button" data-member-control="RESUME">재개</button><button class="btn" type="button" data-new-operation-open>새 운용 시작</button></div></div>' : ''}`;
   byId('memberPasswordResetActions')?.classList.toggle('hidden', member.role !== 'MEMBER');
   byId('memberMonthlyPerformance').innerHTML = months.length ? months.map((month) => {
@@ -2002,6 +2046,7 @@ document.addEventListener('click', async (event) => {
   if (disconnectMemberButton) await disconnectAdminMemberGateApi(disconnectMemberButton.dataset.adminDisconnectMember, disconnectMemberButton.dataset.memberName);
   const memberDetailButton = event.target.closest('[data-member-detail]');
   if (memberDetailButton) await openMemberDetail(memberDetailButton.dataset.memberDetail);
+  if (event.target.closest('[data-member-weight-save]')) await saveAdminMemberWeights();
   const memberControlButton = event.target.closest('[data-member-control]');
   if (memberControlButton) await setAdminMemberControl(memberControlButton.dataset.memberControl);
   if (event.target.closest('[data-new-operation-open]') && selectedMemberId && currentProfile?.role === 'ADMIN') {

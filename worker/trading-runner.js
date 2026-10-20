@@ -8,7 +8,7 @@ import {
 import {
   buildGateOrderText, buildIdempotencyKey, calculateDeltaOrder,
   calculateCopyableMasterSize, calculateTargetPosition, capLockedTargetToCurrentRisk, calculateReducedCopyTarget,
-  deriveCopyState, detectManualOverride, roundTowardZeroToStep,
+  deriveCopyState, detectManualOverride, isPlatformOrder, roundTowardZeroToStep,
 } from './copy-engine.js';
 import { aggregateMemberPerformance, kstDayRange } from './performance.js';
 import {
@@ -418,7 +418,8 @@ export function planMemberPositions({ cycleId, system, master, member, contracts
     // account read has not caught up. Do not create a fresh cycle/order key
     // until reconciliation resolves it and a later observation replans.
     const hasUnresolvedOrder = Boolean(previous?.has_unresolved_order);
-    const hasOpenExchangeOrder = (member.open_orders || []).some((order) => order.contract === contract);
+    // Only a resting platform order holds the leg; a member's own resting order does not (2026-10-20).
+    const hasOpenExchangeOrder = (member.open_orders || []).some((order) => order.contract === contract && isPlatformOrder(order));
     const oppositeKey = `${contract}:${positionSide === 'LONG' ? 'SHORT' : 'LONG'}`;
     // A dual-mode reversal is two executions with a fill/observation dependency.
     // Never reserve an entry while the retiring COPY leg is still present or
@@ -783,9 +784,11 @@ export class TradingRunner {
       this.readAccount((({ contracts, legs }) => ({ ...masterContext, expected_contracts: contracts, expected_legs: legs }))(this.masterExpectations())),
       this.readAccount(memberContext),
     ]);
-    // Only the member's resting orders can change what the member holds while resume is validated.
-    // A Master order that fills in between changes the Master snapshot, which the second read rejects.
-    return { master, member, startedAt, openOrders: member.open_orders || [] };
+    // A member's own resting order no longer blocks resume (2026-10-20): if it fills between the two reads
+    // the member snapshot differs and resume retries; after activation the ledger attributes it to the
+    // member. Only a resting platform order blocks. A Master order that fills in between changes the Master
+    // snapshot, which the second read rejects.
+    return { master, member, startedAt, openOrders: (member.open_orders || []).filter(isPlatformOrder) };
   }
   async processMemberResume({ session, masterContext, memberContext, contracts, system }) {
     if (!['REQUESTED', 'VALIDATED'].includes(session?.state)) return;
@@ -808,7 +811,7 @@ export class TradingRunner {
       // only while ACTIVE, and resume could never become ACTIVE while the modes differ: switch a flat
       // member with no resting orders here (Gate refuses the switch otherwise), then read again.
       if (reason === 'RESUME_POSITION_MODE_MISMATCH' && this.mode === 'LIVE' && system?.execution_enabled
-        && !system?.emergency_halted && !first.member.positions.length && !first.openOrders.length
+        && !system?.emergency_halted && !first.member.positions.length && !(first.member.open_orders || []).length
         && !first.member.halted) {
         await setFuturesPositionMode({ ...credentials(memberContext), channelId: this.channelId, baseUrl: this.baseUrl,
           fetchImpl: this.fetchImpl, positionMode: 'dual' });

@@ -1,4 +1,5 @@
 import { GateApiError, summarizeGateOrder } from './gate.js';
+import { isPlatformOrder } from './copy-engine.js';
 
 export function positionSide(position) {
   return position.positionSide || position.position_side || (Number(position.size) < 0 ? 'SHORT' : 'LONG');
@@ -37,9 +38,10 @@ export function assertOrderIdentity(job, order) {
 export function assertSubmissionSnapshot(job, account, master, reversalContext = null) {
   assertFreshAccount(account);
   assertFreshAccount(master);
-  // A resting order on this contract can change the leg before or after this order fills. Orders on
-  // other contracts cannot; their margin is already excluded from `available`, checked below.
-  if (account.open_orders.some((order) => order?.contract === job.contract)) {
+  // A resting PLATFORM order on this contract would be a second platform order on the leg. A member's own
+  // resting order does not stop copying (2026-10-20): if it fills, the ownership ledger attributes the
+  // change to the member's own quantity. Its margin is already excluded from `available`, checked below.
+  if (account.open_orders.some((order) => order?.contract === job.contract && isPlatformOrder(order))) {
     throw new GateApiError('미체결 주문 확인이 필요합니다.', { code: 'OPEN_EXCHANGE_ORDER' });
   }
   const actual = account.positions.find((position) => position.contract === job.contract && positionSide(position) === job.position_side);
