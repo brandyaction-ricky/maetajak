@@ -46,7 +46,9 @@ export function buildGateHeaders({ apiKey, secretKey, method = 'GET', path, quer
 
 export function mapGateError(status, payload, path = '') {
   const label = String(payload?.label || '').toUpperCase();
-  if (label.includes('IP') || label.includes('WHITE')) return { code: 'IP_NOT_ALLOWED', message: 'Trading Worker IP가 Gate.io Whitelist에 등록되지 않았습니다.' };
+  // An IP label starts a token (IP_..., ..._IP, IPWHITELIST); a bare substring test also matched e.g. SLIPPAGE or
+  // MULTIPLE, reporting an order/price rejection as a whitelist failure.
+  if (/(^|_)IP/.test(label) || label.includes('WHITE')) return { code: 'IP_NOT_ALLOWED', message: 'Trading Worker IP가 Gate.io Whitelist에 등록되지 않았습니다.' };
   if (status === 401 || label.includes('INVALID_KEY') || label.includes('INVALID_SIGNATURE')) return { code: 'INVALID_CREDENTIALS', message: 'API Key 또는 Secret Key가 올바르지 않습니다.' };
   if ((status === 403 || label.includes('FORBIDDEN') || label.includes('PERMISSION')) && path.startsWith('/api/v4/unified/')) {
     return { code: 'UNIFIED_READ_REQUIRED', message: '통합계정 자산 조회를 위해 Unified Read 권한을 확인해 주세요.' };
@@ -539,23 +541,51 @@ export async function getOrderTrades({ orderId, contract, ...options }) {
   throw new GateApiError('체결 목록이 완전하지 않습니다.', { code: 'TRADES_PAGINATION_LIMIT' });
 }
 
-export async function getFuturesAccountBook({ from, to, limit = 1000, offset = 0, type, ...options }) {
-  const { payload } = await gateRequest({
-    ...options, path: FUTURES_ACCOUNT_BOOK_PATH,
-    query: { from, to, limit: Math.min(Math.max(Number(limit) || 100, 1), 1000), offset, ...(type ? { type } : {}) },
-  });
-  return Array.isArray(payload) ? payload : [];
+// Both history endpoints return at most 1000 rows per request. A busy day (or the 2-day transfer window) used to be
+// cut at the first 1000 rows silently; every page up to `maxPages` is read now, and a longer history fails instead
+// of being aggregated incompletely. Callers pass a fixed `to`, so later rows cannot shift the offsets.
+async function getPagedHistory({ path, query, limit, offset, maxPages, code, ...options }) {
+  const pageSize = Math.min(Math.max(Number(limit) || 100, 1), 1000);
+  const rows = [];
+  const seen = new Set();
+  for (let page = 0; page < maxPages; page++) {
+    const { payload } = await gateRequest({ ...options, path, query: { ...query, limit: pageSize, offset: offset + page * pageSize } });
+    const items = Array.isArray(payload) ? payload : [];
+    for (const item of items) {
+      const id = item?.id ?? item?.trade_id;
+      if (id != null) {
+        if (seen.has(String(id))) continue;
+        seen.add(String(id));
+      }
+      rows.push(item);
+    }
+    if (items.length < pageSize) return rows;
+  }
+  throw new GateApiError('Gate.io 기록 조회가 완전하지 않습니다.', { code, path });
 }
 
-export async function getMyFuturesTradesInRange({ from, to, limit = 1000, offset = 0, ...options }) {
-  const { payload } = await gateRequest({
-    ...options, path: FUTURES_TRADES_TIME_RANGE_PATH,
-    query: { from, to, limit: Math.min(Math.max(Number(limit) || 100, 1), 1000), offset },
-  });
-  return Array.isArray(payload) ? payload : [];
+export async function getFuturesAccountBook({ from, to, limit = 1000, offset = 0, type, maxPages = 20, ...options }) {
+  return getPagedHistory({ ...options, path: FUTURES_ACCOUNT_BOOK_PATH, query: { from, to, ...(type ? { type } : {}) },
+    limit, offset, maxPages, code: 'ACCOUNT_BOOK_PAGINATION_LIMIT' });
 }
 
-export function summarizeGateOrder(order, trades = []) {
+export async function getMyFuturesTradesInRange({ from, to, limit = 1000, offset = 0, maxPages = 20, ...options }) {
+  return getPagedHistory({ ...options, path: FUTURES_TRADES_TIME_RANGE_PATH, query: { from, to },
+    limit, offset, maxPages, code: 'TRADES_PAGINATION_LIMIT' });
+}
+
+// Sizes derived by arithmetic on Gate's decimal strings (size - left) carry binary residue: 0.3 - 0.1 =
+// 0.19999999999999998, which then fails exact comparisons with ledger/position sizes. Round to the contract lot
+// when it is known, and always to 12 significant digits (far below any Gate lot precision).
+export function roundOrderSize(value, sizeStep) {
+  const number = Number(value);
+  if (!Number.isFinite(number) || number === 0) return number === 0 ? 0 : number;
+  const step = Number(sizeStep);
+  const stepped = Number.isFinite(step) && step > 0 ? Math.round(number / step) * step : number;
+  return Number(stepped.toPrecision(12));
+}
+
+export function summarizeGateOrder(order, trades = [], { sizeStep } = {}) {
   const originalSize = Number(order?.size);
   const left = Number(order?.left);
   if (order?.id == null || order?.size == null || order?.left == null
@@ -563,7 +593,7 @@ export function summarizeGateOrder(order, trades = []) {
     || Math.abs(left) > Math.abs(originalSize)) {
     throw new GateApiError('주문 체결 수량을 검증할 수 없습니다.', { code: 'INVALID_ORDER_RESPONSE', outcomeUnknown: true });
   }
-  const filledSize = Math.sign(originalSize) * (Math.abs(originalSize) - Math.abs(left));
+  const filledSize = roundOrderSize(Math.sign(originalSize) * (Math.abs(originalSize) - Math.abs(left)), sizeStep);
   let averageFillPrice = Number(order?.fill_price || 0) || null;
   if (trades.length) {
     const absoluteSize = trades.reduce((sum, trade) => sum + Math.abs(Number(trade.size || 0)), 0);

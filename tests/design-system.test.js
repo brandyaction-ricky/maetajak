@@ -95,7 +95,7 @@ test('admin dashboard consolidates full current positions and removes legacy sec
 });
 
 test('admin dashboard applies compact prototype status and KPI styling', () => {
-  assert.match(theme, /\.admin-live-status time \{[^}]*font-size: 10px/s);
+  assert.match(theme, /\.admin-live-status time \{[^}]*font-size: 11px/s);
   assert.match(theme, /\.admin-operations-kpis \.kpi \{/);
   assert.match(theme, /\.admin-dashboard-positions/);
   assert.match(theme, /@media \(max-width: 820px\)[\s\S]*\.admin-live-status \{[^}]*flex-direction: column/s);

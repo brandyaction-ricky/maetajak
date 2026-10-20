@@ -1,6 +1,7 @@
 import { isIP } from 'node:net';
 import { pathToFileURL } from 'node:url';
 import { validateGateChannelId } from '../worker/gate.js';
+import { normalizeTradingMode } from '../worker/runtime.js';
 
 const PRODUCTION_GATE_URL = 'https://api.gateio.ws';
 const APPROVED_CHANNEL_ID = 'maetajak';
@@ -30,7 +31,7 @@ function jwtRole(token) {
 export function validatePreflightEnvironment(env) {
   const errors = [];
   const warnings = [];
-  const mode = String(env.TRADING_MODE || 'OBSERVE').toUpperCase();
+  const mode = normalizeTradingMode(env.TRADING_MODE);
   const baseUrl = env.GATE_API_BASE_URL || PRODUCTION_GATE_URL;
   const channelId = String(env.GATE_CHANNEL_ID || '').trim();
   const publicIp = String(env.WORKER_PUBLIC_IP || '').trim();

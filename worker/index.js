@@ -4,17 +4,18 @@ import { validateGateChannelId, verifyGateAccount } from './gate.js';
 import { TradingRunner, safeError } from './trading-runner.js';
 import { failureAlertDecision, sendWorkerAlert } from './alerts.js';
 import { syncGateBrokerMetrics } from './broker-metrics.js';
+import { createShutdown, createSupabaseFetch, cycleFailureCode, normalizeTradingMode, readIntervalMs } from './runtime.js';
 
 const supabaseUrl = process.env.SUPABASE_URL;
 const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-const pollIntervalMs = Math.max(2_000, Number(process.env.POLL_INTERVAL_MS || 5_000));
-const syncIntervalMs = Math.max(2_000, Number(process.env.SYNC_INTERVAL_MS || 5_000));
+const pollIntervalMs = readIntervalMs(process.env.POLL_INTERVAL_MS, 5_000, 2_000);
+const syncIntervalMs = readIntervalMs(process.env.SYNC_INTERVAL_MS, 5_000, 2_000);
 const baseUrl = process.env.GATE_API_BASE_URL || 'https://api.gateio.ws';
 const workerId = `${process.env.WORKER_ID || 'maetajak-worker'}:${randomUUID()}`;
 const workerVersion = process.env.WORKER_VERSION || process.env.npm_package_version || 'dev';
 const workerPublicIp = process.env.WORKER_PUBLIC_IP || '';
 const gateChannelId = process.env.GATE_CHANNEL_ID || '';
-const tradingMode = process.env.TRADING_MODE || 'OBSERVE';
+const tradingMode = normalizeTradingMode(process.env.TRADING_MODE);
 const readinessCheck = process.env.RUN_READINESS_CHECK === 'true';
 const alertWebhookUrl = process.env.ALERT_WEBHOOK_URL || '';
 const alertWebhookBearer = process.env.ALERT_WEBHOOK_BEARER || '';
@@ -25,8 +26,8 @@ const alertsConfigured = Boolean(alertWebhookUrl || (telegramBotToken && telegra
 const brokerUid = process.env.GATE_BROKER_UID || '49084031';
 const brokerApiKey = process.env.GATE_BROKER_API_KEY || '';
 const brokerSecretKey = process.env.GATE_BROKER_SECRET_KEY || '';
-const brokerSyncIntervalMs = Math.max(300_000, Number(process.env.BROKER_SYNC_INTERVAL_MS || 3_600_000));
-const performanceIntervalMs = Math.max(30_000, Number(process.env.PERFORMANCE_SYNC_INTERVAL_MS || 60_000));
+const brokerSyncIntervalMs = readIntervalMs(process.env.BROKER_SYNC_INTERVAL_MS, 3_600_000, 300_000);
+const performanceIntervalMs = readIntervalMs(process.env.PERFORMANCE_SYNC_INTERVAL_MS, 60_000, 30_000);
 if (!supabaseUrl || !serviceRoleKey) throw new Error('SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required');
 if (gateChannelId) validateGateChannelId(gateChannelId);
 if (gateChannelId && gateChannelId !== 'maetajak') throw new Error('GATE_CHANNEL_ID must equal the approved Channel ID maetajak');
@@ -39,7 +40,12 @@ if (tradingMode === 'LIVE' && (!workerPublicIp || baseUrl !== 'https://api.gatei
 if (tradingMode === 'LIVE' && !alertsConfigured) throw new Error('LIVE mode requires a Telegram or webhook alert destination');
 if (tradingMode === 'LIVE' && !telegramConfigured) throw new Error('LIVE mode requires Telegram for critical copy safety alerts');
 
-const supabase = createClient(supabaseUrl, serviceRoleKey, { auth: { persistSession: false, autoRefreshToken: false } });
+// Every Supabase request has a client-side timeout (15 s; longer for post-exchange completions). See runtime.js for
+// why a timeout after a server-side commit cannot cause a re-submission for any RPC this worker calls.
+const supabase = createClient(supabaseUrl, serviceRoleKey, {
+  auth: { persistSession: false, autoRefreshToken: false },
+  global: { fetch: createSupabaseFetch() },
+});
 const state = { verification: false, trading: false, broker: false, performance: false, stopping: false, lastDatabaseAlertAt: 0,
   leaseWaitSince: 0, lastLeaseAlertAt: 0, failureStreak: 0, healthyDryRunCycles: 0, lastReadinessAt: 0,
   lastReportHalted: null, haltAlertSent: false };
@@ -56,6 +62,8 @@ const runner = new TradingRunner({
   channelId: gateChannelId, mode: tradingMode, logger: log,
   onSafetyEvent: sendAlert,
 });
+// Shutdown: stop POSTing further claimed jobs in the current batch.
+runner.stopRequested = () => state.stopping;
 
 function sendAlert(options) {
   return sendWorkerAlert({
@@ -204,7 +212,7 @@ export async function runTradingCycle() {
       },
     });
   } catch (error) {
-    const code = error instanceof Error ? error.message : 'unknown';
+    const code = cycleFailureCode(error);
     try {
       const failure = await runner.reportCycle(false, code);
       const failures = Number(failure?.consecutive_failures);
@@ -281,11 +289,8 @@ export async function runBrokerMetricsSync() {
   } finally { state.broker = false; }
 }
 
-function stop(signal) {
-  state.stopping = true;
-  log('worker_stopping', { signal });
-  setTimeout(() => process.exit(0), 1_000).unref();
-}
+// Waits up to 8 s for an in-flight trading step (an order POST and its completion RPC) before exiting.
+const stop = createShutdown({ state, log });
 process.on('SIGTERM', () => stop('SIGTERM'));
 process.on('SIGINT', () => stop('SIGINT'));
 

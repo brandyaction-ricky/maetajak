@@ -32,6 +32,10 @@ export const migrationFiles = [
   '20261019060100_risk_equity_net_of_transfers.sql',
   '20261019060200_target_anchor_desired_size.sql',
   '20261019060300_gate_account_change_rebind.sql',
+  // 2026-10-20 admin weights; a member's own trading no longer locks a leg.
+  '20261020010000_admin_member_weights_no_member_trade_lock.sql',
+  // 2026-10-20 DB QA fixes (KST dates, admin member disconnect, least privilege, alert retry cap).
+  '20261020020000_qa_fixes.sql',
 ];
 export async function createVerifiedDatabase() {
   const db = new PGlite();

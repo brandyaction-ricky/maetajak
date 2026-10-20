@@ -8,14 +8,14 @@ import {
 import {
   buildGateOrderText, buildIdempotencyKey, calculateDeltaOrder,
   calculateCopyableMasterSize, calculateTargetPosition, capLockedTargetToCurrentRisk, calculateReducedCopyTarget,
-  deriveCopyState, detectManualOverride, roundTowardZeroToStep,
+  deriveCopyState, detectManualOverride, isPlatformOrder, roundTowardZeroToStep,
 } from './copy-engine.js';
-import { aggregateMemberPerformance, kstDayRange } from './performance.js';
+import { aggregateMemberPerformance, kstDayRange, previousKstDayRange } from './performance.js';
 import {
   resumePositions, sameResumePositions, validateResumeSnapshot, validateResumePreview,
   validateCurrentMasterSyncPreview, RESUME_MAX_AGE_MS,
 } from './member-resume.js';
-import { assertFreshAccount, assertOrderIdentity, assertSubmissionSnapshot, exchangeTradeAlert } from './execution-safety.js';
+import { assertFreshAccount, assertOrderIdentity, assertSubmissionSnapshot, exchangeTradeAlert, sameSize } from './execution-safety.js';
 
 // An equity change larger than this share between two cycles triggers an immediate transfer check.
 export const EQUITY_JUMP_RATIO = 0.02;
@@ -26,9 +26,72 @@ export const CAP_TOLERANCE_RATIO = 0.03;
 // Consecutive skewed member snapshots skipped silently before the member's legs are held (PAUSED).
 export const SNAPSHOT_SKEW_SKIP_LIMIT = 3;
 
-// Engine plans cancelled before any Gate request; they are not order failures.
-const NEVER_SENT_CANCELLATIONS = new Set(['SUPERSEDED_BY_FRESH_PLAN', 'SUPERSEDED_BY_RESUME', 'PRE_LIVE_INTENT_DISCARDED',
-  'MEMBER_POSITION_CHANGED']);
+// Intents the database cancelled before any Gate request; they are not order failures (2026-10: 520 of 539
+// COPY_ORDER_FAILED alerts were SUPERSEDED_BY_FRESH_PLAN plans that never reached Gate).
+// SUBMISSION_AUTHORIZATION_REVOKED: authorize_copy_order_submission refused, so the worker never POSTed.
+// UNSENT_CLAIM_EXPIRED / UNSENT_UNKNOWN_RESOLVED: settled by claim_copy_reconciliation_jobs only while
+// submission_authorized_at is null, i.e. before the worker may POST. The account-change reasons cancel only
+// PLANNED/QUEUED intents with submit_attempts = 0 (private.pause_member_for_account_change).
+export const NEVER_SENT_CANCELLATIONS = new Set(['SUPERSEDED_BY_FRESH_PLAN', 'SUPERSEDED_BY_RESUME', 'PRE_LIVE_INTENT_DISCARDED',
+  'MEMBER_POSITION_CHANGED', 'COPY_OWNERSHIP_UNKNOWN', 'SUBMISSION_AUTHORIZATION_REVOKED', 'UNSENT_CLAIM_EXPIRED',
+  'UNSENT_UNKNOWN_RESOLVED', 'GATE_ACCOUNT_CHANGED', 'GATE_ACCOUNT_CHANGE_PENDING', 'MASTER_ACCOUNT_CHANGED',
+  'MASTER_ACCOUNT_CHANGE_PENDING', 'MEMBER_API_DISCONNECTED_BY_ADMIN']);
+// Codes submitOrders records as REJECTED only BEFORE the order POST: the pre-submit re-read (readAccount,
+// assertSubmissionSnapshot), the member context, leverage validation, a leverage-POST or read timeout (the order
+// POST itself times out as UNKNOWN, never REJECTED) and placeFuturesOrder's own expiry check. Stored through
+// safeError() as WORKER_<code>, cut to 35 characters.
+const PRE_SUBMIT_REJECTION_CODES = [
+  'ACCOUNT_SNAPSHOT_STALE', 'OPEN_EXCHANGE_ORDER', 'MEMBER_POSITION_CHANGED_BEFORE_SUBMIT', 'MASTER_POSITION_CHANGED_BEFORE_SUBMIT',
+  'ORDER_PLAN_QUANTITY_INVALID', 'REDUCTION_QUANTITY_INVALID', 'MASTER_POSITION_NOT_FOUND', 'OPPOSITE_POSITION_EXISTS',
+  'COPY_REVERSAL_CLOSE_REQUIRED', 'ORDER_RISK_METADATA_INVALID',
+  'MEMBER_CONTEXT_MISSING', 'INVALID_MASTER_LEVERAGE', 'INVALID_MARGIN_MODE', 'ORDER_PLAN_STALE', 'OPEN_ORDERS_LIMIT_REACHED',
+  'INVALID_ACCOUNT_EQUITY', 'INVALID_POSITIONS_RESPONSE', 'POSITIONS_PAGINATION_LIMIT', 'SPLIT_POSITION_UNSUPPORTED',
+  'POSITIONS_INCONSISTENT', 'INVALID_ORDERS_RESPONSE', 'INVALID_TRADES_RESPONSE', 'GATE_TIMEOUT', 'GATE_UNREACHABLE',
+];
+// MEMBER_RISK_LIMIT and INSUFFICIENT_AVAILABLE_MARGIN are also pre-POST, but they mean the member could not follow
+// the Master: they stay alerted (operator decision 2026-10-20 review).
+const PRE_SUBMIT_REJECTIONS = new Set(PRE_SUBMIT_REJECTION_CODES.map((code) => `WORKER_${code}`.slice(0, 42)));
+// True when the alert's intent provably never reached Gate (no order id, nothing filled, and a never-sent reason).
+export function intentNeverSentToGate(job) {
+  if (job?.gate_order_id != null || Number(job?.filled_size) !== 0) return false;
+  const code = job.error_code == null ? null : String(job.error_code);
+  if (job.result_status === 'CANCELLED') return code == null || NEVER_SENT_CANCELLATIONS.has(code);
+  return job.result_status === 'REJECTED' && code != null && (NEVER_SENT_CANCELLATIONS.has(code) || PRE_SUBMIT_REJECTIONS.has(code));
+}
+// Gate account reads failing with these codes do not heal by retrying: the member's API key/permissions changed.
+const CREDENTIAL_ERROR_CODES = new Set(['INVALID_CREDENTIALS', 'FUTURES_READ_REQUIRED', 'UNIFIED_READ_REQUIRED', 'IP_NOT_ALLOWED']);
+export const CREDENTIAL_ALERT_AFTER_MS = 300_000;
+export const CREDENTIAL_ALERT_REPEAT_MS = 21_600_000;
+const CREDENTIAL_ALERT_RETRY_MS = 300_000;
+// Account fields that must never leave the worker in a payload or log (decrypted Gate credentials).
+const CREDENTIAL_FIELDS = ['api_key', 'secret_key'];
+export function withoutCredentials(account) {
+  if (!account || typeof account !== 'object') return account;
+  const copy = { ...account };
+  for (const field of CREDENTIAL_FIELDS) delete copy[field];
+  return copy;
+}
+
+// The message keeps the RPC name and the database text (the lease check matches WORKER_LEASE_HELD in it); `code`
+// is a short machine code for report_copy_worker_cycle: the raised exception name, TIMEOUT for a client-side
+// timeout/abort, or the PostgREST/Postgres error code.
+export function rpcFailure(name, error) {
+  const message = String(error?.message ?? '');
+  const failure = new Error(`${name}: ${message}`);
+  const exception = /^([A-Z][A-Z0-9_]{2,})(?![a-z])/.exec(message)?.[1];
+  const dbCode = String(error?.code ?? '');
+  const detail = exception || (/^(TimeoutError|AbortError)\b/.test(message) ? 'TIMEOUT'
+    : /^[0-9A-Z]{5,10}$/.test(dbCode) ? dbCode : 'FAILED');
+  failure.code = `${name}:${detail}`.slice(0, 80);
+  return failure;
+}
+
+// Error code for an order Gate accepted (HTTP 2xx) but finished with nothing filled.
+export function unfilledFinishCode(summary) {
+  if (!summary?.terminal || Number(summary.filledSize) !== 0 || !['REJECTED', 'CANCELLED'].includes(summary.finalStatus)) return null;
+  const label = String(summary.finishAs || '').toUpperCase().replace(/[^A-Z0-9_]/g, '_').slice(0, 60);
+  return label ? `GATE_${label}` : 'GATE_UNFILLED';
+}
 
 export function safeError(error, stage = 'WORKER') {
   const safeStage = String(stage).toUpperCase().replace(/[^A-Z0-9_]/g, '_').slice(0, 40) || 'WORKER';
@@ -55,6 +118,10 @@ function parsePositionKey(key) {
 function accountSupportsDual(account) {
   return String(account?.positionMode || '').startsWith('dual')
     || (account?.positions || []).some((position) => String(position.mode || '').startsWith('dual_'));
+}
+function memberLabelDetail(account) {
+  const label = account?.nickname || account?.full_name;
+  return label ? { member: label } : {};
 }
 function credentials(account) { return { apiKey: account.api_key, secretKey: account.secret_key }; }
 function elapsedMs(startedAt) { return Math.max(0, Date.now() - startedAt); }
@@ -223,7 +290,7 @@ export function planMemberPositions({ cycleId, system, master, member, contracts
   const unexplainedContracts = new Set();
   if (ledger) {
     for (const key of new Set([...memberPositions.keys(), ...ledger.keys()])) {
-      if (Number(memberPositions.get(key)?.size || 0) !== (ledger.get(key) || 0)) unexplainedContracts.add(parsePositionKey(key).contract);
+      if (!sameSize(memberPositions.get(key)?.size || 0, ledger.get(key) || 0)) unexplainedContracts.add(parsePositionKey(key).contract);
     }
   }
   // Contracts whose Master legs Gate could not confirm this cycle: no order, no anchor move.
@@ -323,7 +390,7 @@ export function planMemberPositions({ cycleId, system, master, member, contracts
     const copyReducedByMember = anchorMatchesResume && anchor.lock_reason === 'MEMBER_REDUCED_COPY_POSITION';
     const ledgerSize = ledger ? (ledger.get(symbol) || 0) : null;
     const ledgerUnexplained = ledger !== null && !member.close_positions_requested
-      && (memberPosition.size !== ledgerSize || unexplainedContracts.has(contract));
+      && (!sameSize(memberPosition.size, ledgerSize) || unexplainedContracts.has(contract));
     const masterQuantityUnchanged = anchorMatchesResume
       && Number(anchor.master_copyable_size) === Number(masterPosition.size);
     const masterQuantityReduced = anchorMatchesResume
@@ -418,7 +485,8 @@ export function planMemberPositions({ cycleId, system, master, member, contracts
     // account read has not caught up. Do not create a fresh cycle/order key
     // until reconciliation resolves it and a later observation replans.
     const hasUnresolvedOrder = Boolean(previous?.has_unresolved_order);
-    const hasOpenExchangeOrder = (member.open_orders || []).some((order) => order.contract === contract);
+    // Only a resting platform order holds the leg; a member's own resting order does not (2026-10-20).
+    const hasOpenExchangeOrder = (member.open_orders || []).some((order) => order.contract === contract && isPlatformOrder(order));
     const oppositeKey = `${contract}:${positionSide === 'LONG' ? 'SHORT' : 'LONG'}`;
     // A dual-mode reversal is two executions with a fill/observation dependency.
     // Never reserve an entry while the retiring COPY leg is still present or
@@ -546,7 +614,8 @@ export function planMemberPositions({ cycleId, system, master, member, contracts
       delta.deltaSize = Math.sign(delta.deltaSize) * maxOrderSize;
       delta.reason = 'CHUNKED_TO_GATE_ORDER_LIMIT';
     }
-    if (Math.abs(delta.deltaSize) < contractInfo.orderSizeMin) {
+    // Only a leg that would have submitted is relabelled; a held/synced leg keeps its own reason (its delta is 0).
+    if (delta.shouldSubmit && Math.abs(delta.deltaSize) < contractInfo.orderSizeMin) {
       delta.shouldSubmit = false;
       delta.deltaSize = 0;
       delta.reason = 'BELOW_MINIMUM_ORDER_SIZE';
@@ -611,6 +680,9 @@ export class TradingRunner {
     this.lastDryRunPlanHash = null;
     this.lastDryRunMasterHash = null;
     this.performanceSyncedAt = new Map();
+    this.performanceDays = new Map();
+    this.credentialFailures = new Map();
+    this.copyAcceptedAlerts = new Map();
     this.currentCopyEventId = null;
     this.resumeAlerts = new Map();
     // P0-2: Master legs seen in the previous cycle, and baseline reductions awaiting a second read.
@@ -683,7 +755,7 @@ export class TradingRunner {
   }
   async rpc(name, parameters = {}) {
     const { data, error } = await this.supabase.rpc(name, parameters);
-    if (error) throw new Error(`${name}: ${error.message}`);
+    if (error) throw rpcFailure(name, error);
     return data;
   }
   async heartbeat(testPassed = false) {
@@ -783,9 +855,11 @@ export class TradingRunner {
       this.readAccount((({ contracts, legs }) => ({ ...masterContext, expected_contracts: contracts, expected_legs: legs }))(this.masterExpectations())),
       this.readAccount(memberContext),
     ]);
-    // Only the member's resting orders can change what the member holds while resume is validated.
-    // A Master order that fills in between changes the Master snapshot, which the second read rejects.
-    return { master, member, startedAt, openOrders: member.open_orders || [] };
+    // A member's own resting order no longer blocks resume (2026-10-20): if it fills between the two reads
+    // the member snapshot differs and resume retries; after activation the ledger attributes it to the
+    // member. Only a resting platform order blocks. A Master order that fills in between changes the Master
+    // snapshot, which the second read rejects.
+    return { master, member, startedAt, openOrders: (member.open_orders || []).filter(isPlatformOrder) };
   }
   async processMemberResume({ session, masterContext, memberContext, contracts, system }) {
     if (!['REQUESTED', 'VALIDATED'].includes(session?.state)) return;
@@ -808,7 +882,7 @@ export class TradingRunner {
       // only while ACTIVE, and resume could never become ACTIVE while the modes differ: switch a flat
       // member with no resting orders here (Gate refuses the switch otherwise), then read again.
       if (reason === 'RESUME_POSITION_MODE_MISMATCH' && this.mode === 'LIVE' && system?.execution_enabled
-        && !system?.emergency_halted && !first.member.positions.length && !first.openOrders.length
+        && !system?.emergency_halted && !first.member.positions.length && !(first.member.open_orders || []).length
         && !first.member.halted) {
         await setFuturesPositionMode({ ...credentials(memberContext), channelId: this.channelId, baseUrl: this.baseUrl,
           fetchImpl: this.fetchImpl, positionMode: 'dual' });
@@ -894,12 +968,39 @@ export class TradingRunner {
     if (Date.now() - last < 300_000) return;
     const range = kstDayRange(new Date(observedAt));
     const auth = { ...credentials(member), baseUrl: this.baseUrl, fetchImpl: this.fetchImpl };
+    // KST day boundary: fills between the last sync (up to 5 minutes earlier) and midnight belong to the previous
+    // day, whose row the throttle would otherwise never revisit. On the first sync after the date changed, that
+    // day is re-aggregated once in full. Its equity values cannot be re-read after midnight, so the values this
+    // process last recorded for that day are kept (a process that never synced that day skips this).
+    const lastDay = this.performanceDays.get(member.user_id);
+    if (lastDay && lastDay.tradingDate !== range.tradingDate) {
+      const previousRange = previousKstDayRange(new Date(observedAt));
+      // A failed re-aggregation must not block today's sync (it is retried never: the previous row keeps its last
+      // 5-minute value, as before this change).
+      if (lastDay.tradingDate === previousRange.tradingDate) try {
+        const [previousLedger, previousTrades] = await Promise.all([
+          getFuturesAccountBook({ ...auth, from: previousRange.from, to: previousRange.to }),
+          getMyFuturesTradesInRange({ ...auth, from: previousRange.from, to: previousRange.to }),
+        ]);
+        await this.writeMemberPerformanceDay({
+          member: { ...member, day_start_equity: lastDay.openingEquity, total: lastDay.closingEquity,
+            unrealisedPnl: lastDay.unrealisedPnl },
+          tradingDate: previousRange.tradingDate, ledger: previousLedger, trades: previousTrades, contracts, observedAt,
+        });
+        if (this.logger) this.logger('member_performance_previous_day_resynced', { user_id: member.user_id,
+          trading_date: previousRange.tradingDate });
+      } catch (error) {
+        if (this.logger) this.logger('member_performance_previous_day_failed', { user_id: member.user_id,
+          trading_date: previousRange.tradingDate, error_code: safeError(error, 'PERFORMANCE_PREVIOUS_DAY') });
+      }
+      this.performanceDays.delete(member.user_id);
+    }
     const [ledger, trades] = await Promise.all([
       getFuturesAccountBook({ ...auth, from: range.from, to: range.to }),
       getMyFuturesTradesInRange({ ...auth, from: range.from, to: range.to }),
     ]);
-    // Deposits/withdrawals since yesterday's KST start (a dedicated query: the day ledger above is
-    // capped at 1000 rows). Recorded once per Gate row; risk limits use the resulting net.
+    // Deposits/withdrawals since yesterday's KST start (a dedicated type=dnw query). Recorded once per Gate row;
+    // risk limits use the resulting net.
     if (member.trading_account_id) {
       try {
         const transfers = await getFuturesAccountBook({ ...auth, from: range.from - 86_400, to: range.to, type: 'dnw' });
@@ -908,9 +1009,17 @@ export class TradingRunner {
         if (this.logger) this.logger('fund_flow_sync_failed', { trading_account_id: member.trading_account_id, error_code: safeError(error, 'FUND_FLOW') });
       }
     }
+    const performance = await this.writeMemberPerformanceDay({ member, tradingDate: range.tradingDate, ledger, trades,
+      contracts, observedAt });
+    this.performanceDays.set(member.user_id, { tradingDate: range.tradingDate,
+      openingEquity: performance.daily.openingEquity, closingEquity: performance.daily.closingEquity,
+      unrealisedPnl: performance.daily.unrealisedPnl });
+    this.performanceSyncedAt.set(member.user_id, Date.now());
+  }
+  async writeMemberPerformanceDay({ member, tradingDate, ledger, trades, contracts, observedAt }) {
     const performance = aggregateMemberPerformance({ member, ledger, trades, contracts, observedAt });
     await this.rpc('upsert_member_daily_performance', {
-      p_user_id: member.user_id, p_trading_date: range.tradingDate,
+      p_user_id: member.user_id, p_trading_date: tradingDate,
       p_opening_equity: performance.daily.openingEquity, p_closing_equity: performance.daily.closingEquity,
       p_deposits: performance.daily.deposits, p_withdrawals: performance.daily.withdrawals,
       p_realised_pnl: performance.daily.realisedPnl, p_unrealised_pnl: performance.daily.unrealisedPnl,
@@ -922,7 +1031,7 @@ export class TradingRunner {
     });
     for (const row of performance.symbols) {
       await this.rpc('upsert_member_symbol_daily_performance', {
-        p_user_id: member.user_id, p_trading_date: range.tradingDate, p_contract: row.contract,
+        p_user_id: member.user_id, p_trading_date: tradingDate, p_contract: row.contract,
         p_realised_pnl: row.realisedPnl, p_fees: row.fees, p_funding_pnl: row.fundingPnl,
         p_trade_count: row.tradeCount, p_winning_trade_count: row.wins, p_losing_trade_count: row.losses,
         p_source_snapshot_at: observedAt, p_source_hash: row.sourceHash,
@@ -930,11 +1039,11 @@ export class TradingRunner {
     }
     await this.rpc('prune_member_symbol_daily_performance', {
       p_user_id: member.user_id,
-      p_trading_date: range.tradingDate,
+      p_trading_date: tradingDate,
       p_active_contracts: performance.symbols.map((row) => row.contract),
       p_source_snapshot_at: observedAt,
     });
-    this.performanceSyncedAt.set(member.user_id, Date.now());
+    return performance;
   }
   async syncOnce() {
     const cycleStartedAt = Date.now();
@@ -985,6 +1094,8 @@ export class TradingRunner {
       }))),
     ]);
     timings.master_exchange_ms = elapsedMs(masterReadStartedAt);
+    memberContexts.forEach((account, index) => this.trackMemberCredentialRead(account,
+      memberReads[index].status === 'rejected' ? memberReads[index].reason || new Error('MEMBER_READ_FAILED') : null));
     assertFreshAccount(master);
     // A contract Gate could not confirm this cycle (its single-contract read failed) has unknown Master
     // legs: member legs on it are paused and no anchor or baseline moves (planMemberPositions), instead
@@ -1132,7 +1243,7 @@ export class TradingRunner {
         if (accountSupportsDual(member)) member.positionMode = 'dual';
         if (masterUsesDualMode && !accountSupportsDual(member) && !member.resume_required) {
           if (this.mode !== 'LIVE' || member.positions.length || member.copy_paused || member.halted || context.system.emergency_halted || !context.system.execution_enabled) {
-            throw new GateApiError('íì ê³ì ì ìë°©í¥ ëª¨ëë¡ ì íí´ì¼ í©ëë¤.', { code: 'DUAL_MODE_REQUIRED' });
+            throw new GateApiError('회원 계정을 양방향 모드로 전환해야 합니다.', { code: 'DUAL_MODE_REQUIRED' });
           }
           memberStage = 'MEMBER_POSITION_MODE';
           await setFuturesPositionMode({
@@ -1145,7 +1256,7 @@ export class TradingRunner {
             member_position_baselines: baseline?.member_positions || [],
           });
           if (!accountSupportsDual(member)) {
-            throw new GateApiError('íì ê³ì  ìë°©í¥ ëª¨ë ì íì íì¸íì§ ëª»íìµëë¤.', { code: 'DUAL_MODE_REQUIRED' });
+            throw new GateApiError('회원 계정 양방향 모드 전환을 확인하지 못했습니다.', { code: 'DUAL_MODE_REQUIRED' });
           }
         }
         member.ledger_positions = !closing && Array.isArray(session?.ledger_positions) ? session.ledger_positions : null;
@@ -1183,8 +1294,10 @@ export class TradingRunner {
       }
     }
     timings.members_ms = elapsedMs(membersStartedAt);
+    // Decrypted Gate credentials stay in the worker: record_verified_copy_worker_cycle (and the functions it calls)
+    // read only ids, totals and positions. `members` itself keeps them for the performance sync below.
     const recordedMaster = {
-      ...master,
+      ...withoutCredentials(master),
       positions: master.positions.map((position) => ({
         ...position,
         quanto_multiplier: contracts.get(position.contract)?.quantoMultiplier || null,
@@ -1192,7 +1305,7 @@ export class TradingRunner {
     };
     const currentStatePayload = buildCurrentStatePayload({ cycleId, observedAt, master: recordedMaster, members });
     const legacyPayload = { cycle_id: cycleId, source_version: sourceHash({ observedAt, master: master.positions }),
-      observed_at: observedAt, master: recordedMaster, members, current_state: currentStatePayload };
+      observed_at: observedAt, master: recordedMaster, members: members.map(withoutCredentials), current_state: currentStatePayload };
     const legacyWriteStartedAt = Date.now();
     await this.rpc('record_verified_copy_worker_cycle', { p_payload: legacyPayload });
     timings.legacy_write_ms = elapsedMs(legacyWriteStartedAt);
@@ -1244,9 +1357,16 @@ export class TradingRunner {
   }
   async submitOrders(limit = 10) {
     if (this.mode !== 'LIVE') return 0;
+    // A claim whose response is lost (e.g. a client-side timeout after the commit) is never acted on: its intents
+    // stay SUBMITTING without submission_authorized_at and the DB settles them as UNSENT_CLAIM_EXPIRED.
     const jobs = await this.rpc('claim_copy_order_intents', { p_limit: limit });
     let attempts = 0;
+    // Member settings and fund-flow totals are read once per claimed batch (not once per job); every job still
+    // re-reads both Gate accounts and the DB re-checks the intent in authorize_copy_order_submission.
+    let batchContext = null;
     for (const job of jobs || []) {
+      // Shutting down: claimed but unauthorized intents are settled by the DB (UNSENT_CLAIM_EXPIRED); no new POST.
+      if (this.stopRequested?.()) break;
       if (!job.resume_version) throw new Error('ORDER_RESUME_VERSION_REQUIRED');
       let response;
       let summary;
@@ -1256,15 +1376,23 @@ export class TradingRunner {
       let orderSent = false;
       try {
         const auth = { apiKey: job.api_key, secretKey: job.secret_key, channelId: this.channelId, baseUrl: this.baseUrl, fetchImpl: this.fetchImpl };
-        const context = withFundFlowNet(await this.rpc('get_copy_worker_context'), await this.loadFundFlowTotals());
+        if (!batchContext) {
+          const [rawContext, fundFlowTotals] = await Promise.all([this.rpc('get_copy_worker_context'), this.loadFundFlowTotals()]);
+          batchContext = withFundFlowNet(rawContext, fundFlowTotals);
+        }
+        const context = batchContext;
         if (!context?.master) throw new GateApiError('마스터 조회가 필요합니다.', { code: 'MASTER_POSITION_NOT_FOUND' });
         const memberContext = context.members?.find((member) => member.trading_account_id === job.trading_account_id);
         if (!memberContext) throw new GateApiError('활성 회원 설정을 확인할 수 없습니다.', { code: 'MEMBER_CONTEXT_MISSING' });
         memberLabel = memberContext.nickname || memberContext.full_name || memberLabel;
         // The order's own leg is confirmed individually when the list omits it.
         const jobLeg = [`${job.contract}:${job.position_side}`];
+        // Only the job's credentials and leg are taken from the job. Spreading the whole job over the member's
+        // settings let the intent's reduce_only=false replace the profile's reduce_only (and other settings), which
+        // defeated assertSubmissionSnapshot's MEMBER_RISK_LIMIT check.
         const [memberSnapshot, masterSnapshot] = await Promise.all([
-          this.readAccount({ ...memberContext, ...job, expected_contracts: [job.contract], expected_legs: jobLeg }),
+          this.readAccount({ ...memberContext, api_key: job.api_key, secret_key: job.secret_key,
+            expected_contracts: [job.contract], expected_legs: jobLeg }),
           this.readAccount({ ...context.master, expected_contracts: [job.contract], expected_legs: jobLeg }),
         ]);
         const opposite = (p) => p.contract === job.contract
@@ -1281,6 +1409,8 @@ export class TradingRunner {
             positionSide: String(job.position_mode || '').startsWith('dual') ? job.position_side : undefined,
           });
         }
+        // Before the order POST: an error or timeout here (even one after the server committed the authorisation)
+        // leaves orderSent=false, so the intent is completed as REJECTED and is never POSTed (see runtime.js).
         const permitted = await this.rpc('authorize_copy_order_submission', {
           p_intent_id: job.intent_id, p_version: job.resume_version,
         });
@@ -1298,7 +1428,7 @@ export class TradingRunner {
             code: 'INVALID_ORDER_RESPONSE', status: response.status, outcomeUnknown: true,
           });
         }
-        summary = assertOrderIdentity(job, response.payload);
+        summary = assertOrderIdentity(job, response.payload, { sizeStep: this.contracts?.get(job.contract)?.sizeStep });
         if (Number(response.payload.size) !== Number(job.delta_size) || Math.abs(summary.filledSize) > Math.abs(Number(job.delta_size))
           || (summary.filledSize && Math.sign(summary.filledSize) !== Math.sign(Number(job.delta_size)))) {
           throw new GateApiError('Order quantity differs from the submitted intent.', { code: 'ORDER_QUANTITY_MISMATCH', outcomeUnknown: true });
@@ -1330,7 +1460,9 @@ export class TradingRunner {
       // RPC response may mean FILLED was already committed; overwriting that
       // with REJECTED would erase the fill. Abort this batch and let the
       // existing SUBMITTING/reconciliation recovery resolve unrecorded orders.
-      await this.rpc('complete_copy_order_attempt', { p_intent_id: job.intent_id, p_result_status: summary.finalStatus, p_gate_order_id: summary.gateOrderId, p_filled_size: summary.filledSize, p_average_fill_price: summary.averageFillPrice, p_http_status: response.status, p_gate_label: summary.finishAs, p_error_code: null, p_safe_response: { finish_as: summary.finishAs, left: summary.left, terminal: summary.terminal } });
+      // An order Gate accepted but finished without any fill (finish_as e.g. ioc or a price-protection label) is a
+      // rejection with a Gate reason: store that label as the error code (it was stored as NULL).
+      await this.rpc('complete_copy_order_attempt', { p_intent_id: job.intent_id, p_result_status: summary.finalStatus, p_gate_order_id: summary.gateOrderId, p_filled_size: summary.filledSize, p_average_fill_price: summary.averageFillPrice, p_http_status: response.status, p_gate_label: summary.finishAs, p_error_code: unfilledFinishCode(summary), p_safe_response: { finish_as: summary.finishAs, left: summary.left, terminal: summary.terminal } });
       if (this.logger) this.logger('order_attempt_completed', {
         intent_id: job.intent_id,
         user_id: job.user_id || null,
@@ -1354,10 +1486,11 @@ export class TradingRunner {
         if (!order) {
           completion = await this.resolveMissingOrder(job, auth);
         } else {
-          assertOrderIdentity(job, order);
+          const sizeStep = this.contracts?.get(job.contract)?.sizeStep;
+          assertOrderIdentity(job, order, { sizeStep });
           const orderId = String(order.id);
           const trades = await getOrderTrades({ ...auth, orderId, contract: job.contract });
-          summary = summarizeGateOrder(order, trades);
+          summary = summarizeGateOrder(order, trades, { sizeStep });
           completion = { p_job_id: job.job_id, p_status: summary.finalStatus, p_gate_order_id: orderId,
             p_filled_size: summary.filledSize, p_average_fill_price: summary.averageFillPrice,
             p_safe_response: { finish_as: summary.finishAs, left: summary.left, trade_count: trades.length, terminal: summary.terminal } };
@@ -1403,7 +1536,7 @@ export class TradingRunner {
     const leg = positions.find((position) => position.contract === job.contract
       && normalizePositionSide(position) === job.position_side);
     const observedSize = Number(leg?.size || 0);
-    if (observedSize !== Number(job.actual_size_at_plan)) {
+    if (!sameSize(observedSize, job.actual_size_at_plan)) {
       this.notFoundAfterExpiry.delete(job.intent_id);
       if (this.onSafetyEvent && this.shouldAlertStuckOrder(job.intent_id)) {
         await this.onSafetyEvent({ event: 'COPY_ORDER_UNRESOLVED', severity: 'CRITICAL', details: {
@@ -1428,25 +1561,80 @@ export class TradingRunner {
     this.staleFillAlerts.set(`order:${intentId}`, Date.now());
     return true;
   }
-  // P1-6: a fill that never matched a later observation blocks every order of that account and, before
-  // this alert, did so silently. Alert once per intent every 30 minutes.
-  // K4: a member sale that reached COPY locks that leg (DB anchor lock). Tell a person once per lock.
+  // K4: a member sale that reached COPY. Since 2026-10-20 the DB no longer locks the leg: it re-anchors the leg
+  // on the remaining COPY (lock_reason MEMBER_REDUCED_COPY_ACCEPTED), the sold COPY is not bought back and later
+  // Master changes are followed. Tell a person once per such anchor (INFO). A legacy MEMBER_REDUCED_COPY_POSITION
+  // lock (created before 2026-10-20) is still handled defensively: the leg stays held until resume (WARNING).
   alertCopyReducedByMember(targetAnchors = [], sessions = new Map(), memberContexts = []) {
+    const acceptedKeys = new Set();
     for (const anchor of targetAnchors || []) {
-      if (anchor?.lock_reason !== 'MEMBER_REDUCED_COPY_POSITION') continue;
+      const accepted = anchor?.lock_reason === 'MEMBER_REDUCED_COPY_ACCEPTED';
+      if (!accepted && anchor?.lock_reason !== 'MEMBER_REDUCED_COPY_POSITION') continue;
       const session = sessions.get(anchor.trading_account_id);
       if (!session || session.state !== 'ACTIVE' || session.version !== anchor.resume_version) continue;
       const key = `${anchor.trading_account_id}:${anchor.contract}:${anchor.position_side}:${anchor.resume_version}`;
+      const memberContext = memberContexts.find((m) => m.trading_account_id === anchor.trading_account_id);
+      if (accepted) {
+        // Once per anchor: the same remaining COPY is not announced again; a further sale changes target_size.
+        acceptedKeys.add(key);
+        const signature = String(anchor.target_size);
+        if (this.copyAcceptedAlerts.get(key) === signature) continue;
+        this.copyAcceptedAlerts.set(key, signature);
+        if (this.logger) this.logger('member_reduced_copy_accepted', { trading_account_id: anchor.trading_account_id,
+          contract: anchor.contract, position_side: anchor.position_side, copy_size: anchor.target_size });
+        if (this.onSafetyEvent) Promise.resolve(this.onSafetyEvent({ event: 'MEMBER_REDUCED_COPY_ACCEPTED', severity: 'INFO',
+          details: { ...memberLabelDetail(memberContext), user_id: memberContext?.user_id,
+            contract: anchor.contract, position_side: anchor.position_side, copy_size: anchor.target_size,
+            action: '카피 계속 (판 수량 재매수 안 함)' } })).catch(() => {});
+        continue;
+      }
       if (this.copyReducedAlerts.get(key) === anchor.observed_at) continue;
       this.copyReducedAlerts.set(key, anchor.observed_at);
-      const memberContext = memberContexts.find((m) => m.trading_account_id === anchor.trading_account_id);
       if (this.logger) this.logger('member_reduced_copy_position', { trading_account_id: anchor.trading_account_id,
-        contract: anchor.contract, position_side: anchor.position_side, copy_size: anchor.target_size });
+        contract: anchor.contract, position_side: anchor.position_side, copy_size: anchor.target_size, legacy_lock: true });
       if (this.onSafetyEvent) Promise.resolve(this.onSafetyEvent({ event: 'MEMBER_REDUCED_COPY_POSITION', severity: 'WARNING',
         details: { user_id: memberContext?.user_id, contract: anchor.contract, position_side: anchor.position_side,
-          copy_size: anchor.target_size, action: '이 종목 카피 중지 (다른 종목은 계속)' } })).catch(() => {});
+          copy_size: anchor.target_size, action: '이전 방식 잠금: 이 종목 카피 중지 (다른 종목은 계속)' } })).catch(() => {});
     }
+    for (const key of [...this.copyAcceptedAlerts.keys()]) if (!acceptedKeys.has(key)) this.copyAcceptedAlerts.delete(key);
   }
+  // A member whose Gate API key was deleted, expired or lost a permission fails every read with the same
+  // credential error; nothing heals it automatically (one member failed for 14 days unnoticed). Alert once the
+  // failure has lasted CREDENTIAL_ALERT_AFTER_MS, repeat at most every CREDENTIAL_ALERT_REPEAT_MS, and send one
+  // recovery message after an alerted failure clears. Other read failures neither start nor clear the streak.
+  trackMemberCredentialRead(account, error, now = Date.now()) {
+    const id = account?.trading_account_id;
+    if (!id) return;
+    const entry = this.credentialFailures.get(id);
+    if (!error) {
+      if (!entry) return;
+      this.credentialFailures.delete(id);
+      if (entry.notified && this.onSafetyEvent) Promise.resolve(this.onSafetyEvent({ event: 'MEMBER_API_CREDENTIAL_RECOVERED',
+        severity: 'INFO', details: { ...memberLabelDetail(account), user_id: account.user_id, trading_account_id: id,
+          error_code: entry.code, failing_minutes: Math.floor((now - entry.since) / 60_000) } })).catch(() => {});
+      if (this.logger) this.logger('member_api_credential_recovered', { trading_account_id: id, error_code: entry.code });
+      return;
+    }
+    const code = error instanceof GateApiError && CREDENTIAL_ERROR_CODES.has(error.code) ? error.code : null;
+    if (!code) return;
+    const current = entry || { since: now, alertedAt: 0, notified: false };
+    current.code = code;
+    this.credentialFailures.set(id, current);
+    const due = current.alertedAt ? now - current.alertedAt >= CREDENTIAL_ALERT_REPEAT_MS
+      : now - current.since >= CREDENTIAL_ALERT_AFTER_MS;
+    if (!due || !this.onSafetyEvent) return;
+    current.alertedAt = now;
+    // An undelivered alert is retried after CREDENTIAL_ALERT_RETRY_MS instead of waiting for the repeat window.
+    const retryLater = () => { current.alertedAt = now - CREDENTIAL_ALERT_REPEAT_MS + CREDENTIAL_ALERT_RETRY_MS; };
+    if (this.logger) this.logger('member_api_credential_failing', { trading_account_id: id, error_code: code,
+      failing_minutes: Math.floor((now - current.since) / 60_000) });
+    Promise.resolve(this.onSafetyEvent({ event: 'MEMBER_API_CREDENTIAL_FAILING', severity: 'WARNING',
+      details: { ...memberLabelDetail(account), user_id: account.user_id, trading_account_id: id, error_code: code,
+        failing_minutes: Math.floor((now - current.since) / 60_000) } }))
+      .then((result) => { if (result?.sent) current.notified = true; else retryLater(); }, retryLater);
+  }
+  // P1-6: a fill that never matched a later observation blocks every order of that account and, before
+  // this alert, did so silently. Alert once per intent every 30 minutes.
   async alertStaleFillObservations(olderThanSeconds = 300) {
     let stale;
     try { stale = await this.rpc('get_copy_stale_fill_observations', { p_older_than_seconds: olderThanSeconds }); }
@@ -1520,12 +1708,13 @@ export class TradingRunner {
       let errorCode = null;
       try {
         let details;
-        if (job.gate_order_id == null && job.result_status === 'CANCELLED' && Number(job.filled_size) === 0
-          && (job.error_code == null || NEVER_SENT_CANCELLATIONS.has(job.error_code))) {
-          // A plan replaced by a fresher plan (or discarded on pause/resume/LIVE start) never reached
-          // Gate. Reporting it as "주문 미체결" was 63% of all alerts in 9/21-9/24 and hid real ones.
+        if (intentNeverSentToGate(job)) {
+          // A plan replaced by a fresher plan (or discarded on pause/resume/LIVE start), never authorised, or
+          // stopped by the worker's own pre-submit checks never reached Gate. Reporting it as "카피 주문 미체결" was
+          // 63% of all alerts in 9/21-9/24 (and 520 of 539 later) and hid real ones: log it as '미전송' instead.
           await this.rpc('complete_copy_entry_alert', { p_alert_id: job.alert_id, p_sent: true, p_error_code: null });
-          if (this.logger) this.logger('entry_alert_suppressed', { alert_id: job.alert_id, error_code: job.error_code || null });
+          if (this.logger) this.logger('entry_alert_suppressed', { alert_id: job.alert_id, error_code: job.error_code || null,
+            result_status: job.result_status || null, contract: job.contract || null, note: '미전송 (거래소 주문 없음)' });
           continue;
         }
         if (job.gate_order_id != null) {

@@ -1,4 +1,4 @@
-import { GATE_API_BASE_URL, gateRequest } from './gate.js';
+import { GATE_API_BASE_URL, GateApiError, gateRequest } from './gate.js';
 
 export const BROKER_COMMISSION_HISTORY_PATH = '/api/v4/rebate/broker/commission_history';
 export const BROKER_TRANSACTION_HISTORY_PATH = '/api/v4/rebate/broker/transaction_history';
@@ -16,12 +16,19 @@ function utcDateFromSeconds(value) {
   return Number.isNaN(date.getTime()) ? null : date.toISOString().slice(0, 10);
 }
 
+// 30 days of broker history in pages of 100. The loop used to have no bound: a response that keeps returning full
+// pages without `total` (or ignores `offset`) made the hourly sync request forever.
+export const BROKER_HISTORY_MAX_PAGES = 500;
+
 async function getBrokerHistory({
-  apiKey, secretKey, from, to, path, fetchImpl = fetch, baseUrl = GATE_API_BASE_URL,
+  apiKey, secretKey, from, to, path, fetchImpl = fetch, baseUrl = GATE_API_BASE_URL, maxPages = BROKER_HISTORY_MAX_PAGES,
 }) {
   const records = [];
   const limit = 100;
-  for (let offset = 0; ; offset += limit) {
+  for (let pageNumber = 0, offset = 0; ; pageNumber++, offset += limit) {
+    if (pageNumber >= maxPages) {
+      throw new GateApiError('Gate Broker 기록 조회가 완전하지 않습니다.', { code: 'BROKER_HISTORY_PAGINATION_LIMIT', path });
+    }
     const { payload } = await gateRequest({
       apiKey, secretKey, path,
       query: { from, to, limit, offset }, fetchImpl, baseUrl,

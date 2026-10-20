@@ -125,23 +125,71 @@ test('K4: a member purchase is recorded as their own and copying continues', asy
   assert.equal(next.target_size, held + 7);
 });
 
-test('K4: a sale that reaches COPY locks only that leg (no buy-back) and warns', async () => {
+// 2026-10-20 (operator decision): a sale that reaches COPY no longer locks the leg. The sold COPY is not
+// bought back, and later Master changes on the leg are followed.
+async function copySold() {
   const { held, copy } = await ownPlusCopy();
   const remaining = held - 5 - 2; // all 5 own + 2 COPY sold
   await settle(remaining, 40, held);
   const p = await proof();
   assert.deepEqual([p.status, btc(p.protected_positions), btc(p.copy_positions)], ['CONFIRMED', 0, copy - 2]);
   const [a] = await anchors();
-  assert.deepEqual([a.lock_reason, a.target_size, a.protected_member_size], ['MEMBER_REDUCED_COPY_POSITION', copy - 2, 0]);
-  const event = await one("select severity,safe_payload from public.copy_events where safe_payload->>'reason'='MEMBER_REDUCED_COPY_POSITION'");
+  assert.deepEqual([a.lock_reason, a.target_size, a.protected_member_size], ['MEMBER_REDUCED_COPY_ACCEPTED', copy - 2, 0]);
+  const event = await one("select severity,safe_payload from public.copy_events where safe_payload->>'reason'='MEMBER_REDUCED_COPY_ACCEPTED'");
   assert.equal(event.severity, 'WARNING');
-  for (const masterSize of [40, 80, 10]) {
-    const plan = await cycle(remaining, masterSize);
-    assert.equal(plan.state, 'MANUAL_OVERRIDE');
-    assert.equal(plan.pause_reason, 'MEMBER_REDUCED_COPY_POSITION');
-    assert.equal(plan.intent, undefined, `no order at Master ${masterSize}`);
+  assert.equal(await one("select 1 x from public.copy_events where safe_payload->>'reason'='MEMBER_REDUCED_COPY_POSITION'"), undefined);
+  return { remaining, copy };
+}
+
+test('K4 2026-10-20: a sale that reaches COPY keeps copying and never buys the sold COPY back', async () => {
+  const { remaining, copy } = await copySold();
+  for (let i = 0; i < 3; i++) {
+    const plan = await cycle(remaining, 40);
+    assert.notEqual(plan.state, 'MANUAL_OVERRIDE');
+    assert.equal(plan.intent, undefined, 'no buy-back while the Master is unchanged');
+    assert.equal(plan.target_size, copy - 2);
+    assert.equal(plan.pause_reason, null);
   }
-  assert.equal((await anchors())[0].lock_reason, 'MEMBER_REDUCED_COPY_POSITION', 'the lock persists');
+  assert.equal((await proof()).status, 'CONFIRMED');
+});
+
+test('K4 2026-10-20: after a COPY sale a Master increase on the leg is followed (increment only)', async () => {
+  const { remaining, copy } = await copySold();
+  await cycle(remaining, 40);
+  const plan = await cycle(remaining, 80);
+  assert.ok(plan.intent && plan.intent.delta_size > 0, 'the Master increase is copied');
+  assert.ok(plan.intent.delta_size <= copy + 1, 'only the increment, not the sold COPY');
+  assert.equal(plan.intent.reduce_only, false);
+});
+
+test('K4 2026-10-20: after a COPY sale a Master reduction on the leg reduces the remaining COPY', async () => {
+  const { remaining } = await copySold();
+  await cycle(remaining, 40);
+  const plan = await cycle(remaining, 10);
+  assert.ok(plan.intent && plan.intent.delta_size < 0, 'the Master reduction is copied');
+  assert.equal(plan.intent.reduce_only, true);
+  assert.ok(Math.abs(plan.target_size) < remaining);
+  const close = await cycle(remaining, 0);
+  assert.equal(close.target_size, 0, 'a Master close closes the remaining COPY');
+});
+
+test('K4 2026-10-20: a COPY sale drops a stored pre-cap decision so a relaxed cap cannot regrow it', async () => {
+  const { held, copy } = await ownPlusCopy();
+  await db.query(`update private.copy_target_anchors set desired_target_size=target_size+30,
+    desired_basis_target_size=target_size, desired_basis_resume_version=resume_version, desired_basis_master_size=master_copyable_size`);
+  await settle(held - 7, 40, held);
+  const a = await one('select desired_target_size,desired_basis_target_size,target_size::float8 t from private.copy_target_anchors');
+  assert.deepEqual([a.desired_target_size, a.desired_basis_target_size, a.t], [null, null, copy - 2]);
+});
+
+test('K4 2026-10-20: an own-quantity change keeps a stored pre-cap decision consistent with the new target', async () => {
+  const { held } = await ownPlusCopy();
+  await db.query(`update private.copy_target_anchors set desired_target_size=target_size+30,
+    desired_basis_target_size=target_size, desired_basis_resume_version=resume_version, desired_basis_master_size=master_copyable_size`);
+  const before = await one('select target_size::float8 t from private.copy_target_anchors');
+  await settle(held - 3, 40, held); // 3 of the member's own 5 sold
+  const a = await one('select desired_target_size::float8 d,desired_basis_target_size::float8 b,target_size::float8 t from private.copy_target_anchors');
+  assert.deepEqual([a.t, a.b, a.d], [before.t - 3, before.t - 3, before.t + 27]);
 });
 
 test('K4: a COPY reduction without an anchor of this generation cannot be locked, so the old UNKNOWN latch applies', async () => {

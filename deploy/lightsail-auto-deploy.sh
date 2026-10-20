@@ -8,6 +8,7 @@ readonly DEPLOY_LOCK_FILE="/run/maetajak-deploy.lock"
 # while an operator works on the box; remove the file to resume.
 readonly MAINTENANCE_FILE="/etc/maetajak/maintenance"
 readonly NOTICE_STATE_FILE="/var/lib/maetajak/auto-deploy-pending-notice"
+readonly HEALTH_RECHECK_SECONDS="${HEALTH_RECHECK_SECONDS:-20}"
 
 if [[ "${EUID}" -ne 0 ]]; then
   echo "Run this auto-deployment check as root." >&2
@@ -28,9 +29,26 @@ fi
 export MAETAJAK_DEPLOY_LOCK_HELD=1
 
 live_mode=false
-if grep -Eq '^[[:space:]]*(export[[:space:]]+)?TRADING_MODE=["'"'"']?LIVE["'"'"']?[[:space:]]*$' <(tr -d '\r' < "${ENV_FILE}") 2>/dev/null; then
+# Case-insensitive like the worker (worker/runtime.js normalizeTradingMode trims and upper-cases TRADING_MODE).
+if grep -Eiq '^[[:space:]]*(export[[:space:]]+)?TRADING_MODE=["'"'"']?[[:space:]]*LIVE[[:space:]]*["'"'"']?[[:space:]]*$' <(tr -d '\r' < "${ENV_FILE}") 2>/dev/null; then
   live_mode=true
 fi
+
+# maetajak-worker.service is Type=oneshot + RemainAfterExit: `systemctl is-active` stays "active" after
+# `docker compose up -d` returned, even when the copy-worker container has since died. The worker is healthy only
+# when the unit is active AND the container is running (and not reported unhealthy by a health check).
+worker_container_running() {
+  local container_id container_state
+  container_id="$(MAETAJAK_ENV_FILE="${ENV_FILE}" docker compose -f docker-compose.worker.yml ps -q copy-worker 2>/dev/null | head -n 1)"
+  [[ -n "${container_id}" ]] || return 1
+  container_state="$(docker inspect -f '{{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' \
+    "${container_id}" 2>/dev/null)" || return 1
+  [[ "${container_state}" == "running none" || "${container_state}" == "running healthy" \
+    || "${container_state}" == "running starting" ]]
+}
+worker_healthy() {
+  [[ "$(systemctl is-active maetajak-worker.service || true)" == "active" ]] && worker_container_running
+}
 
 cd "${APP_DIR}"
 if [[ -n "$(git status --porcelain)" ]]; then
@@ -42,9 +60,10 @@ timeout 120 git fetch --quiet origin main
 local_sha="$(git rev-parse HEAD)"
 remote_sha="$(git rev-parse origin/main)"
 if [[ "${local_sha}" == "${remote_sha}" ]]; then
-  if [[ "$(systemctl is-active maetajak-worker.service || true)" != "active" ]]; then
-    # A stopped worker is brought back in DRY_RUN (fail-safe: LIVE needs an operator). Use the
-    # maintenance file to keep it stopped on purpose.
+  # Docker's restart policy may be bringing a crashed container back: look twice before recovering.
+  if ! worker_healthy && { sleep "${HEALTH_RECHECK_SECONDS}"; ! worker_healthy; }; then
+    # A stopped worker (unit inactive, or its container gone/stopped) is brought back in DRY_RUN (fail-safe:
+    # LIVE needs an operator). Use the maintenance file to keep it stopped on purpose.
     echo "auto_deploy=recover_inactive_worker"
     if [[ "${live_mode}" == "true" ]]; then
       export MAETAJAK_ENV_FILE="${ENV_FILE}"

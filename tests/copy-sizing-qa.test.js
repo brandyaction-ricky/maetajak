@@ -97,8 +97,11 @@ test('missing metadata clears proven-flat legacy legs but blocks any live exposu
 test('manual stray positions and open exchange orders pause copying without consuming a Master change', () => {
   const manual = cyclePayload({ member:{positions:[position(3,'SOXL_USDT')]} }).members[0].planned_positions.find((p)=>p.contract==='SOXL_USDT');
   assert.equal(manual.state,'MANUAL_OVERRIDE'); assert.equal(manual.intent,undefined); assert.equal(manual.anchor_update_allowed,false);
-  const open = anchored(80,10,40,10,{member:{open_orders:[{id:'pending',contract:'BTC_USDT'}]}});
+  const open = anchored(80,10,40,10,{member:{open_orders:[{id:'pending',contract:'BTC_USDT',text:'t-mtj-0123456789abcdef'}]}});
   assert.equal(open.state,'PAUSED'); assert.equal(open.intent,undefined); assert.equal(open.anchor_update_allowed,false);
+  // 2026-10-20: the member's own resting order (any non-platform text) does not hold the leg.
+  const own = anchored(80,10,40,10,{member:{open_orders:[{id:'own',contract:'BTC_USDT',text:'web'}]}});
+  assert.notEqual(own.state,'PAUSED'); assert.ok(own.intent); assert.equal(own.anchor_update_allowed,true);
 });
 
 test('loss limits permit risk-reducing Master closures while blocking all additions', () => {

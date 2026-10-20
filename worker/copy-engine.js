@@ -233,8 +233,17 @@ export function buildIdempotencyKey({ cycleId, userId, contract, positionSide = 
   return createHash('sha256').update(source).digest('hex');
 }
 
+export const PLATFORM_ORDER_TEXT_PREFIX = 't-mtj-';
+
+// An order the platform placed (its Gate `text` carries the platform prefix). Platform orders are IOC and
+// never rest; a resting order on a member account is the member's own (2026-10-20 operator decision: a
+// member's own resting orders do not hold copying or resume; their fills are the member's own quantity).
+export function isPlatformOrder(order) {
+  return String(order?.text ?? '').startsWith(PLATFORM_ORDER_TEXT_PREFIX);
+}
+
 export function buildGateOrderText(idempotencyKey) {
   const normalized = String(idempotencyKey).replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
   if (normalized.length < 12) throw new RangeError('idempotencyKey is too short');
-  return `t-mtj-${normalized.slice(0, 20)}`;
+  return `${PLATFORM_ORDER_TEXT_PREFIX}${normalized.slice(0, 20)}`;
 }
