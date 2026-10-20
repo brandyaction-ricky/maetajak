@@ -26,6 +26,12 @@ export const migrationFiles = [
   '20260922131020_fix_reversal_guard_legacy_fill_qualifier.sql',
   '20260924162948_copy_reliability_p0_p1.sql',
   '20260925002511_member_own_position_absorption.sql',
+  '20260926075458_copy_history_footprint.sql',
+  // 2026-10-19 reliability fixes.
+  '20261019060000_copy_event_noise_retention.sql',
+  '20261019060100_risk_equity_net_of_transfers.sql',
+  '20261019060200_target_anchor_desired_size.sql',
+  '20261019060300_gate_account_change_rebind.sql',
 ];
 export async function createVerifiedDatabase() {
   const db = new PGlite();

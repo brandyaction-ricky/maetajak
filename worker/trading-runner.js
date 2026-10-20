@@ -17,6 +17,15 @@ import {
 } from './member-resume.js';
 import { assertFreshAccount, assertOrderIdentity, assertSubmissionSnapshot, exchangeTradeAlert } from './execution-safety.js';
 
+// An equity change larger than this share between two cycles triggers an immediate transfer check.
+export const EQUITY_JUMP_RATIO = 0.02;
+
+// A capped leg is trimmed/regrown only when it is off the cap by more than this share of the cap.
+export const CAP_TOLERANCE_RATIO = 0.03;
+
+// Consecutive skewed member snapshots skipped silently before the member's legs are held (PAUSED).
+export const SNAPSHOT_SKEW_SKIP_LIMIT = 3;
+
 // Engine plans cancelled before any Gate request; they are not order failures.
 const NEVER_SENT_CANCELLATIONS = new Set(['SUPERSEDED_BY_FRESH_PLAN', 'SUPERSEDED_BY_RESUME', 'PRE_LIVE_INTENT_DISCARDED',
   'MEMBER_POSITION_CHANGED']);
@@ -53,6 +62,34 @@ function elapsedMs(startedAt) { return Math.max(0, Date.now() - startedAt); }
 // Proportional sizing compares account values on one basis. Gate unified equity already includes
 // unrealised PnL while the classic futures `total` is the wallet balance without it, so a classic
 // account adds its unrealised PnL. Accounts without the flag keep their reported total.
+// Member risk limits compare transfer-adjusted equity (total - recorded net deposits/withdrawals)
+// with the peak and day-start the DB keeps on the same basis. fund_flow_net = 0 is the old behaviour.
+export function evaluateMemberRisk({ account, total }) {
+  const net = Number(account?.fund_flow_net || 0);
+  const adjusted = Math.max(0, Number(total) - (Number.isFinite(net) ? net : 0));
+  const dayStart = Number(account?.day_start_equity || 0);
+  const peak = Number(account?.peak_equity || 0);
+  const dailyLossPct = dayStart > 0 ? Math.max(0, ((dayStart - adjusted) / dayStart) * 100) : 0;
+  const drawdownPct = peak > 0 ? Math.max(0, ((peak - adjusted) / peak) * 100) : 0;
+  const dailyLimitHit = dailyLossPct >= Number(account?.daily_loss_limit_pct || 5);
+  const drawdownLimitHit = drawdownPct >= Number(account?.max_drawdown_pct || 15);
+  return {
+    risk_halt_reason: dailyLimitHit ? 'DAILY_LOSS_LIMIT' : drawdownLimitHit ? 'MAX_DRAWDOWN_LIMIT' : null,
+    daily_loss_pct: dailyLossPct, drawdown_pct: drawdownPct, risk_equity: adjusted,
+  };
+}
+
+// Gate futures ledger rows of type 'dnw' (deposits, withdrawals and transfers in/out of futures).
+export function fundFlowEntries(ledger) {
+  return (Array.isArray(ledger) ? ledger : [])
+    .filter((entry) => String(entry?.type || '').trim().toLowerCase() === 'dnw')
+    .map((entry) => ({
+      key: String(entry.id ?? `${entry.time}:${entry.change}:${entry.balance}`),
+      change: String(entry.change), time: entry.time,
+    }))
+    .filter((entry) => Number.isFinite(Number(entry.change)) && Number(entry.change) !== 0);
+}
+
 export function sizingEquity(account) {
   const total = Number(account?.total);
   if (account?.equityIncludesUnrealised !== false || !Number.isFinite(total)) return total;
@@ -109,6 +146,14 @@ export function buildCurrentStatePayload({ cycleId, observedAt, master, members 
       return accountPayload(member, 'MEMBER', merged);
     }),
   };
+}
+
+export function withFundFlowNet(context, totals = []) {
+  const net = new Map((Array.isArray(totals) ? totals : []).map((row) => [row.trading_account_id, Number(row.net || 0)]));
+  if (!context || !Array.isArray(context.members)) return context;
+  return { ...context, members: context.members.map((member) => ({
+    ...member, fund_flow_net: Number.isFinite(net.get(member.trading_account_id)) ? net.get(member.trading_account_id) : 0,
+  })) };
 }
 
 export function suppressExecutableIntents(positions, mode) {
@@ -266,7 +311,14 @@ export function planMemberPositions({ cycleId, system, master, member, contracts
       && anchor.resume_version === member.resume_version);
     // An anchor records COPY + the member's own quantity of its time. The member may change their own
     // quantity later (K4), so only the COPY part is carried and the current own quantity is added back.
-    const anchorTargetSize = anchor ? Number(anchor.target_size) - Number(anchor.protected_member_size || 0) + protectedMemberSize : 0;
+    const anchorStoredTargetSize = anchor ? Number(anchor.target_size) - Number(anchor.protected_member_size || 0) + protectedMemberSize : 0;
+    // The anchored decision before any risk cap (DB returns it only while still paired with target_size).
+    // A cap that bound earlier therefore does not shrink the decision for good: when the cap relaxes
+    // (price down, equity up) the leg grows back towards it. A Master reduction never grows a leg (below).
+    const anchorDesired = anchor && anchor.desired_target_size != null && Number.isFinite(Number(anchor.desired_target_size))
+      ? Number(anchor.desired_target_size) - Number(anchor.protected_member_size || 0) + protectedMemberSize : null;
+    const anchorTargetSize = anchorDesired ?? anchorStoredTargetSize;
+    let desiredTargetSize = null;
     // A member sale that reached COPY locks the leg until the member resumes (set by the DB).
     const copyReducedByMember = anchorMatchesResume && anchor.lock_reason === 'MEMBER_REDUCED_COPY_POSITION';
     const ledgerSize = ledger ? (ledger.get(symbol) || 0) : null;
@@ -297,7 +349,12 @@ export function planMemberPositions({ cycleId, system, master, member, contracts
         memberEquity, memberMarkPrice: markPrice, memberQuantoMultiplier: contractInfo.quantoMultiplier,
         copyRatio: member.copy_ratio, maxPositionRatio: Math.max(0, member.max_position_ratio - protectedRatio), sizeStep: contractInfo.sizeStep,
       });
-      const lockedTargetSize = anchorTargetSize + incremental.targetSize;
+      // A Master increase sizes only the increment on top of what is held as decided (the stored,
+      // possibly capped target): growing back towards the desired size here could buy while the Master
+      // is in fact selling down from a partially consumed anchor. The desired size is carried forward.
+      const lockedTargetSize = anchorStoredTargetSize + incremental.targetSize;
+      desiredTargetSize = anchorTargetSize + roundTowardZeroToStep(
+        incremental.uncappedTargetNotional / (markPrice * contractInfo.quantoMultiplier), contractInfo.sizeStep);
       target.targetSize = capWithoutOwnGrowth({
         lockedTargetSize,
         memberEquity: member.total, memberMarkPrice: memberPosition.markPrice || markPrice,
@@ -335,6 +392,7 @@ export function planMemberPositions({ cycleId, system, master, member, contracts
           sizeStep: contractInfo.sizeStep,
         })
         : anchorTargetSize;
+      desiredTargetSize = lockedTargetSize;
       target.targetSize = capWithoutOwnGrowth({
         lockedTargetSize,
         memberEquity: member.total,
@@ -348,6 +406,8 @@ export function planMemberPositions({ cycleId, system, master, member, contracts
         : 'CURRENT_RISK_CAP_REDUCTION';
     } else {
       target.targetLockReason = anchorMatchesResume ? 'MASTER_QUANTITY_CHANGED' : 'TARGET_ANCHOR_INITIALIZED';
+      desiredTargetSize = protectedMemberSize + roundTowardZeroToStep(
+        target.uncappedTargetNotional / (markPrice * contractInfo.quantoMultiplier), contractInfo.sizeStep);
     }
     target.targetNotional = Math.abs(target.targetSize) * (memberPosition.markPrice || markPrice) * contractInfo.quantoMultiplier;
     const previous = previousStates.get(symbol);
@@ -444,6 +504,30 @@ export function planMemberPositions({ cycleId, system, master, member, contracts
       if (budgetReason) target.targetLockReason = budgetReason;
       target.targetNotional = Math.abs(target.targetSize) * unitNotional;
     }
+    // Cap dead-band. A cap follows price and equity every cycle; trimming or regrowing a capped leg on
+    // every small move sold one to three lots at a time (XAU_USDT 2026-10-12/13: ~60 sells per member
+    // per day). A capped leg is trimmed only once it exceeds the cap by more than CAP_TOLERANCE_RATIO of
+    // the cap, and regrown only once the room is that large. Master changes are never delayed by it.
+    if (!member.close_positions_requested && !masterQuantityReduced && !masterQuantityIncreased && anchorMatchesResume
+      && target.targetSize !== memberPosition.size
+      && (target.targetSize === 0 || Math.sign(target.targetSize) === Math.sign(memberPosition.size) || memberPosition.size === 0)) {
+      const unitNotional = (memberPosition.markPrice || markPrice) * contractInfo.quantoMultiplier;
+      const band = CAP_TOLERANCE_RATIO * Math.max(0, member.total) * Math.max(0, member.max_position_ratio) / 100;
+      const capTrim = ['CURRENT_RISK_CAP_REDUCTION', 'SYMBOL_GROSS_EXPOSURE_LIMIT'].includes(target.targetLockReason)
+        && target.targetSize !== 0 && Math.abs(target.targetSize) < Math.abs(memberPosition.size);
+      // Growth above the stored (capped) anchor target exists only through the desired size.
+      const regrowBase = Math.max(Math.abs(memberPosition.size), Math.abs(anchorStoredTargetSize));
+      const capRegrow = anchorDesired != null && Math.abs(target.targetSize) > regrowBase
+        && (memberPosition.size === 0 || Math.sign(target.targetSize) === Math.sign(memberPosition.size));
+      if (capTrim && (Math.abs(memberPosition.size) - Math.abs(target.targetSize)) * unitNotional <= band) {
+        target.targetSize = memberPosition.size;
+        target.targetLockReason = 'CAP_TOLERANCE_HOLD';
+      } else if (capRegrow && (Math.abs(target.targetSize) - regrowBase) * unitNotional <= band) {
+        target.targetSize = Math.sign(target.targetSize) * Math.min(Math.abs(target.targetSize), regrowBase);
+        target.targetLockReason = 'CAP_TOLERANCE_HOLD';
+      }
+      target.targetNotional = Math.abs(target.targetSize) * unitNotional;
+    }
     const reduceOnly = Boolean(member.reduce_only) || Boolean(member.close_positions_requested) || contractInfo.inDelisting === true;
     const state = deriveCopyState({
       systemHalted: Boolean(system.emergency_halted) && !simulateSystemHalt, memberHalted: Boolean(member.halted),
@@ -485,6 +569,8 @@ export function planMemberPositions({ cycleId, system, master, member, contracts
         && !manual.detected && !reversalCloseRequired && previous?.state !== 'MANUAL_OVERRIDE'
         && !masterUnconfirmed && !ledgerUnexplained,
       ...(anchorMasterCopyableSize == null ? {} : { anchor_master_copyable_size: anchorMasterCopyableSize }),
+      ...(desiredTargetSize == null || member.close_positions_requested || !Number.isFinite(desiredTargetSize)
+        ? {} : { anchor_desired_target_size: desiredTargetSize }),
       sizing_reason: budgetReason,
       execution_reason: delta.reason,
       master_actual_size: Number(observedMasterPosition.size),
@@ -542,6 +628,10 @@ export class TradingRunner {
     this.lastUnconfirmedKey = '';
     this.lastUnconfirmedAlertAt = 0;
     this.latestPerformanceMembers = [];
+    this.snapshotSkewSkips = new Map();
+    this.fundFlowRecheckAt = new Map();
+    this.lastMemberTotals = new Map();
+    this.lastFundFlowTotals = [];
   }
   // A FUTURE_ONLY baseline only shrinks, permanently. One empty or partial Master read must not
   // shrink it (the member would then copy the Master's pre-resume holdings): require the same
@@ -638,20 +728,54 @@ export class TradingRunner {
         expectedLegs: account.expected_legs || [], tolerateUnconfirmed: account.tolerate_unconfirmed_positions === true }),
       listFuturesOrders({ ...auth, baseUrl: this.baseUrl, fetchImpl: this.fetchImpl, status: 'open', limit: 100 }),
     ]);
-    const dayStart = Number(account.day_start_equity || 0);
-    const peak = Number(account.peak_equity || 0);
-    const dailyLossPct = dayStart > 0 ? Math.max(0, ((dayStart - summary.total) / dayStart) * 100) : 0;
-    const drawdownPct = peak > 0 ? Math.max(0, ((peak - summary.total) / peak) * 100) : 0;
-    const dailyLimitHit = dailyLossPct >= Number(account.daily_loss_limit_pct || 5);
-    const drawdownLimitHit = drawdownPct >= Number(account.max_drawdown_pct || 15);
-    const riskHalted = dailyLimitHit || drawdownLimitHit;
     if (openOrders.length >= 100) throw new GateApiError('미체결 주문을 모두 확인해야 합니다.', { code: 'OPEN_ORDERS_LIMIT_REACHED' });
+    const risk = evaluateMemberRisk({ account, total: summary.total });
     return { ...account, ...summary, positions, open_orders: openOrders,
       unconfirmed_contracts: positions.unconfirmedContracts || [],
       observed_started_at: startedAt, observed_at: new Date().toISOString(),
-      halted: Boolean(account.halted), reduce_only: Boolean(account.reduce_only) || riskHalted,
-      risk_halt_reason: dailyLimitHit ? 'DAILY_LOSS_LIMIT' : drawdownLimitHit ? 'MAX_DRAWDOWN_LIMIT' : null,
-      daily_loss_pct: dailyLossPct, drawdown_pct: drawdownPct };
+      halted: Boolean(account.halted), profile_reduce_only: Boolean(account.reduce_only),
+      reduce_only: Boolean(account.reduce_only) || Boolean(risk.risk_halt_reason),
+      ...risk };
+  }
+  // A risk limit is about to trip: make sure the equity drop is not a transfer the 5-minute ledger
+  // sync has not recorded yet. Today's Gate ledger transfers are recorded first, then risk is
+  // re-evaluated on the new net. Never throws: a failed check keeps the original evaluation.
+  async recheckRiskWithFundFlows(member, { force = false } = {}) {
+    if ((!member?.risk_halt_reason && !force) || !member?.trading_account_id) return member;
+    const lastCheck = this.fundFlowRecheckAt.get(member.trading_account_id) || 0;
+    if (Date.now() - lastCheck < 60_000) return member;
+    this.fundFlowRecheckAt.set(member.trading_account_id, Date.now());
+    try {
+      const range = kstDayRange(new Date());
+      const ledger = await getFuturesAccountBook({ ...credentials(member), baseUrl: this.baseUrl, fetchImpl: this.fetchImpl,
+        from: range.from - 86_400, to: range.to, type: 'dnw' });
+      const net = await this.recordFundFlows(member.trading_account_id, ledger);
+      if (net == null) return member;
+      const risk = evaluateMemberRisk({ account: { ...member, fund_flow_net: net }, total: member.total });
+      return { ...member, fund_flow_net: net, ...risk,
+        reduce_only: Boolean(member.profile_reduce_only) || Boolean(risk.risk_halt_reason) };
+    } catch (error) {
+      if (this.logger) this.logger('fund_flow_recheck_failed', { trading_account_id: member.trading_account_id, error_code: safeError(error, 'FUND_FLOW') });
+      return member;
+    }
+  }
+  // A transient read failure keeps the last known totals (never silently net 0 after a success, which
+  // would make past withdrawals read as losses). A database without the RPC yields [] (net 0).
+  async loadFundFlowTotals() {
+    try {
+      const totals = await this.rpc('get_copy_fund_flow_totals');
+      if (Array.isArray(totals)) { this.lastFundFlowTotals = totals; this.fundFlowTotalsLoaded = true; }
+    } catch (error) {
+      // Logged only when falling back to cached totals (a database without the RPC stays silent).
+      if (this.fundFlowTotalsLoaded && this.logger) this.logger('fund_flow_totals_unavailable', { error_code: safeError(error, 'FUND_FLOW') });
+    }
+    return this.lastFundFlowTotals;
+  }
+  async recordFundFlows(tradingAccountId, ledger) {
+    const entries = fundFlowEntries(ledger);
+    const net = await this.rpc('record_copy_fund_flows', { p_trading_account_id: tradingAccountId, p_entries: entries });
+    const value = Number(net);
+    return Number.isFinite(value) ? value : null;
   }
   async readResumeSnapshot(masterContext, memberContext) {
     const startedAt = Date.now();
@@ -678,8 +802,19 @@ export class TradingRunner {
       if (Date.parse(session.expires_at) <= Date.now()) throw new Error('RESUME_REQUEST_EXPIRED');
       if (Number(session.unresolved_orders) !== 0) throw new Error('RESUME_UNRESOLVED_ORDERS');
       if (session.state === 'VALIDATED' && (this.mode !== 'LIVE' || system?.emergency_halted || !system?.execution_enabled)) return { validated: true };
-      const first = await this.readResumeSnapshot(masterContext, memberContext);
+      let first = await this.readResumeSnapshot(masterContext, memberContext);
       reason = validateResumeSnapshot({ ...first, contracts });
+      // A newly connected Gate account starts in single mode. The cycle switches a member to dual mode
+      // only while ACTIVE, and resume could never become ACTIVE while the modes differ: switch a flat
+      // member with no resting orders here (Gate refuses the switch otherwise), then read again.
+      if (reason === 'RESUME_POSITION_MODE_MISMATCH' && this.mode === 'LIVE' && system?.execution_enabled
+        && !system?.emergency_halted && !first.member.positions.length && !first.openOrders.length
+        && !first.member.halted) {
+        await setFuturesPositionMode({ ...credentials(memberContext), channelId: this.channelId, baseUrl: this.baseUrl,
+          fetchImpl: this.fetchImpl, positionMode: 'dual' });
+        first = await this.readResumeSnapshot(masterContext, memberContext);
+        reason = validateResumeSnapshot({ ...first, contracts });
+      }
       if (reason) throw new Error(reason);
       const observedMemberPositions = resumePositions(first.member.positions);
       if (syncCurrentMaster && observedMemberPositions.length) throw new Error('RESUME_NEW_OPERATION_NOT_FLAT');
@@ -763,6 +898,16 @@ export class TradingRunner {
       getFuturesAccountBook({ ...auth, from: range.from, to: range.to }),
       getMyFuturesTradesInRange({ ...auth, from: range.from, to: range.to }),
     ]);
+    // Deposits/withdrawals since yesterday's KST start (a dedicated query: the day ledger above is
+    // capped at 1000 rows). Recorded once per Gate row; risk limits use the resulting net.
+    if (member.trading_account_id) {
+      try {
+        const transfers = await getFuturesAccountBook({ ...auth, from: range.from - 86_400, to: range.to, type: 'dnw' });
+        await this.recordFundFlows(member.trading_account_id, transfers);
+      } catch (error) {
+        if (this.logger) this.logger('fund_flow_sync_failed', { trading_account_id: member.trading_account_id, error_code: safeError(error, 'FUND_FLOW') });
+      }
+    }
     const performance = aggregateMemberPerformance({ member, ledger, trades, contracts, observedAt });
     await this.rpc('upsert_member_daily_performance', {
       p_user_id: member.user_id, p_trading_date: range.tradingDate,
@@ -801,13 +946,14 @@ export class TradingRunner {
     }
     this.pendingResumes = [];
     const contextStartedAt = Date.now();
-    const [rawContext, observationGuards, resumeContext, targetAnchors] = await Promise.all([
+    const [rawContext, observationGuards, resumeContext, targetAnchors, fundFlowTotals] = await Promise.all([
       this.rpc('get_copy_worker_context'),
       this.rpc('get_copy_order_observation_guards'),
       this.rpc('get_copy_resume_context'),
       this.rpc('get_copy_target_anchors'),
+      this.loadFundFlowTotals(),
     ]);
-    const context = applyOrderObservationGuards(rawContext, observationGuards);
+    const context = withFundFlowNet(applyOrderObservationGuards(rawContext, observationGuards), fundFlowTotals);
     const timings = { context_ms: elapsedMs(contextStartedAt) };
     if (!context?.master) return {
       observed: 0, masterObserved: 0, intents: 0, copyEventId: cycleId,
@@ -912,11 +1058,33 @@ export class TradingRunner {
         let member = { ...memberRead.value, resume_required: memberContext.resume_required, resume_version: memberContext.resume_version,
           target_anchors: memberContext.target_anchors, continued_copy_positions: session?.copy_positions || [] };
         assertFreshAccount(member);
-        // Concurrent account reads reduce skew; any remaining slow snapshot is
-        // observed without producing an executable plan.
+        // Concurrent account reads reduce skew; a remaining slow snapshot produces no executable plan.
+        // A short run of skewed reads is skipped without touching the member's stored state: marking
+        // every leg PAUSED for one cycle wrote two events per leg and looked like a pause to the member
+        // (2026-10-12..19: ~23k events in a week). A longer run is held as before.
         const snapshotTimes = [master.observed_at, member.observed_at].map(Date.parse);
-        if (snapshotTimes.every(Number.isFinite) && (Math.abs(snapshotTimes[0] - snapshotTimes[1]) > 3_000
-          || Date.now() - Math.min(...snapshotTimes) > RESUME_MAX_AGE_MS)) member.resume_required = true;
+        const snapshotSkewed = snapshotTimes.every(Number.isFinite) && (Math.abs(snapshotTimes[0] - snapshotTimes[1]) > 3_000
+          || Date.now() - Math.min(...snapshotTimes) > RESUME_MAX_AGE_MS);
+        if (snapshotSkewed) {
+          const skips = (this.snapshotSkewSkips.get(memberContext.trading_account_id) || 0) + 1;
+          this.snapshotSkewSkips.set(memberContext.trading_account_id, skips);
+          if (skips <= SNAPSHOT_SKEW_SKIP_LIMIT) {
+            if (this.logger) this.logger('member_snapshot_skew_skipped', { trading_account_id: memberContext.trading_account_id, skips,
+              skew_ms: Math.abs(snapshotTimes[0] - snapshotTimes[1]) });
+            continue;
+          }
+          member.resume_required = true;
+        } else {
+          this.snapshotSkewSkips.delete(memberContext.trading_account_id);
+        }
+        // Before a risk limit makes the member reduce-only, rule out an unrecorded transfer. A sudden
+        // equity jump is checked too, before this cycle's write: an unrecorded deposit would otherwise
+        // raise the stored peak and read as a drawdown once the transfer is recorded.
+        const previousTotal = this.lastMemberTotals.get(memberContext.trading_account_id);
+        this.lastMemberTotals.set(memberContext.trading_account_id, Number(member.total));
+        const equityJump = Number.isFinite(previousTotal) && previousTotal > 0
+          && Math.abs(Number(member.total) - previousTotal) > Math.max(EQUITY_JUMP_RATIO * previousTotal, 20);
+        if (member.risk_halt_reason || equityJump) member = await this.recheckRiskWithFundFlows(member, { force: equityJump });
         memberStage = 'BASELINE_INIT';
         const baseline = session?.state === 'CLOSING' ? { positions: [], member_positions: [] }
           : {
@@ -1088,7 +1256,7 @@ export class TradingRunner {
       let orderSent = false;
       try {
         const auth = { apiKey: job.api_key, secretKey: job.secret_key, channelId: this.channelId, baseUrl: this.baseUrl, fetchImpl: this.fetchImpl };
-        const context = await this.rpc('get_copy_worker_context');
+        const context = withFundFlowNet(await this.rpc('get_copy_worker_context'), await this.loadFundFlowTotals());
         if (!context?.master) throw new GateApiError('마스터 조회가 필요합니다.', { code: 'MASTER_POSITION_NOT_FOUND' });
         const memberContext = context.members?.find((member) => member.trading_account_id === job.trading_account_id);
         if (!memberContext) throw new GateApiError('활성 회원 설정을 확인할 수 없습니다.', { code: 'MEMBER_CONTEXT_MISSING' });
