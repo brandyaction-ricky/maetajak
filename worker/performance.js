@@ -10,6 +10,14 @@ export function kstDayRange(now = new Date()) {
   return { tradingDate, from, to: Math.floor(now.getTime() / 1000) };
 }
 
+// The whole KST day before `now`: from its 00:00 KST to the current day's 00:00 KST (Gate's `to` bound).
+export function previousKstDayRange(now = new Date()) {
+  const today = kstDayRange(now);
+  const from = today.from - 86_400;
+  const tradingDate = new Date((from + 9 * 60 * 60) * 1000).toISOString().slice(0, 10);
+  return { tradingDate, from, to: today.from };
+}
+
 function typeOf(entry) { return String(entry.type || '').trim().toLowerCase(); }
 
 export function aggregateMemberPerformance({ member, ledger = [], trades = [], contracts = new Map(), observedAt }) {

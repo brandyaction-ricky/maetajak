@@ -5,6 +5,15 @@ export function positionSide(position) {
   return position.positionSide || position.position_side || (Number(position.size) < 0 ? 'SHORT' : 'LONG');
 }
 
+// Sizes compared for equality come from different arithmetic paths (Gate strings, DB sums of fills); a binary
+// residue such as 0.19999999999999998 vs 0.2 is the same quantity.
+export const SIZE_TOLERANCE = 1e-9;
+export function sameSize(a, b) {
+  const left = Number(a);
+  const right = Number(b);
+  return Number.isFinite(left) && Number.isFinite(right) && Math.abs(left - right) <= SIZE_TOLERANCE;
+}
+
 export function assertFreshAccount(account, now = Date.now()) {
   const start = Date.parse(account?.observed_started_at);
   const end = Date.parse(account?.observed_at);
@@ -15,7 +24,7 @@ export function assertFreshAccount(account, now = Date.now()) {
   }
 }
 
-export function assertOrderIdentity(job, order) {
+export function assertOrderIdentity(job, order, { sizeStep } = {}) {
   // Gate accepts `reduce_only` in the create request, but its FuturesOrder
   // response schema exposes the verified flag as the read-only
   // `is_reduce_only` field. Keep the request-shaped alias for compatibility
@@ -27,7 +36,7 @@ export function assertOrderIdentity(job, order) {
     || (job.gate_order_id != null && String(order.id) !== String(job.gate_order_id))) {
     throw new GateApiError('거래소 주문 식별자가 일치하지 않습니다.', { code: 'ORDER_IDENTITY_MISMATCH', outcomeUnknown: true });
   }
-  const summary = summarizeGateOrder(order);
+  const summary = summarizeGateOrder(order, [], { sizeStep });
   if (!Number.isFinite(Number(job.delta_size)) || Number(order.size) !== Number(job.delta_size)
     || Math.abs(summary.filledSize) > Math.abs(Number(job.delta_size))) {
     throw new GateApiError('거래소 주문 수량이 일치하지 않습니다.', { code: 'ORDER_QUANTITY_MISMATCH', outcomeUnknown: true });
@@ -47,11 +56,11 @@ export function assertSubmissionSnapshot(job, account, master, reversalContext =
   const actual = account.positions.find((position) => position.contract === job.contract && positionSide(position) === job.position_side);
   const masterPosition = master.positions.find((position) => position.contract === job.contract && positionSide(position) === job.position_side);
   if (!Number.isFinite(Number(job.actual_size_at_plan))
-    || Number(actual?.size || 0) !== Number(job.actual_size_at_plan)) {
+    || !sameSize(actual?.size || 0, job.actual_size_at_plan)) {
     throw new GateApiError('계획 이후 회원 포지션이 바뀌었습니다.', { code: 'MEMBER_POSITION_CHANGED_BEFORE_SUBMIT' });
   }
   if (!Number.isFinite(Number(job.master_size_at_plan))
-    || Number(masterPosition?.size || 0) !== Number(job.master_size_at_plan)) {
+    || !sameSize(masterPosition?.size || 0, job.master_size_at_plan)) {
     throw new GateApiError('계획 이후 마스터 포지션이 바뀌었습니다.', { code: 'MASTER_POSITION_CHANGED_BEFORE_SUBMIT' });
   }
   const delta = Number(job.delta_size);

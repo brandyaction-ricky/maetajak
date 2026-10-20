@@ -1,5 +1,6 @@
 const escape = (value) => String(value ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-const money = (value) => `${Number(value || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USDT`;
+// Same currency notation as the rest of the console ($ amounts, USDT-margined accounts).
+const money = (value) => `$${Number(value || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 const errors = {
   ADMIN_REQUIRED: '승인된 관리자만 새 운용을 시작할 수 있습니다.',
   MEMBER_NOT_ELIGIBLE: '승인된 회원의 중지 상태 계좌에서만 시작할 수 있습니다.',
@@ -28,6 +29,8 @@ export function createNewOperationPanel({ root, rpc, onRequested }) {
     root.hidden = true; root.innerHTML = '';
   }
   async function open(id) {
+    // A submission in flight owns the request ID; re-opening would issue a new one.
+    if (busy) return;
     const ticket = ++generation;
     userId = id; preview = null; requestId = null; busy = false;
     root.hidden = false;
@@ -102,5 +105,5 @@ export function createNewOperationPanel({ root, rpc, onRequested }) {
     preview = null;
     await onRequested?.(requestedUser, result.data);
   });
-  return { open, clear };
+  return { open, clear, isBusy: () => busy };
 }

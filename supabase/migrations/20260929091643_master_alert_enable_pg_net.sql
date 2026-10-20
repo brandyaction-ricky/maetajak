@@ -1,0 +1,25 @@
+-- REPO RECORD ONLY. Already applied in production on 2026-09-29 (version 20260929091643,
+-- name master_alert_enable_pg_net); restored into the repo on 2026-10-20 to close repo drift.
+-- The statement below is the applied migration verbatim. Not part of tests/fixtures migrationFiles.
+create extension if not exists pg_net with schema extensions;
+
+-- Out-of-band production object, recorded here for reference only (NOT executed by this file, so a
+-- replay on another project never calls the production edge function). pg_cron job 'master-alert-tick',
+-- schedule '* * * * *', as read from cron.job on 2026-10-20. The only credential is referenced by its
+-- vault secret NAME (master_alert_cron_secret); no secret value is stored in the repo. The edge
+-- function reads master_alert_bot_token / master_alert_chat_id via public.master_alert_config().
+--
+-- select cron.schedule('master-alert-tick', '* * * * *', $cron$
+--   set statement_timeout = '20s';
+--   select master_alert.tick();
+--   select net.http_post(
+--     url := 'https://dhknhaluirumgqfwoibx.supabase.co/functions/v1/master-alert-send',
+--     headers := jsonb_build_object(
+--       'Content-Type', 'application/json',
+--       'x-alert-secret', (select decrypted_secret from vault.decrypted_secrets where name = 'master_alert_cron_secret')),
+--     body := '{}'::jsonb,
+--     timeout_milliseconds := 60000)
+--   where exists (
+--     select 1 from master_alert.entry_outbox
+--     where delivered_at is null and next_attempt_at <= now());
+-- $cron$);

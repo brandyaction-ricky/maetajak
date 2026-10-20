@@ -291,15 +291,19 @@ test('alerts: a plan superseded before any Gate request is not reported as an or
     if (name === 'claim_copy_entry_alerts') return [
       { alert_id: 1, event_type: 'COPY_ORDER_FAILED', gate_order_id: null, result_status: 'CANCELLED', filled_size: 0,
         error_code: 'SUPERSEDED_BY_FRESH_PLAN', details: {} },
+      // 2026-10-20 QA: the worker's own pre-submit checks also stop an intent before any Gate request.
       { alert_id: 2, event_type: 'COPY_ORDER_FAILED', gate_order_id: null, result_status: 'REJECTED', filled_size: 0,
         error_code: 'WORKER_MASTER_POSITION_CHANGED_BEFORE_SUBM', details: {} },
+      // A real Gate rejection of the order POST is still reported.
+      { alert_id: 3, event_type: 'COPY_ORDER_FAILED', gate_order_id: null, result_status: 'REJECTED', filled_size: 0,
+        error_code: 'WORKER_GATE_BALANCE_NOT_ENOUGH', details: {} },
     ];
     completed.push(params); return null;
   };
   assert.equal(await runner.deliverEntryAlerts(), 1);
   assert.equal(sent.length, 1);
-  assert.equal(sent[0].details.error_code, 'WORKER_MASTER_POSITION_CHANGED_BEFORE_SUBM');
-  assert.deepEqual(completed.map((c) => [c.p_alert_id, c.p_sent]), [[1, true], [2, true]]);
+  assert.equal(sent[0].details.error_code, 'WORKER_GATE_BALANCE_NOT_ENOUGH');
+  assert.deepEqual(completed.map((c) => [c.p_alert_id, c.p_sent]), [[1, true], [2, true], [3, true]]);
 });
 
 test('P1-1 alerts (re-review): every halt transition alerts, the lost-response case once, degraded only in LIVE', async () => {
