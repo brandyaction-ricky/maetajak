@@ -83,6 +83,20 @@ export function aggregateGateBrokerMetrics({ transactions, commissions }, { star
   }));
 }
 
+// A5: the Broker UID has no default. It used to fall back to '49084031' (an old Master UID), so a missing setting
+// or a replaced Master account silently synced the wrong account or nothing at all. The UID must be set
+// explicitly (GATE_BROKER_UID); the keys come from GATE_BROKER_API_KEY/GATE_BROKER_SECRET_KEY, or from the
+// Master's read key only when the explicitly configured UID is the Master's UID.
+export function resolveBrokerCredentials({ brokerUid, apiKey, secretKey, master = null } = {}) {
+  const uid = String(brokerUid ?? '').trim();
+  if (!/^\d+$/.test(uid)) return { configured: false, errorCode: 'GATE_BROKER_UID_REQUIRED' };
+  if (apiKey && secretKey) return { configured: true, apiKey, secretKey, source: 'BROKER_ENV' };
+  if (master?.api_key && master?.secret_key && String(master.gate_uid ?? '').trim() === uid) {
+    return { configured: true, apiKey: master.api_key, secretKey: master.secret_key, source: 'MASTER_KEY' };
+  }
+  return { configured: false, errorCode: 'BROKER_API_KEY_REQUIRED' };
+}
+
 export async function syncGateBrokerMetrics({
   supabase, apiKey, secretKey, baseUrl = GATE_API_BASE_URL, fetchImpl = fetch,
   now = new Date(), lookbackDays = 30,

@@ -66,12 +66,13 @@ test('C-1: one flat Master read closes an anchored member COPY leg immediately (
 
 // C-4: a member whose Gate reads keep failing with a NON-credential code (timeout/5xx/429, split position, >=100
 // open orders, inconsistent positions, invalid equity) is skipped every cycle (error_code row only) while the cycle
-// itself succeeds. No Telegram alert is ever produced for it; only the 4 credential codes alert.
+// itself succeeds. FIXED 2026-10-21 (fix/qa-infra): such a streak now alerts MEMBER_ACCOUNT_READ_FAILING once it
+// has lasted 5 minutes (the credential alert stays limited to the 4 credential codes).
 import { TradingRunner } from './trading-runner.js';
 import { GateApiError } from './gate.js';
 
 for (const code of ['GATE_TIMEOUT', 'GATE_API_ERROR', 'SPLIT_POSITION_UNSUPPORTED', 'OPEN_ORDERS_LIMIT_REACHED', 'POSITIONS_INCONSISTENT', 'INVALID_ACCOUNT_EQUITY']) {
-  test(`C-4: persistent member read failure ${code} is silent (cycle succeeds, no safety alert)`, async () => {
+  test(`C-4 (fixed): persistent member read failure ${code} alerts after 5 minutes (cycle still succeeds)`, async () => {
     const events = [];
     const recorded = [];
     const runner = new TradingRunner({ supabase: {}, baseUrl: 'https://api.gateio.ws', workerId: 'w', workerVersion: '0.5.0',
@@ -104,9 +105,12 @@ for (const code of ['GATE_TIMEOUT', 'GATE_API_ERROR', 'SPLIT_POSITION_UNSUPPORTE
       assert.equal(result.healthyMembers, 0);
     }
     assert.equal(recorded.at(-1).members[0].error_code, `MEMBER_ACCOUNT_READ_${code}`);
-    // Even a day later the credential tracker ignores this code.
-    runner.trackMemberCredentialRead({ trading_account_id: 'acct', user_id: 'u' }, new GateApiError('x', { code }), Date.now() + 86_400_000);
     await new Promise((resolve) => setImmediate(resolve));
-    assert.deepEqual(events, [], 'no alert for a member that is never copied');
+    assert.deepEqual(events, [], 'not before the failure has lasted 5 minutes');
+    // Five minutes into the streak: one warning for the generic read failure; the credential tracker stays out.
+    runner.trackMemberCredentialRead({ trading_account_id: 'acct', user_id: 'u' }, new GateApiError('x', { code }), Date.now() + 300_000);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(events.map((e) => [e.event, e.severity, e.details.error_code]), [['MEMBER_ACCOUNT_READ_FAILING', 'WARNING', code]]);
+    assert.equal(runner.credentialFailures.size, 0);
   });
 }

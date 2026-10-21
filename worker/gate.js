@@ -574,6 +574,35 @@ export async function getMyFuturesTradesInRange({ from, to, limit = 1000, offset
     limit, offset, maxPages, code: 'TRADES_PAGINATION_LIMIT' });
 }
 
+export const FUTURES_LIQUIDATES_PATH = '/api/v4/futures/usdt/liquidates';
+export const FUTURES_AUTO_DELEVERAGES_PATH = '/api/v4/futures/usdt/auto_deleverages';
+
+// C-6: the account's own forced closes on one contract since `fromSeconds`: Gate liquidation history
+// (GET /futures/usdt/liquidates: time, contract, size, ...) and auto-deleveraging history
+// (GET /futures/usdt/auto_deleverages: time, contract, position_size, trade_size, ...). Both are read-only and
+// return the newest rows first. Only `contract` and `limit` are sent; the time window is applied here. One
+// endpoint failing still returns the other's rows; both failing throws (the caller keeps its default alert).
+export async function getFuturesForcedCloses({ contract, fromSeconds = 0, ...options }) {
+  const query = { contract, limit: 100 };
+  const reads = await Promise.allSettled([
+    gateRequest({ ...options, path: FUTURES_LIQUIDATES_PATH, query }),
+    gateRequest({ ...options, path: FUTURES_AUTO_DELEVERAGES_PATH, query }),
+  ]);
+  if (reads.every((read) => read.status === 'rejected')) throw reads[0].reason;
+  const rows = [];
+  for (const [index, type] of [[0, 'LIQUIDATION'], [1, 'AUTO_DELEVERAGE']]) {
+    const payload = reads[index].status === 'fulfilled' ? reads[index].value.payload : null;
+    for (const row of Array.isArray(payload) ? payload : []) {
+      const raw = Number(row?.time);
+      const time = raw > 100_000_000_000 ? raw / 1_000 : raw; // seconds (a millisecond value is converted)
+      if (row?.contract !== contract || !Number.isFinite(time) || time < fromSeconds) continue;
+      const size = Number(type === 'LIQUIDATION' ? row.size : row.position_size);
+      rows.push({ type, contract, time, size: Number.isFinite(size) ? size : null });
+    }
+  }
+  return rows.sort((a, b) => b.time - a.time);
+}
+
 // Sizes derived by arithmetic on Gate's decimal strings (size - left) carry binary residue: 0.3 - 0.1 =
 // 0.19999999999999998, which then fails exact comparisons with ledger/position sizes. Round to the contract lot
 // when it is known, and always to 12 significant digits (far below any Gate lot precision).

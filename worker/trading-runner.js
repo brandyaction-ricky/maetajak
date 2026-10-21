@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import {
   GateApiError, cancelAllOpenFuturesOrders, findFuturesOrderByText, getFuturesAccount, getFuturesAccountBook, getFuturesContracts, listFuturesOrders,
-  getMyFuturesTradesInRange,
+  getMyFuturesTradesInRange, getFuturesForcedCloses,
   getFuturesOrder, getFuturesPositions, getOrderTrades, placeFuturesOrder, setFuturesLeverage,
   safeGateErrorLabel, setFuturesPositionMode, summarizeGateOrder,
 } from './gate.js';
@@ -63,6 +63,13 @@ const CREDENTIAL_ERROR_CODES = new Set(['INVALID_CREDENTIALS', 'FUTURES_READ_REQ
 export const CREDENTIAL_ALERT_AFTER_MS = 300_000;
 export const CREDENTIAL_ALERT_REPEAT_MS = 21_600_000;
 const CREDENTIAL_ALERT_RETRY_MS = 300_000;
+// C-6: how far back a member's Gate liquidation/ADL history is matched against a COPY reduction.
+export const FORCED_CLOSE_LOOKBACK_MS = 1_800_000;
+// C-5: consecutive LIVE cycles in which a member had executable plans but none was claimed before a warning.
+export const CLAIM_STALL_ALERT_CYCLES = 6;
+export const CLAIM_STALL_ALERT_REPEAT_MS = 1_800_000;
+// C-5: reconciliation time per cycle before the order claim; the rest of the batch runs after submitting.
+export const RECONCILE_BEFORE_SUBMIT_BUDGET_MS = 5_000;
 // Account fields that must never leave the worker in a payload or log (decrypted Gate credentials).
 const CREDENTIAL_FIELDS = ['api_key', 'secret_key'];
 export function withoutCredentials(account) {
@@ -682,6 +689,10 @@ export class TradingRunner {
     this.performanceSyncedAt = new Map();
     this.performanceDays = new Map();
     this.credentialFailures = new Map();
+    this.memberReadFailures = new Map();
+    this.claimStalls = new Map();
+    this.pendingClaimPlans = null;
+    this.deferredReconciliations = [];
     this.copyAcceptedAlerts = new Map();
     this.currentCopyEventId = null;
     this.resumeAlerts = new Map();
@@ -1294,6 +1305,12 @@ export class TradingRunner {
       }
     }
     timings.members_ms = elapsedMs(membersStartedAt);
+    // C-5: members with executable plans this cycle, checked against the order claim by trackClaimStall().
+    const executable = this.mode === 'LIVE' && context.system?.execution_enabled === true && !context.system?.emergency_halted;
+    this.pendingClaimPlans = executable ? new Map(members
+      .map((member) => [member, (member.planned_positions || []).filter((position) => position.intent).length])
+      .filter(([member, count]) => count > 0 && !member.error_code)
+      .map(([member, count]) => [member.trading_account_id, { count, member }])) : null;
     // Decrypted Gate credentials stay in the worker: record_verified_copy_worker_cycle (and the functions it calls)
     // read only ids, totals and positions. `members` itself keeps them for the performance sync below.
     const recordedMaster = {
@@ -1360,6 +1377,7 @@ export class TradingRunner {
     // A claim whose response is lost (e.g. a client-side timeout after the commit) is never acted on: its intents
     // stay SUBMITTING without submission_authorized_at and the DB settles them as UNSENT_CLAIM_EXPIRED.
     const jobs = await this.rpc('claim_copy_order_intents', { p_limit: limit });
+    this.trackClaimStall(jobs);
     let attempts = 0;
     // Member settings and fund-flow totals are read once per claimed batch (not once per job); every job still
     // re-reads both Gate accounts and the DB re-checks the intent in authorize_copy_order_submission.
@@ -1475,50 +1493,75 @@ export class TradingRunner {
     }
     return attempts;
   }
-  async reconcileOrders(limit = 10) {
+  // C-5 (QA 2026-10-21): a reconciliation backlog (10 jobs x 2 Gate reads + a completion RPC) ran before the
+  // order claim and could push this cycle's plans past the claim's 15 s freshness: the claim then returned
+  // nothing, silently. With `budgetMs` the batch stops starting jobs once the budget is spent; the rest of the
+  // claimed batch is kept in this.deferredReconciliations and finished by reconcileDeferredOrders() after
+  // submitOrders(). Submitting first is safe: guard_verified_copy_submission refuses any intent of an account
+  // that still has a SUBMITTING/ACKNOWLEDGED/UNKNOWN (or unconfirmed-fill) intent, which is every account a
+  // reconciliation job exists for, so a deferred reconciliation can never let an order through early.
+  async reconcileOrders(limit = 10, { budgetMs = null } = {}) {
+    this.deferredReconciliations = [];
+    const startedAt = Date.now();
     const jobs = await this.rpc('claim_copy_reconciliation_jobs', { p_limit: limit });
-    for (const job of jobs || []) {
-      let completion;
-      let summary;
-      try {
-        const auth = { apiKey: job.api_key, secretKey: job.secret_key, baseUrl: this.baseUrl, fetchImpl: this.fetchImpl };
-        const order = job.gate_order_id ? await getFuturesOrder({ ...auth, orderId: job.gate_order_id }) : await findFuturesOrderByText({ ...auth, text: job.gate_order_text, contract: job.contract });
-        if (!order) {
-          completion = await this.resolveMissingOrder(job, auth);
-        } else {
-          const sizeStep = this.contracts?.get(job.contract)?.sizeStep;
-          assertOrderIdentity(job, order, { sizeStep });
-          const orderId = String(order.id);
-          const trades = await getOrderTrades({ ...auth, orderId, contract: job.contract });
-          summary = summarizeGateOrder(order, trades, { sizeStep });
-          completion = { p_job_id: job.job_id, p_status: summary.finalStatus, p_gate_order_id: orderId,
-            p_filled_size: summary.filledSize, p_average_fill_price: summary.averageFillPrice,
-            p_safe_response: { finish_as: summary.finishAs, left: summary.left, trade_count: trades.length, terminal: summary.terminal } };
-        }
-      } catch (error) {
-        const errorCode = safeError(error, 'RECONCILIATION');
-        completion = { p_job_id: job.job_id, p_status: 'UNKNOWN', p_gate_order_id: job.gate_order_id,
-          p_filled_size: 0, p_average_fill_price: null, p_safe_response: { error_code: errorCode } };
-        if (this.logger) this.logger('order_reconciliation_failed', {
-          intent_id: job.intent_id,
-          job_id: job.job_id,
-          contract: job.contract,
-          result_status: 'UNKNOWN',
-          error_code: errorCode,
-        });
+    let processed = 0;
+    for (const [index, job] of (jobs || []).entries()) {
+      if (budgetMs != null && processed > 0 && Date.now() - startedAt >= budgetMs) {
+        this.deferredReconciliations = jobs.slice(index);
+        if (this.logger) this.logger('order_reconciliation_deferred', { deferred: jobs.length - index, elapsed_ms: elapsedMs(startedAt) });
+        break;
       }
-      // A lost database acknowledgement must never rewrite a committed fill.
-      await this.rpc('complete_copy_reconciliation', completion);
-      if (completion.p_safe_response?.resolution && this.logger) this.logger('order_reconciliation_resolved', {
-        intent_id: job.intent_id, job_id: job.job_id, contract: job.contract,
-        result_status: completion.p_status, resolution: completion.p_safe_response.resolution,
-      });
-      if (summary && this.logger) this.logger('order_reconciliation_completed', {
-        intent_id: job.intent_id, job_id: job.job_id, contract: job.contract,
-        result_status: summary.finalStatus, gate_order_id: summary.gateOrderId, filled_size: summary.filledSize,
+      await this.reconcileJob(job);
+      processed++;
+    }
+    return processed;
+  }
+  async reconcileDeferredOrders() {
+    const jobs = this.deferredReconciliations || [];
+    this.deferredReconciliations = [];
+    for (const job of jobs) await this.reconcileJob(job);
+    return jobs.length;
+  }
+  async reconcileJob(job) {
+    let completion;
+    let summary;
+    try {
+      const auth = { apiKey: job.api_key, secretKey: job.secret_key, baseUrl: this.baseUrl, fetchImpl: this.fetchImpl };
+      const order = job.gate_order_id ? await getFuturesOrder({ ...auth, orderId: job.gate_order_id }) : await findFuturesOrderByText({ ...auth, text: job.gate_order_text, contract: job.contract });
+      if (!order) {
+        completion = await this.resolveMissingOrder(job, auth);
+      } else {
+        const sizeStep = this.contracts?.get(job.contract)?.sizeStep;
+        assertOrderIdentity(job, order, { sizeStep });
+        const orderId = String(order.id);
+        const trades = await getOrderTrades({ ...auth, orderId, contract: job.contract });
+        summary = summarizeGateOrder(order, trades, { sizeStep });
+        completion = { p_job_id: job.job_id, p_status: summary.finalStatus, p_gate_order_id: orderId,
+          p_filled_size: summary.filledSize, p_average_fill_price: summary.averageFillPrice,
+          p_safe_response: { finish_as: summary.finishAs, left: summary.left, trade_count: trades.length, terminal: summary.terminal } };
+      }
+    } catch (error) {
+      const errorCode = safeError(error, 'RECONCILIATION');
+      completion = { p_job_id: job.job_id, p_status: 'UNKNOWN', p_gate_order_id: job.gate_order_id,
+        p_filled_size: 0, p_average_fill_price: null, p_safe_response: { error_code: errorCode } };
+      if (this.logger) this.logger('order_reconciliation_failed', {
+        intent_id: job.intent_id,
+        job_id: job.job_id,
+        contract: job.contract,
+        result_status: 'UNKNOWN',
+        error_code: errorCode,
       });
     }
-    return jobs?.length || 0;
+    // A lost database acknowledgement must never rewrite a committed fill.
+    await this.rpc('complete_copy_reconciliation', completion);
+    if (completion.p_safe_response?.resolution && this.logger) this.logger('order_reconciliation_resolved', {
+      intent_id: job.intent_id, job_id: job.job_id, contract: job.contract,
+      result_status: completion.p_status, resolution: completion.p_safe_response.resolution,
+    });
+    if (summary && this.logger) this.logger('order_reconciliation_completed', {
+      intent_id: job.intent_id, job_id: job.job_id, contract: job.contract,
+      result_status: summary.finalStatus, gate_order_id: summary.gateOrderId, filled_size: summary.filledSize,
+    });
   }
   // P1-5: an order that Gate cannot find by its unique text is proof of non-placement only after its
   // X-Gate-Exptime has passed (Gate rejects later arrivals), a previous lookup also missed it, and the
@@ -1555,6 +1598,29 @@ export class TradingRunner {
       p_average_fill_price: null, p_safe_response: { found: false, resolution: 'NOT_FOUND_AFTER_EXPIRY',
         terminal: true, observed_size: observedSize } };
   }
+  // C-5: a member whose executable plans are never claimed (plans older than the claim's 15 s freshness after a
+  // slow cycle, a DB guard, an unsettled order) used to be invisible: the next cycle cancelled the plans as
+  // SUPERSEDED_BY_FRESH_PLAN, which is excluded from order alerts. After CLAIM_STALL_ALERT_CYCLES consecutive
+  // executable cycles without a claim for that member, warn (repeat every CLAIM_STALL_ALERT_REPEAT_MS).
+  trackClaimStall(jobs, now = Date.now()) {
+    const plans = this.pendingClaimPlans;
+    this.pendingClaimPlans = null;
+    if (!plans) { this.claimStalls.clear(); return; }
+    const claimed = new Set((jobs || []).map((job) => job.trading_account_id));
+    for (const id of [...this.claimStalls.keys()]) if (!plans.has(id) || claimed.has(id)) this.claimStalls.delete(id);
+    for (const [id, { count, member }] of plans) {
+      if (claimed.has(id)) continue;
+      const stall = this.claimStalls.get(id) || { cycles: 0, alertedAt: 0 };
+      stall.cycles += 1;
+      this.claimStalls.set(id, stall);
+      if (stall.cycles < CLAIM_STALL_ALERT_CYCLES || (stall.alertedAt && now - stall.alertedAt < CLAIM_STALL_ALERT_REPEAT_MS)) continue;
+      stall.alertedAt = now;
+      if (this.logger) this.logger('copy_order_claim_stalled', { trading_account_id: id, stalled_cycles: stall.cycles, planned_intents: count });
+      if (this.onSafetyEvent) Promise.resolve(this.onSafetyEvent({ event: 'COPY_ORDER_CLAIM_STALLED', severity: 'WARNING',
+        details: { ...memberLabelDetail(member), user_id: member.user_id, trading_account_id: id,
+          stalled_cycles: stall.cycles, planned_intents: count } })).catch(() => {});
+    }
+  }
   shouldAlertStuckOrder(intentId) {
     const last = this.staleFillAlerts.get(`order:${intentId}`) || 0;
     if (Date.now() - last < 1_800_000) return false;
@@ -1582,10 +1648,7 @@ export class TradingRunner {
         this.copyAcceptedAlerts.set(key, signature);
         if (this.logger) this.logger('member_reduced_copy_accepted', { trading_account_id: anchor.trading_account_id,
           contract: anchor.contract, position_side: anchor.position_side, copy_size: anchor.target_size });
-        if (this.onSafetyEvent) Promise.resolve(this.onSafetyEvent({ event: 'MEMBER_REDUCED_COPY_ACCEPTED', severity: 'INFO',
-          details: { ...memberLabelDetail(memberContext), user_id: memberContext?.user_id,
-            contract: anchor.contract, position_side: anchor.position_side, copy_size: anchor.target_size,
-            action: '카피 계속 (판 수량 재매수 안 함)' } })).catch(() => {});
+        this.notifyCopyReducedByMember(anchor, memberContext);
         continue;
       }
       if (this.copyReducedAlerts.get(key) === anchor.observed_at) continue;
@@ -1598,39 +1661,83 @@ export class TradingRunner {
     }
     for (const key of [...this.copyAcceptedAlerts.keys()]) if (!acceptedKeys.has(key)) this.copyAcceptedAlerts.delete(key);
   }
+  // C-6 (QA 2026-10-21): a Gate liquidation or ADL also makes the member's position shrink or vanish, and the DB
+  // accounts it like a member sale (unchanged: the lost COPY is not bought back). Before the INFO notice, the
+  // member's Gate liquidation/ADL history for the leg is checked; a match sends a distinct WARNING instead.
+  // Without credentials (or if both history reads fail) the INFO notice is sent as before. Never throws.
+  notifyCopyReducedByMember(anchor, memberContext, now = Date.now()) {
+    if (!this.onSafetyEvent) return;
+    const base = { ...memberLabelDetail(memberContext), user_id: memberContext?.user_id,
+      contract: anchor.contract, position_side: anchor.position_side, copy_size: anchor.target_size };
+    const info = () => Promise.resolve(this.onSafetyEvent({ event: 'MEMBER_REDUCED_COPY_ACCEPTED', severity: 'INFO',
+      details: { ...base, action: '카피 계속 (판 수량 재매수 안 함)' } })).catch(() => {});
+    if (!memberContext?.api_key || !memberContext?.secret_key) { info(); return; }
+    (async () => {
+      let forced = null;
+      try {
+        const rows = await getFuturesForcedCloses({ ...credentials(memberContext), baseUrl: this.baseUrl, fetchImpl: this.fetchImpl,
+          contract: anchor.contract, fromSeconds: Math.floor((now - FORCED_CLOSE_LOOKBACK_MS) / 1_000) });
+        // A signed size of the other direction belongs to the other hedge leg.
+        forced = rows.find((row) => !row.size || (row.size > 0) === (anchor.position_side === 'LONG')) || null;
+      } catch (error) {
+        if (this.logger) this.logger('forced_close_check_failed', { trading_account_id: anchor.trading_account_id,
+          contract: anchor.contract, error_code: safeError(error, 'FORCED_CLOSE_CHECK') });
+      }
+      if (!forced) { info(); return; }
+      if (this.logger) this.logger('member_forced_close_detected', { trading_account_id: anchor.trading_account_id,
+        contract: anchor.contract, position_side: anchor.position_side, type: forced.type, time: forced.time });
+      await this.onSafetyEvent({ event: 'MEMBER_LIQUIDATION_DETECTED', severity: 'WARNING', details: { ...base,
+        liquidation_type: forced.type, liquidated_at: new Date(forced.time * 1_000).toISOString(),
+        action: '회원 매도와 같이 처리 (줄어든 카피 수량 재매수 안 함)' } });
+    })().catch(() => {});
+  }
   // A member whose Gate API key was deleted, expired or lost a permission fails every read with the same
   // credential error; nothing heals it automatically (one member failed for 14 days unnoticed). Alert once the
   // failure has lasted CREDENTIAL_ALERT_AFTER_MS, repeat at most every CREDENTIAL_ALERT_REPEAT_MS, and send one
   // recovery message after an alerted failure clears. Other read failures neither start nor clear the streak.
+  //
+  // C-4 (QA 2026-10-21): every other read failure (GATE_TIMEOUT, GATE_API_ERROR 5xx/429, SPLIT_POSITION_UNSUPPORTED,
+  // OPEN_ORDERS_LIMIT_REACHED, POSITIONS_INCONSISTENT, INVALID_ACCOUNT_EQUITY, ...) skipped the member every cycle
+  // without any alert. It now has its own streak with the same timing (MEMBER_ACCOUNT_READ_FAILING / _RECOVERED).
+  // A success clears both streaks; a credential failure neither starts nor clears the generic one, and vice versa.
   trackMemberCredentialRead(account, error, now = Date.now()) {
     const id = account?.trading_account_id;
     if (!id) return;
-    const entry = this.credentialFailures.get(id);
-    if (!error) {
+    const errorCode = error ? (error instanceof GateApiError && error.code ? String(error.code) : 'UNKNOWN') : null;
+    const credential = errorCode && CREDENTIAL_ERROR_CODES.has(errorCode);
+    this.trackReadFailureStreak(this.credentialFailures, account, error ? (credential ? errorCode : undefined) : null, now, {
+      failing: 'MEMBER_API_CREDENTIAL_FAILING', recovered: 'MEMBER_API_CREDENTIAL_RECOVERED', log: 'member_api_credential' });
+    this.trackReadFailureStreak(this.memberReadFailures, account, error ? (credential ? undefined : errorCode) : null, now, {
+      failing: 'MEMBER_ACCOUNT_READ_FAILING', recovered: 'MEMBER_ACCOUNT_READ_RECOVERED', log: 'member_account_read' });
+  }
+  // code: null = the read succeeded (clears the streak), undefined = a failure this streak does not track (no-op).
+  trackReadFailureStreak(failures, account, code, now, events) {
+    const id = account.trading_account_id;
+    if (code === undefined) return;
+    const entry = failures.get(id);
+    if (code === null) {
       if (!entry) return;
-      this.credentialFailures.delete(id);
-      if (entry.notified && this.onSafetyEvent) Promise.resolve(this.onSafetyEvent({ event: 'MEMBER_API_CREDENTIAL_RECOVERED',
+      failures.delete(id);
+      if (entry.notified && this.onSafetyEvent) Promise.resolve(this.onSafetyEvent({ event: events.recovered,
         severity: 'INFO', details: { ...memberLabelDetail(account), user_id: account.user_id, trading_account_id: id,
           error_code: entry.code, failing_minutes: Math.floor((now - entry.since) / 60_000) } })).catch(() => {});
-      if (this.logger) this.logger('member_api_credential_recovered', { trading_account_id: id, error_code: entry.code });
+      if (this.logger) this.logger(`${events.log}_recovered`, { trading_account_id: id, error_code: entry.code });
       return;
     }
-    const code = error instanceof GateApiError && CREDENTIAL_ERROR_CODES.has(error.code) ? error.code : null;
-    if (!code) return;
     const current = entry || { since: now, alertedAt: 0, notified: false };
     current.code = code;
-    this.credentialFailures.set(id, current);
+    failures.set(id, current);
     const due = current.alertedAt ? now - current.alertedAt >= CREDENTIAL_ALERT_REPEAT_MS
       : now - current.since >= CREDENTIAL_ALERT_AFTER_MS;
     if (!due || !this.onSafetyEvent) return;
     current.alertedAt = now;
     // An undelivered alert is retried after CREDENTIAL_ALERT_RETRY_MS instead of waiting for the repeat window.
     const retryLater = () => { current.alertedAt = now - CREDENTIAL_ALERT_REPEAT_MS + CREDENTIAL_ALERT_RETRY_MS; };
-    if (this.logger) this.logger('member_api_credential_failing', { trading_account_id: id, error_code: code,
-      failing_minutes: Math.floor((now - current.since) / 60_000) });
-    Promise.resolve(this.onSafetyEvent({ event: 'MEMBER_API_CREDENTIAL_FAILING', severity: 'WARNING',
+    const failingMinutes = Math.floor((now - current.since) / 60_000);
+    if (this.logger) this.logger(`${events.log}_failing`, { trading_account_id: id, error_code: code, failing_minutes: failingMinutes });
+    Promise.resolve(this.onSafetyEvent({ event: events.failing, severity: 'WARNING',
       details: { ...memberLabelDetail(account), user_id: account.user_id, trading_account_id: id, error_code: code,
-        failing_minutes: Math.floor((now - current.since) / 60_000) } }))
+        failing_minutes: failingMinutes } }))
       .then((result) => { if (result?.sent) current.notified = true; else retryLater(); }, retryLater);
   }
   // P1-6: a fill that never matched a later observation blocks every order of that account and, before
