@@ -1,0 +1,61 @@
+import test, { before, after, beforeEach, afterEach } from 'node:test';
+import assert from 'node:assert/strict';
+import { createVerifiedDatabase, seedVerifiedAccount, cyclePayload, record, ids } from './fixtures/verified-runtime.js';
+
+// QA 2026-10-21 area D. Each test asserts the CURRENT behaviour of 0c39e77 against the latest migrations;
+// a passing "REPRO" test means the reported finding is reproduced.
+let db;
+const one = async (q, p) => (await db.query(q, p)).rows[0];
+const asMember = () => db.query("select set_config('request.jwt.claim.sub',$1,false),set_config('request.jwt.claim.role','authenticated',false),set_config('test.admin','false',false)", [ids.user]);
+const asAdmin = () => db.query("select set_config('request.jwt.claim.sub','',false),set_config('request.jwt.claim.role','authenticated',false),set_config('test.admin','true',false)");
+const asWorker = () => db.query("select set_config('request.jwt.claim.role','service_role',false),set_config('test.admin','false',false)");
+before(async () => { db = await createVerifiedDatabase(); });
+after(async () => { await db?.close(); });
+beforeEach(async () => { await db.exec('begin'); await seedVerifiedAccount(db); });
+afterEach(async () => { await db.exec('rollback'); });
+
+const anchors = async () => { await asWorker(); return (await one('select public.get_copy_target_anchors() a')).a; };
+
+test('D-REPRO risk limit -> sticky reduce-only; ACTIVE "재개" lifts it and the next cycle buys the Master entry made meanwhile', async () => {
+  // Cycle 1: daily loss limit reached (worker evaluation). Master opens BTC LONG 40 in the same period.
+  await record(db, cyclePayload({ masterSize: 40, member: { reduce_only: true, risk_halt_reason: 'DAILY_LOSS_LIMIT' } }));
+  assert.equal((await one('select reduce_only from public.profiles where id=$1', [ids.user])).reduce_only, true, 'sticky');
+  assert.equal(Number((await one('select count(*) n from private.copy_order_intents')).n), 0, 'nothing bought while reduce-only');
+  const stored = await anchors();
+  assert.equal(stored.length, 1);
+  assert.equal(Number(stored[0].target_size), 10, 'anchor holds the full target although nothing was bought');
+
+  // Member presses "카피 재개" (session is ACTIVE, not paused): reduce-only is cleared in place, no validation.
+  await asMember();
+  await db.query("select public.set_my_copy_pause('RESUME')");
+  await asWorker();
+  const session = await one('select state,version from private.copy_resume_sessions where trading_account_id=$1', [ids.member]);
+  assert.deepEqual([session.state, session.version], ['ACTIVE', ids.version]);
+  assert.equal((await one('select reduce_only from public.profiles where id=$1', [ids.user])).reduce_only, false);
+
+  // Next cycle (Master unchanged at 40, member still flat): a full-size BUY is planned and recorded.
+  await record(db, cyclePayload({ masterSize: 40, member: { target_anchors: await anchors() } }));
+  const intent = await one("select delta_size,reduce_only,status from private.copy_order_intents order by created_at desc limit 1");
+  assert.equal(Number(intent.delta_size), 10);
+  assert.equal(intent.reduce_only, false);
+});
+
+test('D-REPRO admin REDUCE_ONLY: member cannot lift it directly, but HOLD then RESUME lifts it', async () => {
+  await asAdmin();
+  await db.query("select public.set_member_copy_control($1,'REDUCE_ONLY','QA')", [ids.user]);
+  await asWorker();
+  let s = await one('select state,blocker_reason from private.copy_resume_sessions where trading_account_id=$1', [ids.member]);
+  assert.deepEqual([s.state, s.blocker_reason], ['ACTIVE', 'ADMIN_REDUCE_ONLY']);
+
+  await asMember();
+  await db.query("select public.set_my_copy_pause('RESUME')");
+  assert.equal((await one('select reduce_only from public.profiles where id=$1', [ids.user])).reduce_only, true, 'guarded path');
+
+  await db.query("select public.set_my_copy_pause('HOLD')");
+  await db.query("select public.set_my_copy_pause('RESUME')");
+  await asWorker();
+  const p = await one('select reduce_only,copy_paused from public.profiles where id=$1', [ids.user]);
+  s = await one('select state,blocker_reason from private.copy_resume_sessions where trading_account_id=$1', [ids.member]);
+  assert.equal(p.reduce_only, false, 'admin reduce-only removed by the member');
+  assert.equal(s.state, 'REQUESTED', 'a normal resume validation is now running; activation keeps reduce_only=false');
+});
