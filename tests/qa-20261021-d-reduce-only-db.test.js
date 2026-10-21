@@ -40,12 +40,13 @@ test('D-REPRO risk limit -> sticky reduce-only; ACTIVE "재개" lifts it and the
   assert.equal(intent.reduce_only, false);
 });
 
-test('D-REPRO admin REDUCE_ONLY: member cannot lift it directly, but HOLD then RESUME lifts it', async () => {
+test('D3 FIXED admin REDUCE_ONLY survives a member HOLD then RESUME (and the activation); only admin RESUME lifts it', async () => {
   await asAdmin();
   await db.query("select public.set_member_copy_control($1,'REDUCE_ONLY','QA')", [ids.user]);
   await asWorker();
   let s = await one('select state,blocker_reason from private.copy_resume_sessions where trading_account_id=$1', [ids.member]);
   assert.deepEqual([s.state, s.blocker_reason], ['ACTIVE', 'ADMIN_REDUCE_ONLY']);
+  assert.equal((await one('select admin_reduce_only from public.profiles where id=$1', [ids.user])).admin_reduce_only, true);
 
   await asMember();
   await db.query("select public.set_my_copy_pause('RESUME')");
@@ -54,8 +55,54 @@ test('D-REPRO admin REDUCE_ONLY: member cannot lift it directly, but HOLD then R
   await db.query("select public.set_my_copy_pause('HOLD')");
   await db.query("select public.set_my_copy_pause('RESUME')");
   await asWorker();
-  const p = await one('select reduce_only,copy_paused from public.profiles where id=$1', [ids.user]);
+  let p = await one('select reduce_only,admin_reduce_only,copy_paused from public.profiles where id=$1', [ids.user]);
   s = await one('select state,blocker_reason from private.copy_resume_sessions where trading_account_id=$1', [ids.member]);
-  assert.equal(p.reduce_only, false, 'admin reduce-only removed by the member');
-  assert.equal(s.state, 'REQUESTED', 'a normal resume validation is now running; activation keeps reduce_only=false');
+  assert.deepEqual([p.reduce_only, p.admin_reduce_only], [true, true], 'HOLD/RESUME cannot clear the admin restriction');
+  assert.equal(s.state, 'REQUESTED', 'a normal resume validation runs; the member resumes reduce-only');
+  // The activation core writes reduce_only=false: the restriction is re-applied on the same row.
+  await db.query("update private.copy_resume_sessions set state='ACTIVE' where trading_account_id=$1", [ids.member]);
+  await db.query("update public.profiles set copy_paused=false,reduce_only=false where id=$1", [ids.user]);
+  assert.equal((await one('select reduce_only from public.profiles where id=$1', [ids.user])).reduce_only, true);
+
+  await asAdmin();
+  await db.query("select public.set_member_copy_control($1,'RESUME','QA')", [ids.user]);
+  p = await one('select reduce_only,admin_reduce_only from public.profiles where id=$1', [ids.user]);
+  assert.deepEqual([p.reduce_only, p.admin_reduce_only], [false, false], 'administrator RESUME lifts it');
+});
+
+test('D3 FIXED admin PAUSE: the member HOLD does not erase it and the member cannot resume; admin RESUME can', async () => {
+  await asAdmin();
+  await db.query("select public.set_member_copy_control($1,'PAUSE','QA')", [ids.user]);
+  await asMember();
+  await db.query("select public.set_my_copy_pause('HOLD')");
+  const s = await one('select state,blocker_reason from private.copy_resume_sessions where trading_account_id=$1', [ids.member]);
+  assert.deepEqual([s.state, s.blocker_reason], ['PAUSED', 'MEMBER_PAUSED']);
+  await db.exec('savepoint d3');
+  await assert.rejects(db.query("select public.set_my_copy_pause('RESUME')"), /ADMIN_PAUSED/);
+  await db.exec('rollback to savepoint d3');
+  // Even a direct copy_paused=false write cannot unpause while the admin pause stands.
+  await asWorker();
+  await db.query("update public.profiles set copy_paused=false where id=$1", [ids.user]);
+  assert.equal((await one('select copy_paused,admin_paused from public.profiles where id=$1', [ids.user])).copy_paused, true);
+  await asAdmin();
+  await db.query("select public.set_member_copy_control($1,'RESUME','QA')", [ids.user]);
+  const p = await one('select admin_paused,copy_paused from public.profiles where id=$1', [ids.user]);
+  assert.equal(p.admin_paused, false);
+  assert.equal((await one('select state from private.copy_resume_sessions where trading_account_id=$1', [ids.member])).state, 'REQUESTED');
+});
+
+test('D3 admin REDUCE_ONLY on a paused member keeps them paused (no VALIDATED_RESUME_REQUIRED error)', async () => {
+  await asMember();
+  await db.query("select public.set_my_copy_pause('HOLD')");
+  await asAdmin();
+  await db.query("select public.set_member_copy_control($1,'REDUCE_ONLY','QA')", [ids.user]);
+  const p = await one('select copy_paused,reduce_only,admin_reduce_only from public.profiles where id=$1', [ids.user]);
+  assert.deepEqual([p.copy_paused, p.reduce_only, p.admin_reduce_only], [true, true, true]);
+});
+
+test('D3 risk reduce-only is unchanged: the member RESUME on an ACTIVE session still lifts it', async () => {
+  await db.query("update public.profiles set reduce_only=true where id=$1", [ids.user]);
+  await asMember();
+  await db.query("select public.set_my_copy_pause('RESUME')");
+  assert.equal((await one('select reduce_only from public.profiles where id=$1', [ids.user])).reduce_only, false);
 });
