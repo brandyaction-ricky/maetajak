@@ -3,8 +3,10 @@ import assert from 'node:assert/strict';
 import { TradingRunner, evaluateMemberRisk, planMemberPositions } from './trading-runner.js';
 import { aggregateMemberPerformance } from './performance.js';
 import { observedAccount, position, contracts } from '../tests/fixtures/verified-runtime.js';
+import { anchorFromPlan } from '../tests/fixtures/anchor-mirror.js';
 
-// QA 2026-10-21 area D (member behaviour, risk limits, admin controls). Each test asserts the CURRENT behaviour
+// The D1/D2 tests assert the fixed FUTURE_ONLY behaviour (fix/qa-sizing).
+// QA 2026-10-21 area D (member behaviour, risk limits, admin controls). Each D-REPRO test asserts the CURRENT behaviour
 // of 0c39e77; a passing "REPRO" test means the reported finding is reproduced (not that it is correct).
 
 const version = '30000000-0000-4000-8000-000000000004';
@@ -31,25 +33,28 @@ test('D-REPRO classic futures account: risk limits ignore unrealised loss (walle
   assert.equal(account.reduce_only, false, 'new entries (e.g. Master averaging down) stay allowed');
 });
 
-test('D-REPRO reduce-only: a Master entry made while reduce-only is bought at the current price once reduce-only lifts', () => {
+test('D1: a Master entry made while reduce-only is consumed, not bought at the current price once reduce-only lifts', () => {
   const master = baseMaster([position(40)]);
   // Cycle 1: member is reduce-only (risk limit or admin). Master opened BTC LONG 40.
   const [blocked] = plan(baseMember({ reduce_only: true }), master);
   assert.equal(blocked.state, 'REDUCE_ONLY');
   assert.equal(blocked.intent, undefined);
-  assert.equal(blocked.anchor_update_allowed, true, 'the anchor still records the full target while nothing was bought');
-  assert.equal(blocked.target_size, 10);
-  // The DB stores that anchor (record_copy_worker_cycle_with_target_anchors only checks anchor_update_allowed).
-  const anchor = { contract: 'BTC_USDT', position_side: 'LONG', resume_version: version, master_copyable_size: blocked.master_copyable_size,
-    target_size: blocked.target_size, protected_member_size: 0, lock_reason: blocked.target_lock_reason };
+  assert.equal(blocked.target_size, 10, 'the plan still shows the proportional size');
+  assert.equal(blocked.anchor_update_allowed, true);
+  assert.equal(blocked.anchor_target_size, 0, 'the anchor records what is held: the increase is consumed');
+  // The DB stores that anchor (record_copy_worker_cycle_with_target_anchors, 20261021030000).
+  const anchor = anchorFromPlan(blocked, version);
+  assert.deepEqual([anchor.master_copyable_size, anchor.target_size, anchor.reference_master_size], [40, 0, 0]);
   // Hours later reduce-only is lifted (member "재개" on an ACTIVE session, or admin RESUME). Master unchanged.
   const [lifted] = plan(baseMember({ reduce_only: false, target_anchors: [anchor] }), master);
   assert.equal(lifted.target_lock_reason, 'MASTER_QUANTITY_UNCHANGED');
-  assert.equal(lifted.intent?.delta_size, 10, 'catch-up BUY of the whole Master entry at the current price');
-  assert.equal(lifted.intent?.reduce_only, false);
+  assert.equal(lifted.intent, undefined, 'no catch-up BUY');
+  // Only a later Master change is followed: +40 -> +10.
+  const [later] = plan(baseMember({ target_anchors: [anchorFromPlan(lifted, version)] }), baseMaster([position(80)]));
+  assert.equal(later.intent?.delta_size, 10);
 });
 
-test('D-REPRO reduce-only: Master adds then trims back -> member SELLS below the proportional size', () => {
+test('D2: reduce-only, Master adds then trims back -> the member keeps the size it held for that Master quantity', () => {
   const anchor0 = { contract: 'BTC_USDT', position_side: 'LONG', resume_version: version, master_copyable_size: 40,
     target_size: 10, protected_member_size: 0, lock_reason: 'MASTER_QUANTITY_UNCHANGED' };
   // Member holds 10 (proportional to Master 40). Member becomes reduce-only. Master adds to 80.
@@ -57,13 +62,23 @@ test('D-REPRO reduce-only: Master adds then trims back -> member SELLS below the
   assert.equal(up.state, 'REDUCE_ONLY');
   assert.equal(up.intent, undefined);
   assert.equal(up.target_size, 20);
-  const anchor1 = { ...anchor0, master_copyable_size: up.anchor_master_copyable_size ?? up.master_copyable_size, target_size: up.target_size,
-    lock_reason: up.target_lock_reason };
-  // Master trims back to 40 (the size the member was already proportional to).
+  const anchor1 = anchorFromPlan(up, version);
+  assert.deepEqual([anchor1.master_copyable_size, anchor1.target_size, anchor1.reference_master_size], [80, 10, 40]);
+  // Master trims back to 40 (the size the member was already proportional to): nothing is sold.
   const [down] = plan(baseMember({ reduce_only: true, positions: [position(10)], target_anchors: [anchor1] }), baseMaster([position(40)]));
-  assert.equal(down.target_lock_reason, 'MASTER_QUANTITY_REDUCED_PROPORTIONALLY');
-  assert.equal(down.intent?.delta_size, -5, 'member sells half although Master is back at 40');
-  assert.equal(down.target_size, 5);
+  assert.equal(down.target_lock_reason, 'MASTER_REDUCED_UNCOPIED_QUANTITY');
+  assert.equal(down.intent, undefined, 'the member keeps 10 although reduce-only');
+  assert.equal(down.target_size, 10);
+  // A reduction below 40 is still executed while reduce-only, proportionally to the 10 held.
+  const [deeper] = plan(baseMember({ reduce_only: true, positions: [position(10)], target_anchors: [anchorFromPlan(down, version)] }),
+    baseMaster([position(20)]));
+  assert.equal(deeper.state, 'REDUCE_ONLY');
+  assert.equal(deeper.intent?.delta_size, -5);
+  assert.equal(deeper.intent?.reduce_only, true);
+  // Full close still reaches 0.
+  const [closed] = plan(baseMember({ reduce_only: true, positions: [position(5)], target_anchors: [anchorFromPlan(deeper, version)] }),
+    baseMaster([]));
+  assert.equal(closed.intent?.delta_size, -5);
 });
 
 test('D-REPRO CLOSE closes a personal position on a contract the Master never traded', () => {
@@ -166,7 +181,7 @@ test('D-REPRO withdrawal shrinks the position cap: existing copy is SOLD with th
   assert.equal(after.intent?.delta_size, -12);
 });
 
-test('D-REPRO single mode: a leg held for the member\'s opposite personal position is caught up once that position is closed', () => {
+test('D1: single mode, a leg held for the member\'s opposite personal position is not caught up once that position is closed', () => {
   const master = baseMaster([position(40)]);
   const own = { ...position(-5), mode: 'single' };
   const [held] = plan(baseMember({ positionMode: 'single', positions: [own],
@@ -175,10 +190,14 @@ test('D-REPRO single mode: a leg held for the member\'s opposite personal positi
   assert.equal(held.pause_reason, 'PROTECTED_EXISTING_POSITION_OPPOSITE_SIDE');
   assert.equal(held.intent, undefined);
   assert.equal(held.anchor_update_allowed, true);
-  const anchor = { contract: 'BTC_USDT', position_side: 'LONG', resume_version: version, master_copyable_size: held.master_copyable_size,
-    target_size: held.target_size, protected_member_size: 0, lock_reason: held.target_lock_reason };
+  assert.equal(held.anchor_target_size, 0, 'the held Master entry is consumed');
+  const anchor = anchorFromPlan(held, version);
   // Later the member closes the personal SHORT (ownership ledger absorbs it). Master never changed.
   const [caught] = plan(baseMember({ positionMode: 'single', positions: [], member_position_baselines: [], target_anchors: [anchor] }), master)
     .filter((p) => p.position_side === 'LONG');
-  assert.equal(caught.intent?.delta_size, 10, 'full Master position bought at the current price');
+  assert.equal(caught.intent, undefined, 'no full Master position bought at the current price');
+  // A later Master increase is followed.
+  const [next] = plan(baseMember({ positionMode: 'single', positions: [], member_position_baselines: [],
+    target_anchors: [anchorFromPlan(caught, version)] }), baseMaster([position(80)])).filter((p) => p.position_side === 'LONG');
+  assert.equal(next.intent?.delta_size, 10);
 });

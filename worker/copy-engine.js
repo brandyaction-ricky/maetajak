@@ -110,6 +110,8 @@ export function capLockedTargetToCurrentRisk({
   memberQuantoMultiplier,
   maxPositionRatio = 30,
   sizeStep = 1,
+  heldSize = 0,
+  heldMaxPositionRatio = null,
 }) {
   const locked = finiteNumber(lockedTargetSize, 'lockedTargetSize');
   const protectedTarget = finiteNumber(protectedSize, 'protectedSize');
@@ -118,9 +120,17 @@ export function capLockedTargetToCurrentRisk({
   const multiplier = positiveNumber(memberQuantoMultiplier, 'memberQuantoMultiplier');
   const capRatio = Math.max(0, finiteNumber(maxPositionRatio, 'maxPositionRatio')) / 100;
   const capSize = Math.abs(roundTowardZeroToStep(equity * capRatio / (price * multiplier), sizeStep));
+  // A ratio lowered after a quantity was established applies to later increases only (operator policy
+  // 2026-10-21): the held quantity stays bounded by the ratio it was established under, at the current
+  // equity and price, so a withdrawal or price rise still trims it.
+  const heldRatio = heldMaxPositionRatio == null ? capRatio
+    : Math.max(capRatio, Math.max(0, finiteNumber(heldMaxPositionRatio, 'heldMaxPositionRatio')) / 100);
+  const held = Math.sign(finiteNumber(heldSize, 'heldSize')) === Math.sign(locked) ? Math.abs(heldSize) : 0;
+  const heldCap = heldRatio > capRatio
+    ? Math.min(held, Math.abs(roundTowardZeroToStep(equity * heldRatio / (price * multiplier), sizeStep))) : 0;
   // Existing member positions captured at resume are never force-closed by a
   // risk cap. Only the copied amount above that protected quantity is bounded.
-  const allowedAbsoluteSize = Math.max(Math.abs(protectedTarget), capSize);
+  const allowedAbsoluteSize = Math.max(Math.abs(protectedTarget), capSize, heldCap);
   if (Math.abs(locked) <= allowedAbsoluteSize) return locked;
   return Math.sign(locked) * allowedAbsoluteSize;
 }
