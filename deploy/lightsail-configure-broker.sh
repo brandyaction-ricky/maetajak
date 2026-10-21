@@ -13,8 +13,8 @@ if [[ ! -f "${ENV_FILE}" ]]; then
   exit 1
 fi
 
-read -r -p "Gate Broker commission UID [49084031]: " gate_broker_uid
-gate_broker_uid="${gate_broker_uid:-49084031}"
+# No default UID: the Broker commission account must be entered explicitly (A5, 2026-10-21).
+read -r -p "Gate Broker commission UID (required): " gate_broker_uid
 read -r -s -p "Gate Broker read-only API key (hidden): " gate_broker_api_key
 echo
 read -r -s -p "Gate Broker secret key (hidden): " gate_broker_secret_key

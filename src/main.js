@@ -1028,6 +1028,7 @@ const HALT_REASON_LABELS = {
   ADMIN_HALT: '관리자 중단',
   WORKER_NOT_READY: 'Trading Worker 준비 중',
   WORKER_REPEATED_FAILURE: 'Trading Worker 연속 오류',
+  WORKER_HEARTBEAT_GAP: 'Trading Worker 3분 이상 중단 후 복귀 (관리자 재개 필요)',
   STALE_OR_INVALID_WORKER: 'Trading Worker 응답 지연',
   TRADING_WORKER_NOT_CONFIGURED: 'Trading Worker 미설정',
   MASTER_API_DISCONNECTED: 'Master API 연결 해제',

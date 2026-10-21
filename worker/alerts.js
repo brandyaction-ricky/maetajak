@@ -27,6 +27,23 @@ const EVENT_MESSAGES = {
   MEMBER_REDUCED_COPY_POSITION: { title: '회원이 카피분까지 매도 (이전 방식 잠금)', state: '해당 종목 카피 중지 · 이전 방식 잠금', description: '2026-10-20 이전 방식으로 잠긴 종목입니다. 회원이 이 종목을 개인 보유분보다 많이 팔아 플랫폼 카피분까지 줄었고, 판 수량을 다시 사지 않도록 이 종목의 카피가 멈춰 있습니다. 다른 종목은 계속 따라갑니다. (지금은 이런 매도가 있어도 종목을 잠그지 않고 카피를 계속합니다.)', action: '남은 카피 수량은 플랫폼 카피분이지만, 마스터가 이 종목을 정리해도 자동으로 따라 팔지 않습니다. 회원과 확인해 주세요. 다시 따라가려면 회원 카피 재개를 요청하세요(마스터가 이미 이 종목을 정리했다면 재개 전에 회원이 남은 수량을 직접 정리해야 합니다).' },
   MEMBER_API_CREDENTIAL_FAILING: { title: '회원 API 조회 실패 지속', state: '해당 회원 주문 보류', description: '회원 계정의 Gate.io API 조회가 5분 넘게 인증·권한 오류로 실패하고 있습니다. 포지션을 확인할 수 없어 이 회원의 주문을 내지 않습니다.', action: '회원에게 Gate.io API 키 상태(삭제·만료, 선물 권한, IP 화이트리스트)를 확인하고 다시 연결하도록 안내해 주세요. 계속되면 6시간마다 다시 알립니다.' },
   MEMBER_API_CREDENTIAL_RECOVERED: { title: '회원 API 조회 복구', state: '정상 조회 재개', description: '인증·권한 오류로 실패하던 회원 계정의 Gate.io API 조회가 다시 정상입니다.', action: '추가 조치는 필요하지 않습니다. 회원의 카피 상태를 확인해 주세요.' },
+  MEMBER_ACCOUNT_READ_FAILING: { title: '회원 계정 조회 실패 지속', state: '해당 회원 카피 건너뜀', description: '회원 계정의 Gate.io 조회가 5분 넘게 실패해 이 회원은 매 회차 건너뛰고 있습니다. 마스터 변화를 따라가지 못하고 있습니다.', action: '아래 오류 원인을 확인해 주세요. 계속되면 6시간마다 다시 알립니다.', actionByCode: {
+    GATE_TIMEOUT: 'Gate.io 응답이 계속 늦습니다. Gate 서비스 상태와 워커 서버 네트워크를 확인해 주세요. 정상화되면 자동으로 다시 따라갑니다.',
+    GATE_UNREACHABLE: 'Gate.io에 연결되지 않습니다. 워커 서버 네트워크·DNS와 Gate 서비스 상태를 확인해 주세요.',
+    GATE_API_ERROR: 'Gate.io가 오류(5xx) 또는 요청 한도 초과(429)로 응답합니다. Gate 공지와 API 요청 한도를 확인해 주세요.',
+    GATE_TOO_MANY_REQUESTS: 'Gate.io API 요청 한도를 초과했습니다. 같은 키를 다른 프로그램에서 쓰는지 회원에게 확인해 주세요.',
+    SPLIT_POSITION_UNSUPPORTED: '회원 계정에 같은 종목·방향의 분할 포지션이 있어 조회할 수 없습니다. 회원에게 분할 포지션을 하나로 정리하도록 안내해 주세요.',
+    OPEN_ORDERS_LIMIT_REACHED: '회원 계정의 미체결 주문이 100건 이상이라 전부 확인할 수 없습니다. 회원에게 불필요한 미체결 주문을 취소하도록 안내해 주세요.',
+    POSITIONS_INCONSISTENT: 'Gate의 포지션 목록과 개별 조회 결과가 서로 다릅니다. Gate 앱에서 회원 포지션을 확인하고, 계속되면 Gate 상태를 점검해 주세요.',
+    INVALID_ACCOUNT_EQUITY: '회원 선물 계정 잔고를 확인할 수 없습니다(0 또는 비정상 값). 선물 계정 자금과 통합계정 설정을 회원과 확인해 주세요.',
+    INVALID_POSITIONS_RESPONSE: 'Gate 포지션 응답 형식이 올바르지 않습니다. Gate API 변경 또는 장애 여부를 확인해 주세요.',
+    INVALID_ORDERS_RESPONSE: 'Gate 미체결 주문 응답 형식이 올바르지 않습니다. Gate API 변경 또는 장애 여부를 확인해 주세요.',
+    POSITIONS_PAGINATION_LIMIT: '회원 포지션 수가 너무 많아 전부 조회하지 못했습니다. 회원 계정의 포지션 구성을 확인해 주세요.',
+  } },
+  MEMBER_ACCOUNT_READ_RECOVERED: { title: '회원 계정 조회 복구', state: '정상 조회 재개', description: '계속 실패하던 회원 계정의 Gate.io 조회가 다시 정상입니다.', action: '추가 조치는 필요하지 않습니다. 이 회원은 이번 회차부터 다시 마스터를 따라갑니다.' },
+  COPY_WORKER_GAP_AUTO_HALTED: { title: '워커 공백 후 자동 중단', state: '전체 카피 중단 (관리자 재개 필요)', description: '카피 워커가 3분 넘게 동작하지 않다가 다시 연결되었습니다. 그 사이 마스터 변화를 현재 가격으로 한꺼번에 따라가지 않도록 신규 카피 주문을 차단했습니다.', action: '서버·네트워크·DB 상태와 회원 포지션을 확인한 뒤 관리자 화면에서 실거래를 다시 켜 주세요. 재개 후에는 이후 마스터 변화만 따라갑니다.' },
+  COPY_ORDER_CLAIM_STALLED: { title: '카피 주문 실행 지연', state: '해당 회원 주문 미실행', description: '계산된 카피 주문이 여러 회차 연속으로 실행 단계에 들어가지 못했습니다(주문 계획이 15초 안에 실행되지 못해 만료).', action: '워커 회차 시간(DB·Gate 응답 지연, 미확정 주문 대조 적체)과 이 회원의 미확정 주문을 확인해 주세요. 계속되면 30분마다 다시 알립니다.' },
+  MEMBER_LIQUIDATION_DETECTED: { title: '강제청산/ADL 감지', state: '확인 필요', description: '회원 포지션이 Gate.io 강제청산 또는 자동 디레버리징(ADL)으로 줄어들거나 사라졌습니다. 회원 매도로 처리되어 줄어든 카피 수량은 다시 사지 않습니다.', action: '회원 계정의 증거금·레버리지와 손실 규모를 확인하고, 회원에게 상황을 안내해 주세요.' },
   AUTO_DEPLOY_RECOVERY_DRY_RUN: { title: '워커 중지 감지 · 자동 복구', state: 'DRY_RUN으로 재기동 (LIVE 해제)', description: 'LIVE 설정인데 워커 서비스가 멈춰 있어 안전 모드(DRY_RUN)로 다시 띄웁니다.', action: '원인을 확인한 뒤 LIVE 재활성화 절차를 진행해 주세요. 의도한 중지라면 /etc/maetajak/maintenance 파일을 먼저 만들어 주세요.' },
   AUTO_DEPLOY_PENDING_LIVE: { title: '워커 업데이트 대기', state: 'LIVE 유지 · 자동 배포 보류', description: '실거래 중이라 새 워커 코드를 자동으로 재배포하지 않았습니다.', action: '점검 가능한 시간에 수동 배포 절차(DRY_RUN 배포 → LIVE 재활성화)로 반영해 주세요.' },
 };
@@ -40,6 +57,8 @@ const DETAIL_LABELS = {
   side: '매수·매도', fill_notional_usdt: '체결 금액 (USDT)', gate_order_id: '거래소 주문 ID', evidence: '확인 근거',
   user_id: '회원 ID', commit: '커밋', copy_size: '남은 카피 수량',
   trading_account_id: '계정 ID', failing_minutes: '실패 지속 (분)',
+  gap_seconds: '워커 공백 (초)', last_contact_at: '마지막 워커 응답', stalled_cycles: '연속 미실행 회차',
+  planned_intents: '계획 주문 수', liquidation_type: '청산 유형', liquidated_at: '청산 시각',
 };
 
 const VALUE_LABELS = {
@@ -58,6 +77,10 @@ const VALUE_LABELS = {
   UNSENT_CLAIM_EXPIRED: '거래소 전송 전 만료 (미실행)',
   INVALID_CREDENTIALS: 'API Key 또는 Secret Key 오류', FUTURES_READ_REQUIRED: '선물 조회 권한 없음',
   UNIFIED_READ_REQUIRED: '통합계정 조회 권한 없음', IP_NOT_ALLOWED: '워커 IP가 화이트리스트에 없음',
+  GATE_UNREACHABLE: 'Gate.io 연결 실패', GATE_API_ERROR: 'Gate.io API 오류 (5xx·요청 한도 등)',
+  SPLIT_POSITION_UNSUPPORTED: '분할 포지션 (지원 안 함)', OPEN_ORDERS_LIMIT_REACHED: '미체결 주문 100건 이상',
+  POSITIONS_INCONSISTENT: '포지션 조회 결과 불일치', INVALID_ACCOUNT_EQUITY: '계정 잔고 확인 불가',
+  LIQUIDATION: '강제청산', AUTO_DELEVERAGE: '자동 디레버리징 (ADL)',
 };
 
 function koreanTime(value) {
@@ -124,7 +147,7 @@ function telegramMessage(payload) {
     `상태: ${message.state}`,
     `발생 시각: ${koreanTime(payload.occurred_at)}`,
     `내용: ${message.description}`,
-    `대응: ${message.action}`,
+    `대응: ${message.actionByCode?.[payload.details.error_code] || message.action}`,
     ...(detailLines.length ? ['', '상세 정보', ...detailLines] : []),
   ].join('\n').slice(0, 4096);
 }

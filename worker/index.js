@@ -1,9 +1,9 @@
 import { createClient } from '@supabase/supabase-js';
 import { randomUUID } from 'node:crypto';
 import { validateGateChannelId, verifyGateAccount } from './gate.js';
-import { TradingRunner, safeError } from './trading-runner.js';
+import { RECONCILE_BEFORE_SUBMIT_BUDGET_MS, TradingRunner, safeError } from './trading-runner.js';
 import { failureAlertDecision, sendWorkerAlert } from './alerts.js';
-import { syncGateBrokerMetrics } from './broker-metrics.js';
+import { resolveBrokerCredentials, syncGateBrokerMetrics } from './broker-metrics.js';
 import { createShutdown, createSupabaseFetch, cycleFailureCode, normalizeTradingMode, readIntervalMs } from './runtime.js';
 
 const supabaseUrl = process.env.SUPABASE_URL;
@@ -23,7 +23,8 @@ const telegramBotToken = process.env.TELEGRAM_BOT_TOKEN || '';
 const telegramChatId = process.env.TELEGRAM_CHAT_ID || '';
 const telegramConfigured = Boolean(telegramBotToken && telegramChatId);
 const alertsConfigured = Boolean(alertWebhookUrl || (telegramBotToken && telegramChatId));
-const brokerUid = process.env.GATE_BROKER_UID || '49084031';
+// No default: an unset UID reports NOT_CONFIGURED (GATE_BROKER_UID_REQUIRED) instead of syncing an old account.
+const brokerUid = String(process.env.GATE_BROKER_UID || '').trim();
 const brokerApiKey = process.env.GATE_BROKER_API_KEY || '';
 const brokerSecretKey = process.env.GATE_BROKER_SECRET_KEY || '';
 const brokerSyncIntervalMs = readIntervalMs(process.env.BROKER_SYNC_INTERVAL_MS, 3_600_000, 300_000);
@@ -112,7 +113,18 @@ export async function runTradingCycle() {
   state.trading = true;
   try {
     try {
-      await runner.heartbeat(false);
+      const beat = await runner.heartbeat(false);
+      // C-2: the DB halted LIVE because this worker had not reached it for longer than the gap threshold
+      // (host down, network loss, DB outage). The cycle still runs (observation only); an admin re-enables LIVE.
+      if (beat?.newly_halted) {
+        // This alert is the halt notice: a failed cycle must not infer the same halt again (failureAlertDecision).
+        state.lastReportHalted = true;
+        state.haltAlertSent = true;
+        log('worker_gap_auto_halted', { gap_seconds: beat.gap_seconds, last_contact_at: beat.last_contact_at });
+        await sendAlert({ event: 'COPY_WORKER_GAP_AUTO_HALTED', severity: 'CRITICAL', details: { mode: tradingMode,
+          gap_seconds: beat.gap_seconds, last_contact_at: beat.last_contact_at, reason: 'WORKER_HEARTBEAT_GAP',
+          action: '전체 카피 중단 · 관리자 재개 필요' } });
+      }
     } catch (error) {
       // P1-2: a restarted worker gets a new id and must wait up to 30 s for the previous lease. That
       // wait is not a failed cycle; counting it on the shared runtime row froze LIVE after restarts.
@@ -153,12 +165,15 @@ export async function runTradingCycle() {
       });
       return;
     }
+    // C-5: reconciliation gets a time budget before the order claim (plans must be claimed within 15 s of
+    // their observation); the rest of the claimed reconciliation batch is finished right after submitting.
     const reconcileStartedAt = Date.now();
-    const reconciled = await runner.reconcileOrders();
+    let reconciled = await runner.reconcileOrders(10, { budgetMs: RECONCILE_BEFORE_SUBMIT_BUDGET_MS });
     const reconcileMs = Date.now() - reconcileStartedAt;
     const submitStartedAt = Date.now();
     const submitted = await runner.submitOrders();
     const submitMs = Date.now() - submitStartedAt;
+    reconciled += await runner.reconcileDeferredOrders();
     // P1-8: resume validation after the order phase, one member per cycle.
     const resumeStartedAt = Date.now();
     const resumes = await runner.processPendingResumes(1);
@@ -262,23 +277,20 @@ export async function runBrokerMetricsSync() {
   if (state.broker || state.stopping) return;
   state.broker = true;
   try {
-    let apiKey = brokerApiKey;
-    let secretKey = brokerSecretKey;
-    if (!apiKey || !secretKey) {
+    let broker = resolveBrokerCredentials({ brokerUid, apiKey: brokerApiKey, secretKey: brokerSecretKey });
+    if (broker.errorCode === 'BROKER_API_KEY_REQUIRED') {
       const { data: context, error } = await supabase.rpc('get_copy_worker_context');
       if (error) throw new Error(`get_copy_worker_context: ${error.message}`);
-      if (String(context?.master?.gate_uid || '') === String(brokerUid)) {
-        apiKey = context.master.api_key;
-        secretKey = context.master.secret_key;
-      }
+      broker = resolveBrokerCredentials({ brokerUid, apiKey: brokerApiKey, secretKey: brokerSecretKey, master: context?.master });
     }
-    if (!apiKey || !secretKey) {
+    if (!broker.configured) {
       await supabase.rpc('report_gate_broker_sync_status', {
-        p_status: 'NOT_CONFIGURED', p_error_code: 'BROKER_API_KEY_REQUIRED', p_observed_at: new Date().toISOString(),
+        p_status: 'NOT_CONFIGURED', p_error_code: broker.errorCode, p_observed_at: new Date().toISOString(),
       });
+      log('gate_broker_metrics_not_configured', { code: broker.errorCode });
       return;
     }
-    const result = await syncGateBrokerMetrics({ supabase, apiKey, secretKey, baseUrl });
+    const result = await syncGateBrokerMetrics({ supabase, apiKey: broker.apiKey, secretKey: broker.secretKey, baseUrl });
     log('gate_broker_metrics_synced', result);
   } catch (error) {
     const code = error?.code || (error instanceof Error ? error.message.split(':', 1)[0] : 'BROKER_SYNC_FAILED');

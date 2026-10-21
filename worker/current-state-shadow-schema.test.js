@@ -25,7 +25,7 @@ test('shadow projection is service-role only and leaves authoritative tables unt
 test('verified state commits before order work and propagates write failures', () => {
   assert.match(runner, /await this\.rpc\('record_verified_copy_worker_cycle'/);
   const syncIndex = worker.indexOf('await runner.syncOnce()');
-  const reconcileIndex = worker.indexOf('await runner.reconcileOrders()');
+  const reconcileIndex = worker.indexOf('await runner.reconcileOrders(');
   const submitIndex = worker.indexOf('await runner.submitOrders()');
   const reportIndex = worker.indexOf('await runner.reportCycle(true)');
   assert.ok(syncIndex > 0 && reconcileIndex > syncIndex && submitIndex > reconcileIndex && reportIndex > submitIndex);
