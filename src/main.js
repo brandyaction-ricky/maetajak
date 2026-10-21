@@ -107,6 +107,9 @@ let adminOperationsMetrics = null;
 let adminMembersCache = [];
 let adminMasterAccount = null;
 let adminMemberSearch = '';
+let adminWithdrawnCache = [];
+let adminMemberTab = 'active';
+let adminWithdrawBusy = false;
 let newOperationPanel = null;
 let copySettingsBaseline = null;
 let copySettingsBusy = false;
@@ -381,7 +384,7 @@ function enhanceAdminApiPage() {
 function enhanceAdminMembersPage() {
   const page = byId('admin-members');
   if (!page) return;
-  page.innerHTML = `<section class="card admin-pending-members"><div class="panel-title"><div><h3>가입 승인 대기</h3><p>승인 전 회원을 확인하고 접근 권한을 관리합니다.</p></div><span id="pendingCount" class="chip yellow">대기 0명</span></div><div class="table"><table><thead><tr><th>신청자</th><th>이메일</th><th>휴대폰</th><th>신청시간</th><th>관리</th></tr></thead><tbody id="pendingMembers"><tr><td colspan="5" class="empty-cell">승인 대기 회원을 불러오는 중입니다.</td></tr></tbody></table></div></section><section class="card admin-member-directory"><div class="panel-title"><div><h3>전체 회원</h3><p id="memberDirectorySummary">회원 상태와 실제 계좌 지표를 확인합니다.</p></div><input id="adminMemberSearch" class="admin-member-search" type="search" placeholder="회원 검색" aria-label="회원 검색"></div><div class="table"><table class="admin-members-table"><thead><tr><th>회원</th><th>카피 상태</th><th title="거래소 잔고 · 미실현 손익 제외">총 자산</th><th title="총 자산 + 미실현 손익">현재 자산</th><th>오늘 PNL</th><th>카피 비율</th><th>증거금 사용</th><th>API 상태</th><th>마지막 동기화</th><th>관리</th></tr></thead><tbody id="memberList"><tr><td colspan="10" class="empty-cell">회원 목록을 불러오는 중입니다.</td></tr></tbody></table></div></section>`;
+  page.innerHTML = `<div class="admin-period-tabs admin-member-tabs" role="tablist" aria-label="회원 구분"><button type="button" role="tab" data-member-tab="active" class="active" aria-selected="true">회원</button><button type="button" role="tab" data-member-tab="withdrawn" aria-selected="false">탈퇴 회원 <span id="withdrawnCount">0</span></button></div><section class="card admin-pending-members"><div class="panel-title"><div><h3>가입 승인 대기</h3><p>승인 전 회원을 확인하고 접근 권한을 관리합니다.</p></div><span id="pendingCount" class="chip yellow">대기 0명</span></div><div class="table"><table><thead><tr><th>신청자</th><th>이메일</th><th>휴대폰</th><th>신청시간</th><th>관리</th></tr></thead><tbody id="pendingMembers"><tr><td colspan="5" class="empty-cell">승인 대기 회원을 불러오는 중입니다.</td></tr></tbody></table></div></section><section class="card admin-member-directory" data-member-tab-panel="active"><div class="panel-title"><div><h3>전체 회원</h3><p id="memberDirectorySummary">회원 상태와 실제 계좌 지표를 확인합니다.</p></div><input id="adminMemberSearch" class="admin-member-search" type="search" placeholder="회원 검색" aria-label="회원 검색"></div><div class="table"><table class="admin-members-table"><thead><tr><th>회원</th><th>카피 상태</th><th title="거래소 잔고 · 미실현 손익 제외">총 자산</th><th title="총 자산 + 미실현 손익">현재 자산</th><th>오늘 PNL</th><th>카피 비율</th><th>증거금 사용</th><th>API 상태</th><th>마지막 동기화</th><th>관리</th></tr></thead><tbody id="memberList"><tr><td colspan="10" class="empty-cell">회원 목록을 불러오는 중입니다.</td></tr></tbody></table></div></section><section class="card admin-withdrawn-members hidden" data-member-tab-panel="withdrawn"><div class="panel-title"><div><h3>탈퇴 회원</h3><p>탈퇴 처리된 회원입니다. 거래·수익 기록은 보존되며, 복구하면 승인 대기로 돌아갑니다.</p></div></div><div class="table"><table class="admin-withdrawn-table"><thead><tr><th>회원</th><th>휴대폰</th><th>가입일</th><th>탈퇴일시</th><th>사유</th><th>관리</th></tr></thead><tbody id="withdrawnMembers"><tr><td colspan="6" class="empty-cell">탈퇴 회원을 불러오는 중입니다.</td></tr></tbody></table></div></section>`;
 }
 
 function enhanceMemberDetailModal() {
@@ -1771,6 +1774,8 @@ function auditActionLabel(action) {
     COPY_SYSTEM_CONTROL_UPDATED: '전체 카피 제어 변경',
     MEMBER_COPY_CONTROL_UPDATED: '회원 카피 상태 변경',
     MEMBER_COPY_SETTINGS_UPDATED: '회원 비중 변경',
+    MEMBER_WITHDRAWN: '회원 탈퇴 처리',
+    MEMBER_RESTORED: '탈퇴 회원 복구',
     MEMBER_NEW_OPERATION_STARTED: '회원 새 운용 기준 설정',
     LIVE_COPY_ENABLED: '실거래 카피 활성화',
     LIVE_COPY_HALTED: '실거래 카피 중단',
@@ -1811,7 +1816,7 @@ function renderAdminMemberWeightSettings(member) {
 }
 
 function setMemberDetailActionsDisabled(disabled) {
-  document.querySelectorAll('#memberDetailModal [data-member-control], #memberDetailModal [data-member-weight-save], #memberDetailModal [data-new-operation-open], #adminMemberCopyRatio, #adminMemberMaxPositionRatio')
+  document.querySelectorAll('#memberDetailModal [data-member-control], #memberDetailModal [data-member-weight-save], #memberDetailModal [data-new-operation-open], #memberDetailModal [data-member-withdraw], #adminMemberCopyRatio, #adminMemberMaxPositionRatio')
     .forEach((element) => { element.disabled = disabled; });
 }
 
@@ -2474,7 +2479,8 @@ async function openMemberDetail(userId) {
     <div><small>최대 포지션 비중</small><b>${Number(member.max_position_ratio ?? 30)}%</b></div>
     <div><small>가입일</small><b>${member.created_at ? new Date(member.created_at).toLocaleDateString('ko-KR') : '-'}</b></div>
     ${member.role === 'MEMBER' ? renderAdminMemberWeightSettings(member) : ''}
-    ${member.role === 'MEMBER' ? '<div class="member-control-actions"><small>관리자 카피 제어</small><div class="actions"><button class="btn" type="button" data-member-control="PAUSE">일시중지</button><button class="btn" type="button" data-member-control="REDUCE_ONLY">축소 전용</button><button class="btn red" type="button" data-member-control="HALT">중단</button><button class="btn green" type="button" data-member-control="RESUME">재개</button><button class="btn" type="button" data-new-operation-open>새 운용 시작</button></div></div>' : ''}`;
+    ${member.role === 'MEMBER' ? '<div class="member-control-actions"><small>관리자 카피 제어</small><div class="actions"><button class="btn" type="button" data-member-control="PAUSE">일시중지</button><button class="btn" type="button" data-member-control="REDUCE_ONLY">축소 전용</button><button class="btn red" type="button" data-member-control="HALT">중단</button><button class="btn green" type="button" data-member-control="RESUME">재개</button><button class="btn" type="button" data-new-operation-open>새 운용 시작</button></div></div>' : ''}
+    ${member.role === 'MEMBER' && !member.withdrawn_at ? '<div class="member-control-actions member-withdraw-actions"><small>회원 탈퇴</small><div class="actions"><button class="btn red" type="button" data-member-withdraw>회원 탈퇴 처리</button></div><p class="muted">카피 중단·로그인 차단·API 키 폐기. 기록은 보존되고 탈퇴 회원 탭에서 복구할 수 있습니다.</p></div>' : ''}`;
   byId('memberPasswordResetActions')?.classList.toggle('hidden', member.role !== 'MEMBER');
   byId('memberMonthlyPerformance').innerHTML = months.length ? months.map((month) => {
     const netPnl = Number(month.net_pnl || 0);
@@ -2511,12 +2517,97 @@ function getMemberCopyProgress(profile, connection, positionStates = []) {
   return { label: '카피 진행 중', detail: 'API 연결 정상 · 포지션 동기화', className: 'chip' };
 }
 
+function renderAdminWithdrawnRows() {
+  if (byId('withdrawnCount')) byId('withdrawnCount').textContent = String(adminWithdrawnCache.length);
+  const body = byId('withdrawnMembers');
+  if (!body) return;
+  body.innerHTML = adminWithdrawnCache.length ? adminWithdrawnCache.map((member) => {
+    const name = member.full_name || member.email || '회원';
+    return `<tr><td><div class="admin-member-identity"><span>${escapeHtml(String(name).slice(0, 1))}</span><div><b>${escapeHtml(member.full_name || '-')}</b><small>${escapeHtml(member.email || '-')}</small></div></div></td>`
+      + `<td>${escapeHtml(member.phone || '-')}</td>`
+      + `<td>${member.created_at ? escapeHtml(new Date(member.created_at).toLocaleDateString('ko-KR')) : '-'}</td>`
+      + `<td>${member.withdrawn_at ? escapeHtml(new Date(member.withdrawn_at).toLocaleString('ko-KR')) : '-'}</td>`
+      + `<td class="withdrawal-reason">${escapeHtml(member.withdrawal_reason || '-')}</td>`
+      + `<td class="table-actions"><button class="btn" type="button" data-member-restore="${escapeHtml(member.id)}" data-member-name="${escapeHtml(name)}">복구</button></td></tr>`;
+  }).join('') : '<tr><td colspan="6" class="empty-cell">탈퇴 회원이 없습니다.</td></tr>';
+}
+
+function setAdminMemberTab(tab) {
+  adminMemberTab = tab === 'withdrawn' ? 'withdrawn' : 'active';
+  document.querySelectorAll('[data-member-tab]').forEach((button) => {
+    const active = button.dataset.memberTab === adminMemberTab;
+    button.classList.toggle('active', active);
+    button.setAttribute('aria-selected', String(active));
+  });
+  document.querySelectorAll('[data-member-tab-panel]').forEach((panel) => {
+    panel.classList.toggle('hidden', panel.dataset.memberTabPanel !== adminMemberTab);
+  });
+  document.querySelector('#admin-members .admin-pending-members')?.classList.toggle('hidden', adminMemberTab === 'withdrawn');
+}
+
+const WITHDRAW_ERRORS = {
+  MEMBER_HAS_UNRESOLVED_ORDERS: '결과를 확인 중인 주문이 있어 지금은 탈퇴 처리할 수 없습니다. 1~2분 뒤 다시 시도해 주세요.',
+  MEMBER_ALREADY_WITHDRAWN: '이미 탈퇴 처리된 회원입니다.',
+  MEMBER_NOT_FOUND: '회원을 찾을 수 없습니다.',
+  ADMIN_REQUIRED: '관리자만 처리할 수 있습니다.',
+};
+
+async function withdrawAdminMember() {
+  if (!selectedMemberId || currentProfile?.role !== 'ADMIN' || adminWithdrawBusy || adminControlBusy || adminWeightBusy) return;
+  const name = byId('memberDetailTitle')?.textContent?.trim() || '회원';
+  if (!window.confirm(`${name} 회원을 탈퇴 처리할까요?\n\n• 카피가 즉시 중단되고 로그인할 수 없게 됩니다.\n• 저장된 Gate API 키가 폐기됩니다.\n• Gate에 남은 포지션은 시스템이 더 이상 관리하지 않습니다(회원이 직접 정리).\n• 거래·수익·감사 기록은 보존되며 '탈퇴 회원' 탭에서 복구할 수 있습니다.`)) return;
+  const typed = window.prompt(`확인을 위해 회원 이름 "${name}"을(를) 입력해 주세요.`);
+  if (typed == null) return;
+  if (typed.trim() !== name) return window.toast('이름이 일치하지 않아 취소했습니다.', { kind: 'error' });
+  const reason = window.prompt('탈퇴 사유를 입력해 주세요. (선택, 비워도 됩니다)') ?? '';
+  adminWithdrawBusy = true;
+  setMemberDetailActionsDisabled(true);
+  let data = null; let error = null;
+  try {
+    ({ data, error } = await supabase.rpc('admin_withdraw_member', {
+      p_user_id: selectedMemberId, p_confirmation: 'ADMIN_WITHDRAW_MEMBER', p_reason: reason.trim() || null,
+    }));
+  } finally {
+    adminWithdrawBusy = false;
+    setMemberDetailActionsDisabled(false);
+  }
+  if (error) {
+    const code = Object.keys(WITHDRAW_ERRORS).find((key) => String(error.message || '').includes(key));
+    return window.toast(code ? WITHDRAW_ERRORS[code] : '탈퇴 처리하지 못했습니다.', { kind: 'error' });
+  }
+  const openPositions = Number(data?.open_positions || 0);
+  window.toast(openPositions > 0
+    ? `탈퇴 처리했습니다. Gate에 남은 포지션 ${openPositions}개는 회원이 직접 정리해야 합니다.`
+    : '탈퇴 처리했습니다.', { kind: 'success' });
+  invalidateSharedRpc('get_admin_operations_metrics', 'get_admin_live_trading_data', 'get_admin_gate_api_connections');
+  closeMemberDetail();
+  await loadAdminMembers();
+}
+
+async function restoreAdminMember(userId, name, button) {
+  if (!userId || currentProfile?.role !== 'ADMIN' || adminWithdrawBusy) return;
+  if (!window.confirm(`${name || '회원'} 회원을 복구할까요?\n\n로그인이 다시 가능해지고 '가입 승인 대기'로 돌아갑니다. 승인 후 회원이 Gate API를 다시 연결하고 카피를 재개해야 합니다.`)) return;
+  adminWithdrawBusy = true;
+  if (button) button.disabled = true;
+  let error = null;
+  try {
+    ({ error } = await supabase.rpc('admin_restore_withdrawn_member', { p_user_id: userId }));
+  } finally {
+    adminWithdrawBusy = false;
+    if (button) button.disabled = false;
+  }
+  if (error) return window.toast('회원을 복구하지 못했습니다.', { kind: 'error' });
+  window.toast('복구했습니다. 가입 승인 대기에서 승인해 주세요.', { kind: 'success' });
+  await loadAdminMembers();
+  setAdminMemberTab('active');
+}
+
 async function loadAdminMembers() {
   if (!supabase || currentProfile?.role !== 'ADMIN') return;
   const ticket = ++adminMembersRequestSeq;
   const today = kstDate();
   const [profilesResult, connectionsResult, liveResult, metricsResult] = await Promise.all([
-    supabase.from('profiles').select('id,email,full_name,phone,approval_status,role,copy_ratio,max_position_ratio,copy_paused,member_halted,reduce_only,created_at').order('created_at', { ascending: false }),
+    supabase.from('profiles').select('id,email,full_name,phone,approval_status,role,copy_ratio,max_position_ratio,copy_paused,member_halted,reduce_only,created_at,withdrawn_at,withdrawal_reason').order('created_at', { ascending: false }),
     sharedRpc('get_admin_gate_api_connections'),
     sharedRpc('get_admin_live_trading_data'),
     sharedRpc('get_admin_operations_metrics', { p_start_date: today, p_end_date: today }),
@@ -2537,14 +2628,17 @@ async function loadAdminMembers() {
     map.get(key).push(state);
     return map;
   }, new Map());
-  const pending = data.filter((profile) => profile.approval_status === 'PENDING');
+  adminWithdrawnCache = data.filter((profile) => profile.role === 'MEMBER' && profile.withdrawn_at)
+    .sort((a, b) => String(b.withdrawn_at).localeCompare(String(a.withdrawn_at)));
+  renderAdminWithdrawnRows();
+  const pending = data.filter((profile) => profile.approval_status === 'PENDING' && !profile.withdrawn_at);
   byId('pendingCount').textContent = `대기 ${pending.length}명`;
   byId('pendingMembers').innerHTML = pending.length ? pending.map((profile) => `
     <tr><td>${escapeHtml(profile.full_name || '-')}</td><td>${escapeHtml(profile.email || '-')}</td><td>${escapeHtml(profile.phone || '-')}</td><td>${new Date(profile.created_at).toLocaleString('ko-KR')}</td><td class="table-actions"><button class="btn green" type="button" data-approval="APPROVED" data-user-id="${escapeHtml(profile.id)}" data-member-name="${escapeHtml(profile.full_name || profile.email || '신청자')}">승인</button> <button class="btn red" type="button" data-approval="REJECTED" data-user-id="${escapeHtml(profile.id)}" data-member-name="${escapeHtml(profile.full_name || profile.email || '신청자')}">거절</button></td></tr>
   `).join('') : '<tr><td colspan="5" class="empty-cell">승인 대기 회원이 없습니다.</td></tr>';
   const metricRows = new Map((Array.isArray(metricsResult.data?.members) ? metricsResult.data.members : []).map((member) => [member.id, member]));
   adminMasterAccount = metricsResult.data?.master || null;
-  adminMembersCache = data.filter((profile) => profile.role === 'MEMBER' && profile.approval_status !== 'PENDING').map((profile) => {
+  adminMembersCache = data.filter((profile) => profile.role === 'MEMBER' && profile.approval_status !== 'PENDING' && !profile.withdrawn_at).map((profile) => {
     const metric = metricRows.get(profile.id) || {};
     const progress = getMemberCopyProgress(profile, connectionByUserId.get(profile.id), statesByEmail.get(String(profile.email || '').toLowerCase()) || []);
     return { ...profile, ...metric, fallback_progress: progress, connection: connectionByUserId.get(profile.id) || null };
@@ -2751,6 +2845,11 @@ document.addEventListener('click', async (event) => {
   const memberDetailButton = event.target.closest('[data-member-detail]');
   if (memberDetailButton) await openMemberDetail(memberDetailButton.dataset.memberDetail);
   if (event.target.closest('[data-member-weight-save]')) await saveAdminMemberWeights();
+  if (event.target.closest('[data-member-withdraw]')) await withdrawAdminMember();
+  const memberTabButton = event.target.closest('[data-member-tab]');
+  if (memberTabButton) setAdminMemberTab(memberTabButton.dataset.memberTab);
+  const restoreButton = event.target.closest('[data-member-restore]');
+  if (restoreButton) await restoreAdminMember(restoreButton.dataset.memberRestore, restoreButton.dataset.memberName, restoreButton);
   const memberControlButton = event.target.closest('[data-member-control]');
   if (memberControlButton) await setAdminMemberControl(memberControlButton.dataset.memberControl);
   if (event.target.closest('[data-new-operation-open]') && selectedMemberId && currentProfile?.role === 'ADMIN' && !adminControlBusy && !adminWeightBusy) {

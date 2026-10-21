@@ -35,7 +35,7 @@ export const SNAPSHOT_SKEW_SKIP_LIMIT = 3;
 export const NEVER_SENT_CANCELLATIONS = new Set(['SUPERSEDED_BY_FRESH_PLAN', 'SUPERSEDED_BY_RESUME', 'PRE_LIVE_INTENT_DISCARDED',
   'MEMBER_POSITION_CHANGED', 'COPY_OWNERSHIP_UNKNOWN', 'SUBMISSION_AUTHORIZATION_REVOKED', 'UNSENT_CLAIM_EXPIRED',
   'UNSENT_UNKNOWN_RESOLVED', 'GATE_ACCOUNT_CHANGED', 'GATE_ACCOUNT_CHANGE_PENDING', 'MASTER_ACCOUNT_CHANGED',
-  'MASTER_ACCOUNT_CHANGE_PENDING', 'MEMBER_API_DISCONNECTED_BY_ADMIN']);
+  'MASTER_ACCOUNT_CHANGE_PENDING', 'MEMBER_API_DISCONNECTED_BY_ADMIN', 'MEMBER_WITHDRAWN']);
 // Codes submitOrders records as REJECTED only BEFORE the order POST: the pre-submit re-read (readAccount,
 // assertSubmissionSnapshot), the member context, leverage validation, a leverage-POST or read timeout (the order
 // POST itself times out as UNKNOWN, never REJECTED) and placeFuturesOrder's own expiry check. Stored through

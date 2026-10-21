@@ -660,3 +660,14 @@ tbody tr:hover { background: #141416; }
   .member-performance-table td.empty-cell::before { content: none; }
   .toast { left: 16px; right: 16px; max-width: none; }
 }
+
+/* 2026-10-21 회원 관리: 회원 / 탈퇴 회원 탭 */
+.admin-member-tabs { display: inline-flex; gap: 4px; margin: 0 0 14px; }
+.admin-member-tabs span { margin-left: 4px; color: var(--muted); font-size: 11px; }
+.admin-member-tabs button.active span { color: inherit; }
+.admin-withdrawn-table .withdrawal-reason { max-width: 280px; word-break: keep-all; white-space: normal; color: var(--muted); }
+.member-withdraw-actions .muted { margin-top: 6px; font-size: 11px; color: var(--muted); word-break: keep-all; }
+.admin-withdrawn-members { padding: 16px; }
+.admin-withdrawn-table { min-width: 760px; }
+.admin-withdrawn-table th:last-child, .admin-withdrawn-table td.table-actions { position: sticky; right: 0; z-index: 1; background: var(--panel); box-shadow: -10px 0 12px -10px rgba(0, 0, 0, .8); }
+.admin-withdrawn-table th:last-child { background: #101012; }
