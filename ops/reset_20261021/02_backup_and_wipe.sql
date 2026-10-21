@@ -4,6 +4,9 @@
 --
 -- 남기는 것 : 관리자 계정(auth + profile + 관리자 약관동의), copy_system_control(정지 상태),
 --             copy_worker_runtime, master_alert.config(기준선 재설정), vault, cron.
+-- 마스터 UID가 저장된 곳은 아래 3곳뿐이며 모두 비운다 (2026-10-21 운영 확인):
+--   gate_api_credentials(MASTER 행), trading_accounts.bound_gate_uid, trading_account_rebind_archive.
+--   → 새 마스터 UID 등록 시 GATE_UID_ALREADY_REGISTERED / 계좌 교체 가드에 걸리지 않음.
 -- 지우는 것 : MEMBER 회원 6명(auth.users → profiles·세션 cascade), 마스터/회원 API 연결,
 --             거래계좌, 카피 사이클·주문·체결·스냅샷·포지션, 성과, 이벤트, 감사로그,
 --             브로커 지표(워커가 upsert로 다시 채움), 마스터 알림 상태.
@@ -121,6 +124,7 @@ begin
   end if;
   if exists (select 1 from private.trading_accounts)
      or exists (select 1 from private.gate_api_credentials)
+     or exists (select 1 from private.trading_account_rebind_archive)
      or exists (select 1 from public.copy_events) then
     raise exception 'ABORT: 삭제 후 데이터가 남아 있음';
   end if;
@@ -134,11 +138,15 @@ select 'auth.users' as item, count(*)::text as value from auth.users
 union all select 'profiles', count(*)::text from public.profiles
 union all select 'trading_accounts', count(*)::text from private.trading_accounts
 union all select 'gate_api_credentials', count(*)::text from private.gate_api_credentials
+union all select 'master_bound_uid', count(*)::text from private.trading_accounts
+          where account_role = 'MASTER' and bound_gate_uid is not null
+union all select 'rebind_archive', count(*)::text from private.trading_account_rebind_archive
 union all select 'copy_cycles', count(*)::text from private.copy_cycles
 union all select 'copy_events', count(*)::text from public.copy_events
 union all select 'backup_tables', count(*)::text from information_schema.tables
           where table_schema = 'reset_backup_20261021'
 union all select 'backup_copy_events_rows', count(*)::text from reset_backup_20261021.public__copy_events
 union all select 'backup_profiles_rows', count(*)::text from reset_backup_20261021.public__profiles;
--- 기대값: auth.users 1, profiles 1, trading_accounts 0, gate_api_credentials 0, copy_cycles 0,
+-- 기대값: auth.users 1, profiles 1, trading_accounts 0, gate_api_credentials 0,
+--         master_bound_uid 0, rebind_archive 0, copy_cycles 0,
 --         copy_events 0, backup_tables 40, backup_copy_events_rows ≈ 28만, backup_profiles_rows 7
