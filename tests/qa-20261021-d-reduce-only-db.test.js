@@ -2,7 +2,7 @@ import test, { before, after, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { createVerifiedDatabase, seedVerifiedAccount, cyclePayload, record, ids } from './fixtures/verified-runtime.js';
 
-// QA 2026-10-21 area D. Each test asserts the CURRENT behaviour of 0c39e77 against the latest migrations;
+// QA 2026-10-21 area D. D1 asserts the fixed behaviour (fix/qa-sizing); each D-REPRO test asserts the CURRENT behaviour of 0c39e77;
 // a passing "REPRO" test means the reported finding is reproduced.
 let db;
 const one = async (q, p) => (await db.query(q, p)).rows[0];
@@ -16,14 +16,17 @@ afterEach(async () => { await db.exec('rollback'); });
 
 const anchors = async () => { await asWorker(); return (await one('select public.get_copy_target_anchors() a')).a; };
 
-test('D-REPRO risk limit -> sticky reduce-only; ACTIVE "재개" lifts it and the next cycle buys the Master entry made meanwhile', async () => {
+test('D1: risk limit -> sticky reduce-only; after ACTIVE "재개" the Master entry made meanwhile is not bought', async () => {
   // Cycle 1: daily loss limit reached (worker evaluation). Master opens BTC LONG 40 in the same period.
   await record(db, cyclePayload({ masterSize: 40, member: { reduce_only: true, risk_halt_reason: 'DAILY_LOSS_LIMIT' } }));
   assert.equal((await one('select reduce_only from public.profiles where id=$1', [ids.user])).reduce_only, true, 'sticky');
   assert.equal(Number((await one('select count(*) n from private.copy_order_intents')).n), 0, 'nothing bought while reduce-only');
   const stored = await anchors();
   assert.equal(stored.length, 1);
-  assert.equal(Number(stored[0].target_size), 10, 'anchor holds the full target although nothing was bought');
+  assert.equal(Number(stored[0].target_size), 0, 'the anchor records what is held: the increase is consumed');
+  assert.equal(Number(stored[0].master_copyable_size), 40);
+  assert.equal(Number(stored[0].reference_master_size), 0);
+  assert.equal(Number(stored[0].observed_master_size), 40);
 
   // Member presses "카피 재개" (session is ACTIVE, not paused): reduce-only is cleared in place, no validation.
   await asMember();
@@ -33,8 +36,11 @@ test('D-REPRO risk limit -> sticky reduce-only; ACTIVE "재개" lifts it and the
   assert.deepEqual([session.state, session.version], ['ACTIVE', ids.version]);
   assert.equal((await one('select reduce_only from public.profiles where id=$1', [ids.user])).reduce_only, false);
 
-  // Next cycle (Master unchanged at 40, member still flat): a full-size BUY is planned and recorded.
+  // Next cycle (Master unchanged at 40, member still flat): nothing is bought.
   await record(db, cyclePayload({ masterSize: 40, member: { target_anchors: await anchors() } }));
+  assert.equal(Number((await one('select count(*) n from private.copy_order_intents')).n), 0, 'no catch-up BUY');
+  // A later Master increase (40 -> 80) is followed: +10.
+  await record(db, cyclePayload({ masterSize: 80, member: { target_anchors: await anchors() } }));
   const intent = await one("select delta_size,reduce_only,status from private.copy_order_intents order by created_at desc limit 1");
   assert.equal(Number(intent.delta_size), 10);
   assert.equal(intent.reduce_only, false);

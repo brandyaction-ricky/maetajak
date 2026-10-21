@@ -365,7 +365,13 @@ export async function getFuturesPositions({ expectedContracts = [], expectedLegs
   for (const contract of candidates) {
     try {
       const single = await gateRequest({ ...options, path: `${FUTURES_POSITIONS_PATH}/${encodeURIComponent(contract)}` });
-      const payload = Array.isArray(single.payload) ? single.payload : single.payload ? [single.payload] : [];
+      // C1: a 2xx without a position object or list (empty/null body, a scalar) proves nothing: it is an
+      // unconfirmed contract (or a failed read), never a flat one. Only 404/POSITION_NOT_FOUND, a position
+      // with size 0 or an empty list confirm flat.
+      if (single.payload == null || typeof single.payload !== 'object') {
+        throw new GateApiError('개별 포지션 조회 결과가 비어 있습니다.', { code: 'INVALID_POSITIONS_RESPONSE' });
+      }
+      const payload = Array.isArray(single.payload) ? single.payload : [single.payload];
       normalizeGatePositions(payload);
       confirmed.set(contract, payload.map((row) => ({ row, leg: normalizeGatePositions([row])[0] || null })));
     } catch (error) {
@@ -393,6 +399,11 @@ export async function getFuturesPositions({ expectedContracts = [], expectedLegs
   }
   const result = normalizeGatePositions([...rows.filter((row) => !unconfirmed.has(String(row.contract || ''))), ...additions]);
   if (unconfirmed.size) Object.defineProperty(result, 'unconfirmedContracts', { value: [...unconfirmed].sort(), enumerable: false });
+  // C1: contracts whose state rests only on the single-contract read because the whole list came back empty
+  // (the documented unified-account glitch). The Master cycle confirms an anchored leg that vanished this way
+  // on a second cycle before closing it (TradingRunner.confirmFallbackFlatLegs).
+  const fallbackOnly = rows.length ? [] : [...confirmed.keys()].filter((contract) => !unconfirmed.has(contract));
+  if (fallbackOnly.length) Object.defineProperty(result, 'listEmptyFallbackContracts', { value: fallbackOnly.sort(), enumerable: false });
   return result;
 }
 

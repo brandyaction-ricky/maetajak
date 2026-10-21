@@ -59,10 +59,18 @@ test('without a desired size (worker 0.5.0 anchors) a capped leg never regrows (
   assert.equal(p.intent, undefined);
 });
 
-test('a Master reduction is followed immediately and never turns into a buy, even with room under the cap', () => {
+test('a Master reduction never turns into a buy, even with room under the cap', () => {
+  // Halving the 14,000 decision leaves 7,000, still above the 961 held: nothing is bought or sold (QA B2).
   const p = plan({ masterSize: 7_000, actual: 961, anchors: anchor(14_000, 961, 14_000), price: 3_900 });
-  assert.ok(p.target_size <= 961);
-  assert.ok(p.intent && p.intent.delta_size < 0 && p.intent.reduce_only === true);
+  assert.equal(p.target_size, 961);
+  assert.equal(p.intent, undefined);
+  assert.equal(p.anchor_desired_target_size, 7_000);
+});
+
+test('a Master reduction below the held quantity is followed immediately (not delayed by the band)', () => {
+  const p = plan({ masterSize: 900, actual: 961, anchors: anchor(14_000, 961, 14_000), price: 3_900 });
+  assert.equal(p.target_size, 900);
+  assert.ok(p.intent && p.intent.delta_size === -61 && p.intent.reduce_only === true);
 });
 
 test('a Master increase is not delayed by the band', () => {

@@ -7,7 +7,7 @@ import {
 } from './gate.js';
 import {
   buildGateOrderText, buildIdempotencyKey, calculateDeltaOrder,
-  calculateCopyableMasterSize, calculateTargetPosition, capLockedTargetToCurrentRisk, calculateReducedCopyTarget,
+  calculateCopyableMasterSize, calculateTargetPosition, capLockedTargetToCurrentRisk,
   deriveCopyState, detectManualOverride, isPlatformOrder, roundTowardZeroToStep,
 } from './copy-engine.js';
 import { aggregateMemberPerformance, kstDayRange, previousKstDayRange } from './performance.js';
@@ -261,7 +261,35 @@ export function applyOrderObservationGuards(context, guards = []) {
   };
 }
 
-export function planMemberPositions({ cycleId, system, master, member, contracts, simulateSystemHalt = false }) {
+// B3: plans every leg once to learn the bases of a Master hedge's two legs, then again with both legs of a
+// capped contract scaled by one factor. Without such a contract the first pass is the plan.
+export function planMemberPositions(params) {
+  const collectGross = new Map();
+  const first = planMemberLegs(params, { collectGross });
+  const byContract = new Map();
+  for (const [symbol, leg] of collectGross) byContract.set(leg.contract, [...(byContract.get(leg.contract) || []), [symbol, leg]]);
+  const jointGross = new Map();
+  const total = Math.max(0, Number(params.member.total));
+  for (const legs of byContract.values()) {
+    if (legs.length !== 2) continue;
+    const notional = legs.reduce((sum, [, leg]) => sum + leg.base * leg.unitNotional, 0);
+    const factor = (ratio) => (notional > 0 ? Math.min(1, total * ratio / 100 / notional) : 1);
+    const ratio = Number(params.member.max_position_ratio);
+    if (factor(ratio) >= 1) continue;
+    // Each leg is floored on its own; with whole-lot bases floor(a*f) - floor(b*f) never exceeds a - b, so
+    // the result never holds more net exposure than the uncapped proportional copy.
+    const lots = (leg, f) => Math.abs(roundTowardZeroToStep(leg.base * f, params.contracts.get(leg.contract).sizeStep));
+    for (const [symbol, leg] of legs) {
+      jointGross.set(symbol, { room: lots(leg, factor(ratio)), grandfatheredRoom: lots(leg, factor(leg.grandfatheredRatio)) });
+    }
+  }
+  return jointGross.size ? planMemberLegs(params, { jointGross }) : first;
+}
+
+function planMemberLegs({ cycleId, system, master, member, contracts, simulateSystemHalt = false, executionBlocked = false },
+  { collectGross = null, jointGross = null } = {}) {
+  // No order of this cycle can execute (D1/B4): see increaseBlocked below.
+  const systemBlocked = Boolean(system?.emergency_halted) || system?.execution_enabled === false || executionBlocked === true;
   const masterPositions = positionMap(master.positions);
   const memberPositions = positionMap(member.positions);
   const previousStates = new Map((member.previous_states || []).map((state) => [positionKey(state), state]));
@@ -357,7 +385,9 @@ export function planMemberPositions({ cycleId, system, master, member, contracts
     const capOwnSize = Math.sign(resumeOwnSize) === Math.sign(protectedMemberSize)
       ? Math.sign(protectedMemberSize) * Math.min(Math.abs(protectedMemberSize), Math.abs(resumeOwnSize)) : 0;
     const ownAboveCap = protectedMemberSize - capOwnSize;
+    // B5: the held quantity is bounded by the ratio it was established under (grandfatheredRatio, below).
     const capWithoutOwnGrowth = (params) => capLockedTargetToCurrentRisk({
+      heldSize: memberPosition.size - ownAboveCap, heldMaxPositionRatio: grandfatheredRatio,
       ...params, lockedTargetSize: params.lockedTargetSize - ownAboveCap, protectedSize: capOwnSize }) + ownAboveCap;
     const protectedRatio = member.total > 0
       ? Math.abs(capOwnSize) * (memberPosition.markPrice || markPrice) * contractInfo.quantoMultiplier / member.total * 100 : 0;
@@ -391,24 +421,44 @@ export function planMemberPositions({ cycleId, system, master, member, contracts
     const ledgerSize = ledger ? (ledger.get(symbol) || 0) : null;
     const ledgerUnexplained = ledger !== null && !member.close_positions_requested
       && (!sameSize(memberPosition.size, ledgerSize) || unexplainedContracts.has(contract));
-    const masterQuantityUnchanged = anchorMatchesResume
-      && Number(anchor.master_copyable_size) === Number(masterPosition.size);
+    // Worker sizing fields of the anchor (20261021030000; the DB returns them only while the anchor still has
+    // the Master quantity and resume version of the worker write that stored them). Absent: previous behaviour.
+    const anchorField = (name) => (anchorMatchesResume && anchor[name] != null && anchor[name] !== ''
+      && Number.isFinite(Number(anchor[name])) ? Number(anchor[name]) : null);
+    const anchorMaster = anchorMatchesResume ? Number(anchor.master_copyable_size) : 0;
+    // Master quantity the anchored COPY decision corresponds to. It trails `anchorMaster` (the Master quantity
+    // already accounted for) by Master increases the member never bought (consumed while blocked, D1/B4)
+    // and by the part of a reduction lost to lot rounding (B1). A Master reduction sells that uncopied part
+    // first and only then the COPY, proportionally to this reference.
+    const anchorReference = anchorField('reference_master_size') ?? anchorMaster;
+    // Master copyable quantity observed at the last anchor write (B-note: a partial anchor sits below it).
+    const anchorObserved = anchorField('observed_master_size') ?? anchorMaster;
+    // B5: the ratio the held quantity was established under; a lower current ratio limits only increases.
+    const grandfatheredRatio = Math.max(Number(member.max_position_ratio), anchorField('max_position_ratio') ?? 0);
+    const masterReducedSinceObservation = anchorMatchesResume
+      && Math.abs(Number(masterPosition.size)) < Math.abs(anchorObserved)
+      && (Number(masterPosition.size) === 0 || Math.sign(Number(masterPosition.size)) === Math.sign(anchorObserved));
     const masterQuantityReduced = anchorMatchesResume
       && Math.abs(Number(masterPosition.size)) < Math.abs(Number(anchor.master_copyable_size))
       && (Number(masterPosition.size) === 0
         || Math.sign(Number(masterPosition.size)) === Math.sign(Number(anchor.master_copyable_size)));
-    const masterQuantityIncreased = anchorMatchesResume
+    // B-note: a Master that sold since the last observation is never routed to the increase path, even when
+    // it is still above a partially consumed anchor (a grown equity ratio would otherwise BUY that remainder).
+    const masterQuantityIncreased = anchorMatchesResume && !masterReducedSinceObservation
       && Math.abs(masterPosition.size) > Math.abs(Number(anchor.master_copyable_size))
       && (!Number(anchor.master_copyable_size) || Math.sign(masterPosition.size) === Math.sign(Number(anchor.master_copyable_size)));
+    const masterQuantityUnchanged = anchorMatchesResume && !masterQuantityReduced && !masterQuantityIncreased
+      && (Number(anchor.master_copyable_size) === Number(masterPosition.size) || masterReducedSinceObservation);
     // null: the anchor takes the observed Master copyable size (DB default).
-    let anchorMasterCopyableSize = null;
+    let anchorMasterCopyableSize = masterQuantityUnchanged && masterReducedSinceObservation ? anchorMaster : null;
+    // Reference written with the anchor; null: the Master quantity the anchor stores (fully copied).
+    let anchorReferenceMasterSize = null;
     if (masterQuantityIncreased) {
       // Every anchored leg follows only the Master's CHANGE since its anchor. Re-sizing the whole leg
       // at the current equity ratio could make a member SELL while the Master BUYS (P0-1). The anchored
       // COPY decision is kept as decided (a shortfall still completes, as with an unchanged Master) and
       // only the increment is sized at the current ratio. Reductions keep min(anchor, actual) so a
       // Master reduction never becomes a member increase.
-      const anchorMaster = Number(anchor.master_copyable_size);
       const increment = masterPosition.size - anchorMaster;
       const incremental = calculateTargetPosition({
         masterSize: increment, masterEquity,
@@ -447,19 +497,41 @@ export function planMemberPositions({ cycleId, system, master, member, contracts
           });
         }
       }
+      // The decision now also covers the consumed part of the increase.
+      anchorReferenceMasterSize = anchorReference + ((anchorMasterCopyableSize ?? masterPosition.size) - anchorMaster);
     } else if (masterQuantityUnchanged || masterQuantityReduced) {
-      const lockedTargetSize = masterQuantityReduced
-        ? calculateReducedCopyTarget({
-          previousMasterSize: anchor.master_copyable_size,
-          masterSize: masterPosition.size,
-          lockedTargetSize: protectedMemberSize + Math.sign(anchorTargetSize - protectedMemberSize)
-            * Math.min(Math.abs(anchorTargetSize - protectedMemberSize),
-              Math.max(0, Math.abs(memberPosition.size) - Math.abs(protectedMemberSize))),
-          protectedSize: protectedMemberSize,
-          sizeStep: contractInfo.sizeStep,
-        })
-        : anchorTargetSize;
-      desiredTargetSize = lockedTargetSize;
+      let lockedTargetSize = anchorTargetSize;
+      desiredTargetSize = anchorTargetSize;
+      anchorReferenceMasterSize = anchorReference;
+      const decidedCopy = anchorTargetSize - protectedMemberSize;
+      const heldCopy = Math.max(0, Math.abs(memberPosition.size) - Math.abs(protectedMemberSize));
+      // B-note: in a cycle where the Master sold, the leg does not grow (not even back towards a capped decision).
+      if (masterReducedSinceObservation) {
+        lockedTargetSize = protectedMemberSize + Math.sign(decidedCopy) * Math.min(Math.abs(decidedCopy), heldCopy);
+      }
+      if (masterQuantityReduced) {
+        let reducedCopy = decidedCopy;
+        if (Number(masterPosition.size) === 0 || Math.abs(masterPosition.size) < Math.abs(anchorReference)) {
+          // B1: scale the decision against its reference, not the already floored holding, so a reduction
+          // observed over several cycles ends where the same reduction observed at once would (the lost
+          // fraction is carried by a smaller reference). Twelve digits absorb float noise before flooring.
+          reducedCopy = anchorReference && Number(masterPosition.size)
+            ? roundTowardZeroToStep(Number((decidedCopy * masterPosition.size / anchorReference).toPrecision(12)), contractInfo.sizeStep)
+            : 0;
+          anchorReferenceMasterSize = decidedCopy
+            ? Math.sign(masterPosition.size) * Math.min(Math.abs(masterPosition.size),
+              Math.abs(Number((anchorReference * reducedCopy / decidedCopy).toPrecision(15)))) : Number(masterPosition.size);
+          target.targetLockReason = 'MASTER_QUANTITY_REDUCED_PROPORTIONALLY';
+        } else {
+          // Only the Master quantity the member never copied was sold: the COPY decision stands.
+          target.targetLockReason = 'MASTER_REDUCED_UNCOPIED_QUANTITY';
+        }
+        // B2: the decision (possibly above a binding cap) is reduced; the order target is the smaller of it
+        // and the COPY held, so a capped member keeps the cap while the reduced decision still exceeds it,
+        // and a Master reduction never makes the member buy.
+        lockedTargetSize = protectedMemberSize + Math.sign(reducedCopy) * Math.min(Math.abs(reducedCopy), heldCopy);
+        desiredTargetSize = protectedMemberSize + reducedCopy;
+      }
       target.targetSize = capWithoutOwnGrowth({
         lockedTargetSize,
         memberEquity: member.total,
@@ -468,9 +540,8 @@ export function planMemberPositions({ cycleId, system, master, member, contracts
         maxPositionRatio: member.max_position_ratio,
         sizeStep: contractInfo.sizeStep,
       });
-      target.targetLockReason = target.targetSize === lockedTargetSize
-        ? (masterQuantityReduced ? 'MASTER_QUANTITY_REDUCED_PROPORTIONALLY' : 'MASTER_QUANTITY_UNCHANGED')
-        : 'CURRENT_RISK_CAP_REDUCTION';
+      target.targetLockReason = target.targetSize !== lockedTargetSize ? 'CURRENT_RISK_CAP_REDUCTION'
+        : masterQuantityReduced ? target.targetLockReason : 'MASTER_QUANTITY_UNCHANGED';
     } else {
       target.targetLockReason = anchorMatchesResume ? 'MASTER_QUANTITY_CHANGED' : 'TARGET_ANCHOR_INITIALIZED';
       desiredTargetSize = protectedMemberSize + roundTowardZeroToStep(
@@ -541,12 +612,27 @@ export function planMemberPositions({ cycleId, system, master, member, contracts
         && positionKey(position) !== symbol).reduce((sum, position) =>
         sum + Math.max(0, Math.abs(position.size) - ownGrowthSince(positionKey(position)))
           * (position.markPrice || price) * contractInfo.quantoMultiplier, 0);
-      const availableSymbolNotional = Math.max(0, member.total * member.max_position_ratio / 100
-        - otherLegNotional - (reservedNotional.get(contract) || 0));
       const ownGrowth = Math.sign(ownAboveCap) === Math.sign(target.targetSize) ? Math.abs(ownAboveCap) : 0;
+      const lotsFor = (notional) => Math.abs(roundTowardZeroToStep(Math.max(0, notional) / unitNotional, contractInfo.sizeStep));
+      const sequentialRoom = (ratio) => lotsFor(member.total * ratio / 100 - otherLegNotional - (reservedNotional.get(contract) || 0));
+      // B5: COPY already held keeps the room of the ratio it was established under (growth uses the current one).
+      const heldCopyLots = Math.sign(memberPosition.size) === Math.sign(target.targetSize)
+        ? Math.max(0, Math.abs(memberPosition.size) - ownGrowth) : 0;
+      const keepHeld = (room, grandfatheredRoom) => Math.max(room, Math.min(heldCopyLots, grandfatheredRoom));
+      let room = keepHeld(sequentialRoom(member.max_position_ratio), sequentialRoom(grandfatheredRatio));
+      // B3: a Master hedge (both legs of one contract) shares one cap. Both legs are scaled by the same factor
+      // (planMemberPositions computes it from pass 1) so the member is not left one-sided.
+      const joint = jointGross?.get(symbol);
+      if (joint) room = Math.min(room, keepHeld(joint.room, joint.grandfatheredRoom));
+      if (collectGross && target.targetSize !== 0 && Number(observedMasterPosition.size) !== 0
+        && Number(masterPositions.get(oppositeKey)?.size || 0) !== 0) {
+        const desiredLots = desiredTargetSize != null && Math.sign(desiredTargetSize) === Math.sign(target.targetSize)
+          ? Math.abs(desiredTargetSize) - ownGrowth : 0;
+        collectGross.set(symbol, { contract, unitNotional, grandfatheredRatio,
+          base: Math.max(Math.abs(target.targetSize) - ownGrowth, desiredLots) });
+      }
       const grossCapped = Math.sign(target.targetSize) * (Math.max(Math.abs(capOwnSize),
-        Math.min(Math.abs(target.targetSize) - ownGrowth,
-          Math.abs(roundTowardZeroToStep(availableSymbolNotional / unitNotional, contractInfo.sizeStep)))) + ownGrowth);
+        Math.min(Math.abs(target.targetSize) - ownGrowth, room)) + ownGrowth);
       if (Math.abs(grossCapped) < Math.abs(target.targetSize)) {
         target.targetSize = grossCapped;
         budgetReason = 'SYMBOL_GROSS_EXPOSURE_LIMIT';
@@ -620,6 +706,39 @@ export function planMemberPositions({ cycleId, system, master, member, contracts
       delta.deltaSize = 0;
       delta.reason = 'BELOW_MINIMUM_ORDER_SIZE';
     }
+    // D1/D2/B4 (FUTURE_ONLY): while this leg cannot increase (member reduce-only, halted or paused, a protected
+    // opposite holding in single mode, system halt, execution disabled, a non-LIVE worker) a Master increase
+    // the member did not buy is consumed: the anchor stores the quantity actually held against the current
+    // Master quantity, so nothing missed is bought on release, while the reference keeps the Master quantity
+    // the held COPY corresponds to (a later Master reduction back to it sells nothing). Reductions still
+    // follow; legs whose anchor may not move (unresolved/open orders, manual changes) are unaffected.
+    const increaseBlocked = reduceOnly || Boolean(member.halted) || systemBlocked
+      || Boolean(member.copy_paused) || protectedOppositePosition;
+    const heldOnSide = Math.sign(memberPosition.size) === Math.sign(target.targetSize) ? Number(memberPosition.size) : 0;
+    let consumedAnchorTarget = null;
+    if (increaseBlocked && !member.close_positions_requested && Math.abs(target.targetSize) > Math.abs(heldOnSide)) {
+      consumedAnchorTarget = heldOnSide;
+      const decidedCopy = (desiredTargetSize ?? target.targetSize) - protectedMemberSize;
+      const heldCopy = heldOnSide - protectedMemberSize;
+      const reference = anchorReferenceMasterSize ?? Number(masterPosition.size);
+      const anchoredCopy = anchorTargetSize - protectedMemberSize;
+      // Holding at least the previous decision: the held COPY still corresponds to the previous reference.
+      // Otherwise the reference shrinks with the share of the decision actually held.
+      anchorReferenceMasterSize = masterQuantityIncreased && anchoredCopy && Math.sign(heldCopy) === Math.sign(anchoredCopy)
+        && Math.abs(heldCopy) >= Math.abs(anchoredCopy) ? anchorReference
+        : decidedCopy && Math.sign(heldCopy) === Math.sign(decidedCopy)
+          ? Number((reference * Math.min(1, heldCopy / decidedCopy)).toPrecision(15)) : 0;
+      anchorMasterCopyableSize = null;
+      desiredTargetSize = heldOnSide;
+      target.targetLockReason = 'INCREASE_CONSUMED_WHILE_BLOCKED';
+    }
+    // B5: remember the higher ratio only while the held quantity still needs it.
+    const anchorTargetForRatio = consumedAnchorTarget ?? target.targetSize;
+    const exceedsCurrentCap = grandfatheredRatio > Number(member.max_position_ratio) && anchorTargetForRatio !== 0
+      && Math.abs(capWithoutOwnGrowth({ lockedTargetSize: anchorTargetForRatio, heldSize: 0,
+        memberEquity: member.total, memberMarkPrice: memberPosition.markPrice || markPrice,
+        memberQuantoMultiplier: contractInfo.quantoMultiplier, maxPositionRatio: member.max_position_ratio,
+        sizeStep: contractInfo.sizeStep })) < Math.abs(anchorTargetForRatio);
     const idempotencyKey = delta.shouldSubmit ? buildIdempotencyKey({ cycleId, userId: member.user_id, contract, positionSide, targetSize: target.targetSize, actualSize: memberPosition.size }) : null;
     const plannedPosition = {
       contract, position_side: positionSide, position_mode: member.positionMode || 'single',
@@ -640,6 +759,10 @@ export function planMemberPositions({ cycleId, system, master, member, contracts
       ...(anchorMasterCopyableSize == null ? {} : { anchor_master_copyable_size: anchorMasterCopyableSize }),
       ...(desiredTargetSize == null || member.close_positions_requested || !Number.isFinite(desiredTargetSize)
         ? {} : { anchor_desired_target_size: desiredTargetSize }),
+      ...(consumedAnchorTarget == null ? {} : { anchor_target_size: consumedAnchorTarget }),
+      ...(anchorReferenceMasterSize == null || member.close_positions_requested || !Number.isFinite(anchorReferenceMasterSize)
+        ? {} : { anchor_reference_master_size: anchorReferenceMasterSize }),
+      anchor_max_position_ratio: exceedsCurrentCap ? grandfatheredRatio : Number(member.max_position_ratio),
       sizing_reason: budgetReason,
       execution_reason: delta.reason,
       master_actual_size: Number(observedMasterPosition.size),
@@ -690,6 +813,8 @@ export class TradingRunner {
     this.lastMasterSizes = new Map();
     this.recentMasterContracts = new Map();
     this.pendingBaselineClears = new Map();
+    // C1: contract -> { first, last } cycles in which an anchored Master leg was seen flat only through the fallback.
+    this.pendingFallbackFlats = new Map();
     // P1-8: resume validation runs after the order phase, one member per cycle.
     this.pendingResumes = [];
     this.resumeAttemptAt = new Map();
@@ -715,6 +840,28 @@ export class TradingRunner {
     if (!previous || previous.seq !== this.cycleSeq - 1) return null;
     this.pendingBaselineClears.delete(key);
     return { ...leg, size: Math.abs(previous.size) >= Math.abs(Number(leg.size)) ? previous.size : Number(leg.size) };
+  }
+  // C1: Gate's list sometimes comes back empty while positions are open; the single-contract read then decides.
+  // An anchored COPY leg whose Master leg vanished only that way is closed on the second consecutive such read;
+  // in the first cycle its contract is returned to be treated as unconfirmed (no order, no anchor move). A leg
+  // absent from a non-empty list, or present in it, is not delayed.
+  confirmFallbackFlatLegs(master, targetAnchors = []) {
+    const fallback = new Set(master?.list_empty_fallback_contracts || []);
+    const present = new Set((master?.positions || []).map(positionKey));
+    const vanished = new Set((targetAnchors || []).filter((anchor) => fallback.has(anchor?.contract)
+      && Number(anchor?.master_copyable_size) && !present.has(positionKey({ ...anchor, size: anchor.master_copyable_size })))
+      .map((anchor) => anchor.contract));
+    const held = [];
+    for (const contract of vanished) {
+      // Confirmed while the sightings are consecutive (an anchor another member could not move yet must not
+      // hold the contract every other cycle); a gap starts over.
+      const pending = this.pendingFallbackFlats.get(contract);
+      const continued = pending?.last === this.cycleSeq - 1;
+      this.pendingFallbackFlats.set(contract, { first: continued ? pending.first : this.cycleSeq, last: this.cycleSeq });
+      if (!continued) held.push(contract);
+    }
+    for (const [contract, pending] of this.pendingFallbackFlats) if (pending.last !== this.cycleSeq) this.pendingFallbackFlats.delete(contract);
+    return held.sort();
   }
   // Member legs on an unconfirmed Master contract are paused, so a contract that stays unconfirmed
   // must reach a person: log on change, alert once it lasts about a minute (then every 30 minutes).
@@ -804,6 +951,7 @@ export class TradingRunner {
     const risk = evaluateMemberRisk({ account, total: summary.total });
     return { ...account, ...summary, positions, open_orders: openOrders,
       unconfirmed_contracts: positions.unconfirmedContracts || [],
+      list_empty_fallback_contracts: positions.listEmptyFallbackContracts || [],
       observed_started_at: startedAt, observed_at: new Date().toISOString(),
       halted: Boolean(account.halted), profile_reduce_only: Boolean(account.reduce_only),
       reduce_only: Boolean(account.reduce_only) || Boolean(risk.risk_halt_reason),
@@ -1097,6 +1245,8 @@ export class TradingRunner {
     memberContexts.forEach((account, index) => this.trackMemberCredentialRead(account,
       memberReads[index].status === 'rejected' ? memberReads[index].reason || new Error('MEMBER_READ_FAILED') : null));
     assertFreshAccount(master);
+    const fallbackHeld = this.confirmFallbackFlatLegs(master, targetAnchors);
+    if (fallbackHeld.length) master.unconfirmed_contracts = [...new Set([...(master.unconfirmed_contracts || []), ...fallbackHeld])];
     // A contract Gate could not confirm this cycle (its single-contract read failed) has unknown Master
     // legs: member legs on it are paused and no anchor or baseline moves (planMemberPositions), instead
     // of one flaky contract failing every member's cycle.
@@ -1270,6 +1420,8 @@ export class TradingRunner {
           member,
           contracts,
           simulateSystemHalt: this.mode === 'DRY_RUN',
+          // Only a LIVE worker executes; elsewhere Master increases are consumed (FUTURE_ONLY, B4).
+          executionBlocked: this.mode !== 'LIVE',
         });
         simulatedIntents += plannedPositions.filter((position) => position.intent).length;
         if (this.mode === 'DRY_RUN') {

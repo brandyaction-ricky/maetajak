@@ -38,6 +38,8 @@ export const migrationFiles = [
   '20261020020000_qa_fixes.sql',
   // 2026-10-21 administrator member withdrawal / restore.
   '20261021010000_admin_member_withdrawal.sql',
+  // 2026-10-21 QA sizing: FUTURE_ONLY anchors (consumed increases, reference/observed Master, held ratio).
+  '20261021030000_qa_sizing_anchor.sql',
 ];
 export async function createVerifiedDatabase() {
   const db = new PGlite();
