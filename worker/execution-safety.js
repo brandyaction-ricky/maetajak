@@ -99,6 +99,9 @@ export function assertSubmissionSnapshot(job, account, master, reversalContext =
       throw new GateApiError('기존 카피 포지션의 청산 확인이 필요합니다.', { code: 'COPY_REVERSAL_CLOSE_REQUIRED' });
     }
   }
+  if (account.account_policy_block) {
+    throw new GateApiError('지원하지 않는 회원 계정 모드라 신규 진입을 차단했습니다.', { code: String(account.account_policy_block) });
+  }
   if (account.halted || account.reduce_only) {
     throw new GateApiError('회원 위험 한도로 신규 진입을 차단했습니다.', { code: 'MEMBER_RISK_LIMIT' });
   }

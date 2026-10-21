@@ -44,6 +44,8 @@ export const migrationFiles = [
   '20261021030000_qa_sizing_anchor.sql',
   // 2026-10-21 QA A/D: Master key rotation, admin status, UID release, restore reset, admin restrictions.
   '20261021032000_qa_admin_lifecycle.sql',
+  // 2026-10-21 QA D: risk on the sizing equity basis, unified-member policy.
+  '20261021033000_qa_risk_basis.sql',
 ];
 // Production objects the structural fixture lacks (test-only stand-ins, no data). Every statement is
 // "if not exists"/"or replace", so a test may still create its own (narrower) stand-in first.

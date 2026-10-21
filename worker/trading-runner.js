@@ -3,7 +3,7 @@ import {
   GateApiError, cancelAllOpenFuturesOrders, findFuturesOrderByText, getFuturesAccount, getFuturesAccountBook, getFuturesContracts, listFuturesOrders,
   getMyFuturesTradesInRange, getFuturesForcedCloses,
   getFuturesOrder, getFuturesPositions, getOrderTrades, placeFuturesOrder, setFuturesLeverage,
-  safeGateErrorLabel, setFuturesPositionMode, summarizeGateOrder,
+  safeGateErrorLabel, setFuturesPositionMode, summarizeGateOrder, UNIFIED_ACCOUNT_UNSUPPORTED,
 } from './gate.js';
 import {
   buildGateOrderText, buildIdempotencyKey, calculateDeltaOrder,
@@ -25,6 +25,19 @@ export const CAP_TOLERANCE_RATIO = 0.03;
 
 // Consecutive skewed member snapshots skipped silently before the member's legs are held (PAUSED).
 export const SNAPSHOT_SKEW_SKIP_LIMIT = 3;
+
+// Member risk limits are evaluated on the sizing equity basis (classic wallet + unrealised PnL; unified equity as
+// reported). The DB keeps peak/day-start with this marker and resets them when the basis changes (QA D5).
+export const RISK_EQUITY_BASIS = 'MTM_V1';
+// A NEW risk halt makes profiles.reduce_only sticky in the DB, so it is persisted only when the violation is seen on
+// consecutive cycles with a successful fund-flow re-check in the confirming cycle (QA D4: a second transfer within
+// the 60 s re-check throttle, or Gate ledger lag, recorded a false DAILY_LOSS_LIMIT). New entries are held from the
+// first cycle; without a successful re-check the halt is persisted after RISK_HALT_CONFIRM_MAX_CYCLES cycles.
+export const RISK_HALT_CONFIRM_CYCLES = 2;
+export const RISK_HALT_CONFIRM_MAX_CYCLES = 3;
+// Target leverage when a cross-margin Master leg reports neither leverage nor cross_leverage_limit (Gate: 0 = the
+// maximum under the risk limit) and no earlier value is known. Capped at the contract maximum.
+export const DEFAULT_CROSS_LEVERAGE = 10;
 
 // Intents the database cancelled before any Gate request; they are not order failures (2026-10: 520 of 539
 // COPY_ORDER_FAILED alerts were SUPERSEDED_BY_FRESH_PLAN plans that never reached Gate).
@@ -153,6 +166,25 @@ export function evaluateMemberRisk({ account, total }) {
   };
 }
 
+// Risk of an observed account (context fields + Gate summary) on RISK_EQUITY_BASIS. Peak/day-start stored on another
+// basis (`stored_risk_basis` from get_copy_risk_context) are never compared: the DB resets them on this cycle's write.
+export function evaluateAccountRisk(account) {
+  const risk = evaluateMemberRisk({ account, total: sizingEquity(account) });
+  const storedBasis = account?.stored_risk_basis;
+  if (typeof storedBasis === 'string' && storedBasis !== RISK_EQUITY_BASIS) {
+    return { ...risk, risk_halt_reason: null, daily_loss_pct: 0, drawdown_pct: 0, risk_basis_mismatch: storedBasis };
+  }
+  return risk;
+}
+
+export function withRiskContext(context, riskContext) {
+  if (!context || !Array.isArray(context.members) || !Array.isArray(riskContext?.accounts)) return context;
+  const basis = new Map(riskContext.accounts.map((row) => [row.trading_account_id,
+    row.risk_basis == null ? 'UNKNOWN' : String(row.risk_basis)]));
+  return { ...context, members: context.members.map((member) => (basis.has(member.trading_account_id)
+    ? { ...member, stored_risk_basis: basis.get(member.trading_account_id) } : member)) };
+}
+
 // Gate futures ledger rows of type 'dnw' (deposits, withdrawals and transfers in/out of futures).
 export function fundFlowEntries(ledger) {
   return (Array.isArray(ledger) ? ledger : [])
@@ -192,6 +224,8 @@ export function buildCurrentStatePayload({ cycleId, observedAt, master, members 
     total_equity: account.total,
     available_equity: account.available,
     unrealised_pnl: account.unrealisedPnl ?? null,
+    // Equity the risk limits use (before transfer adjustment); the DB keeps peak/day-start on it.
+    ...(Number.isFinite(sizingEquity(account)) ? { risk_equity: sizingEquity(account), risk_basis: RISK_EQUITY_BASIS } : {}),
     error_code: account.error_code || null,
     positions: (positions || []).map((position) => ({
       contract: position.contract,
@@ -556,8 +590,28 @@ function planMemberLegs({ cycleId, system, master, member, contracts, simulateSy
     }
     target.targetNotional = Math.abs(target.targetSize) * (memberPosition.markPrice || markPrice) * contractInfo.quantoMultiplier;
     const previous = previousStates.get(symbol);
-    const targetLeverage = Number(observedMasterPosition.leverage || previous?.target_leverage || memberPosition.leverage || 0);
-    const riskLeverage = protectedMemberSize ? Number(memberPosition.leverage || 0) : targetLeverage;
+    const oppositeKey = `${contract}:${positionSide === 'LONG' ? 'SHORT' : 'LONG'}`;
+    const masterLegOpen = Number(observedMasterPosition.size || 0) !== 0;
+    const fallbackLeverage = Math.max(1, Math.min(DEFAULT_CROSS_LEVERAGE, Number(contractInfo.leverageMax) || DEFAULT_CROSS_LEVERAGE));
+    let leverageReason = null;
+    let targetLeverage = Number(observedMasterPosition.leverage || previous?.target_leverage || memberPosition.leverage || 0);
+    // A cross-margin Master leg with cross_leverage_limit 0 reports leverage 0; target 0 made every entry fail
+    // ORDER_RISK_METADATA_INVALID. Use a capped default (also what the member's leverage is set to).
+    if (!(targetLeverage > 0) && masterLegOpen) {
+      targetLeverage = fallbackLeverage;
+      leverageReason = 'MASTER_LEVERAGE_UNREPORTED_DEFAULT';
+    }
+    let riskLeverage = protectedMemberSize ? Number(memberPosition.leverage || 0) : targetLeverage;
+    // Gate classic hedge mode keeps one leverage/margin setting per contract: setting it for this leg changes the
+    // member's open opposite leg (personal or COPY) too (QA D7). Keep the current setting; margin uses it.
+    const oppositeMemberPosition = memberPositions.get(oppositeKey);
+    const sharedLeverageLocked = String(member.positionMode || 'single').startsWith('dual')
+      && Number(oppositeMemberPosition?.size || 0) !== 0;
+    if (sharedLeverageLocked && !protectedMemberSize) {
+      riskLeverage = Number(memberPosition.leverage || oppositeMemberPosition.leverage || 0) || targetLeverage;
+      leverageReason = 'OPPOSITE_LEG_OPEN_LEVERAGE_KEPT';
+    }
+    if (!(riskLeverage > 0) && (masterLegOpen || protectedMemberSize)) riskLeverage = fallbackLeverage;
     const marginMode = String(observedMasterPosition.posMarginMode || previous?.margin_mode || memberPosition.posMarginMode || 'cross');
     // An outstanding order may already have filled at Gate even when the
     // account read has not caught up. Do not create a fresh cycle/order key
@@ -565,7 +619,6 @@ function planMemberLegs({ cycleId, system, master, member, contracts, simulateSy
     const hasUnresolvedOrder = Boolean(previous?.has_unresolved_order);
     // Only a resting platform order holds the leg; a member's own resting order does not (2026-10-20).
     const hasOpenExchangeOrder = (member.open_orders || []).some((order) => order.contract === contract && isPlatformOrder(order));
-    const oppositeKey = `${contract}:${positionSide === 'LONG' ? 'SHORT' : 'LONG'}`;
     // A dual-mode reversal is two executions with a fill/observation dependency.
     // Never reserve an entry while the retiring COPY leg is still present or
     // unresolved. Protected holdings and a Master that keeps both legs are
@@ -786,13 +839,17 @@ function planMemberLegs({ cycleId, system, master, member, contracts, simulateSy
         : hasUnresolvedOrder ? 'UNRESOLVED_PLATFORM_ORDER'
           : hasOpenExchangeOrder ? 'OPEN_EXCHANGE_ORDER'
           : protectedOppositePosition ? 'PROTECTED_EXISTING_POSITION_OPPOSITE_SIDE'
-            : member.risk_halt_reason || (member.copy_paused ? 'MEMBER_PAUSED' : null) || budgetReason,
+            : member.account_policy_block || member.risk_halt_reason
+              || (member.risk_halt_pending ? 'RISK_LIMIT_CONFIRMING' : null)
+              || (member.copy_paused ? 'MEMBER_PAUSED' : null) || budgetReason,
+      ...(leverageReason ? { leverage_reason: leverageReason } : {}),
     };
     if (delta.shouldSubmit) {
       plannedPosition.intent = {
         delta_size: delta.deltaSize, reduce_only: delta.reduceOnly,
         position_side: positionSide, position_mode: member.positionMode || 'single',
-        target_leverage: protectedMemberSize ? null : targetLeverage || null, margin_mode: marginMode,
+        // No leverage change for the member's own holding on this leg, nor while the opposite leg is open (D7).
+        target_leverage: protectedMemberSize || sharedLeverageLocked ? null : targetLeverage || null, margin_mode: marginMode,
         pid: memberPosition.pid || null,
         idempotency_key: idempotencyKey, gate_order_text: buildGateOrderText(idempotencyKey),
       };
@@ -840,6 +897,11 @@ export class TradingRunner {
     this.fundFlowRecheckAt = new Map();
     this.lastMemberTotals = new Map();
     this.lastFundFlowTotals = [];
+    // QA D4: risk violations awaiting confirmation, by account: { seq, count, reason }.
+    this.pendingRiskHalts = new Map();
+    // QA D5/D6: get_copy_risk_context (unified-member policy, stored risk basis). null until first loaded.
+    this.riskContext = null;
+    this.unifiedBlockLogged = new Set();
   }
   // A FUTURE_ONLY baseline only shrinks, permanently. One empty or partial Master read must not
   // shrink it (the member would then copy the Master's pre-resume holdings): require the same
@@ -948,7 +1010,8 @@ export class TradingRunner {
     }
     return this.contracts;
   }
-  async readAccount(account) {
+  // `member`: the account copies the Master, so the member account policy applies (unified accounts, QA D6).
+  async readAccount(account, { member = false } = {}) {
     const startedAt = new Date().toISOString();
     const auth = credentials(account);
     const [summary, positions, openOrders] = await Promise.all([
@@ -959,22 +1022,33 @@ export class TradingRunner {
       listFuturesOrders({ ...auth, baseUrl: this.baseUrl, fetchImpl: this.fetchImpl, status: 'open', limit: 100 }),
     ]);
     if (openOrders.length >= 100) throw new GateApiError('미체결 주문을 모두 확인해야 합니다.', { code: 'OPEN_ORDERS_LIMIT_REACHED' });
-    const risk = evaluateMemberRisk({ account, total: summary.total });
+    // A member in unified mode is held reduce-only (exits still follow the Master) unless the operator allowed it:
+    // its equity includes spot assets whose transfers the futures ledger does not show, so no risk is evaluated.
+    const policyBlock = member && summary.accountMode === 'unified' && this.riskContext?.allow_unified_members !== true
+      ? UNIFIED_ACCOUNT_UNSUPPORTED : null;
+    const risk = policyBlock ? { risk_halt_reason: null } : evaluateAccountRisk({ ...account, ...summary });
+    if (policyBlock && this.logger && !this.unifiedBlockLogged.has(account.trading_account_id)) {
+      this.unifiedBlockLogged.add(account.trading_account_id);
+      this.logger('member_unified_account_blocked', { trading_account_id: account.trading_account_id, error_code: policyBlock });
+    }
     return { ...account, ...summary, positions, open_orders: openOrders,
       unconfirmed_contracts: positions.unconfirmedContracts || [],
       list_empty_fallback_contracts: positions.listEmptyFallbackContracts || [],
       observed_started_at: startedAt, observed_at: new Date().toISOString(),
       halted: Boolean(account.halted), profile_reduce_only: Boolean(account.reduce_only),
-      reduce_only: Boolean(account.reduce_only) || Boolean(risk.risk_halt_reason),
-      ...risk };
+      reduce_only: Boolean(account.reduce_only) || Boolean(risk.risk_halt_reason) || Boolean(policyBlock),
+      account_policy_block: policyBlock, ...risk };
   }
   // A risk limit is about to trip: make sure the equity drop is not a transfer the 5-minute ledger
   // sync has not recorded yet. Today's Gate ledger transfers are recorded first, then risk is
   // re-evaluated on the new net. Never throws: a failed check keeps the original evaluation.
-  async recheckRiskWithFundFlows(member, { force = false } = {}) {
-    if ((!member?.risk_halt_reason && !force) || !member?.trading_account_id) return member;
+  // `confirming`: a violation awaits confirmation (QA D4); the 60 s throttle does not apply, so a second transfer
+  // shortly after the first one (or a ledger row that appeared late) is still recorded before the halt persists.
+  // `fund_flow_rechecked` marks a successful ledger read and record in this call.
+  async recheckRiskWithFundFlows(member, { force = false, confirming = false } = {}) {
+    if ((!member?.risk_halt_reason && !force) || !member?.trading_account_id || member.account_policy_block) return member;
     const lastCheck = this.fundFlowRecheckAt.get(member.trading_account_id) || 0;
-    if (Date.now() - lastCheck < 60_000) return member;
+    if (!confirming && Date.now() - lastCheck < 60_000) return member;
     this.fundFlowRecheckAt.set(member.trading_account_id, Date.now());
     try {
       const range = kstDayRange(new Date());
@@ -982,13 +1056,47 @@ export class TradingRunner {
         from: range.from - 86_400, to: range.to, type: 'dnw' });
       const net = await this.recordFundFlows(member.trading_account_id, ledger);
       if (net == null) return member;
-      const risk = evaluateMemberRisk({ account: { ...member, fund_flow_net: net }, total: member.total });
-      return { ...member, fund_flow_net: net, ...risk,
+      const risk = evaluateAccountRisk({ ...member, fund_flow_net: net });
+      return { ...member, fund_flow_net: net, ...risk, fund_flow_rechecked: true,
         reduce_only: Boolean(member.profile_reduce_only) || Boolean(risk.risk_halt_reason) };
     } catch (error) {
       if (this.logger) this.logger('fund_flow_recheck_failed', { trading_account_id: member.trading_account_id, error_code: safeError(error, 'FUND_FLOW') });
       return member;
     }
+  }
+  // QA D4: a NEW risk halt (profile not yet reduce-only) is reported to the DB, which makes reduce_only sticky, only
+  // once confirmed (RISK_HALT_CONFIRM_CYCLES). Until then the member stays reduce-only in this cycle's plan only
+  // (pause_reason RISK_LIMIT_CONFIRMING) and the payload carries risk_halt_pending instead of risk_halt_reason.
+  confirmRiskHalt(member) {
+    const id = member?.trading_account_id;
+    const reason = member?.risk_halt_reason;
+    if (!id) return member;
+    if (!reason || member.profile_reduce_only) {
+      this.pendingRiskHalts.delete(id);
+      return member;
+    }
+    const pending = this.pendingRiskHalts.get(id);
+    const count = pending && pending.seq === this.cycleSeq - 1 ? pending.count + 1 : 1;
+    if ((count >= RISK_HALT_CONFIRM_CYCLES && member.fund_flow_rechecked === true) || count >= RISK_HALT_CONFIRM_MAX_CYCLES) {
+      this.pendingRiskHalts.delete(id);
+      if (this.logger) this.logger('member_risk_halt_confirmed', { trading_account_id: id, reason, cycles: count,
+        fund_flow_rechecked: member.fund_flow_rechecked === true });
+      return member;
+    }
+    this.pendingRiskHalts.set(id, { seq: this.cycleSeq, count, reason });
+    if (this.logger) this.logger('member_risk_halt_pending', { trading_account_id: id, reason, cycles: count });
+    return { ...member, risk_halt_reason: null, risk_halt_pending: reason, reduce_only: true };
+  }
+  // Unified-member policy and the basis of stored peak/day-start. A failed read keeps the last value; a database
+  // without the RPC leaves it null (unified members held, risk evaluated without basis check).
+  async loadRiskContext() {
+    try {
+      const value = await this.rpc('get_copy_risk_context');
+      if (value && typeof value === 'object' && !Array.isArray(value)) this.riskContext = value;
+    } catch (error) {
+      if (this.riskContext && this.logger) this.logger('risk_context_unavailable', { error_code: safeError(error, 'RISK_CONTEXT') });
+    }
+    return this.riskContext;
   }
   // A transient read failure keeps the last known totals (never silently net 0 after a success, which
   // would make past withdrawals read as losses). A database without the RPC yields [] (net 0).
@@ -1012,7 +1120,7 @@ export class TradingRunner {
     const startedAt = Date.now();
     const [master, member] = await Promise.all([
       this.readAccount((({ contracts, legs }) => ({ ...masterContext, expected_contracts: contracts, expected_legs: legs }))(this.masterExpectations())),
-      this.readAccount(memberContext),
+      this.readAccount(memberContext, { member: true }),
     ]);
     // A member's own resting order no longer blocks resume (2026-10-20): if it fills between the two reads
     // the member snapshot differs and resume retries; after activation the ledger attributes it to the
@@ -1036,6 +1144,7 @@ export class TradingRunner {
       if (Number(session.unresolved_orders) !== 0) throw new Error('RESUME_UNRESOLVED_ORDERS');
       if (session.state === 'VALIDATED' && (this.mode !== 'LIVE' || system?.emergency_halted || !system?.execution_enabled)) return { validated: true };
       let first = await this.readResumeSnapshot(masterContext, memberContext);
+      if (first.member.account_policy_block) throw new Error(`RESUME_${first.member.account_policy_block}`);
       reason = validateResumeSnapshot({ ...first, contracts });
       // A newly connected Gate account starts in single mode. The cycle switches a member to dual mode
       // only while ACTIVE, and resume could never become ACTIVE while the modes differ: switch a flat
@@ -1216,14 +1325,16 @@ export class TradingRunner {
     }
     this.pendingResumes = [];
     const contextStartedAt = Date.now();
-    const [rawContext, observationGuards, resumeContext, targetAnchors, fundFlowTotals] = await Promise.all([
+    const [rawContext, observationGuards, resumeContext, targetAnchors, fundFlowTotals, riskContext] = await Promise.all([
       this.rpc('get_copy_worker_context'),
       this.rpc('get_copy_order_observation_guards'),
       this.rpc('get_copy_resume_context'),
       this.rpc('get_copy_target_anchors'),
       this.loadFundFlowTotals(),
+      this.loadRiskContext(),
     ]);
-    const context = withFundFlowNet(applyOrderObservationGuards(rawContext, observationGuards), fundFlowTotals);
+    const context = withRiskContext(withFundFlowNet(applyOrderObservationGuards(rawContext, observationGuards), fundFlowTotals),
+      riskContext);
     const timings = { context_ms: elapsedMs(contextStartedAt) };
     if (!context?.master) return {
       observed: 0, masterObserved: 0, intents: 0, copyEventId: cycleId,
@@ -1252,7 +1363,7 @@ export class TradingRunner {
         tolerate_unconfirmed_positions: true }),
       Promise.allSettled(memberContexts.map((account) => this.readAccount({
         ...account, expected_contracts: sessions.get(account.trading_account_id)?.expected_contracts || [],
-      }))),
+      }, { member: true }))),
     ]);
     timings.master_exchange_ms = elapsedMs(masterReadStartedAt);
     memberContexts.forEach((account, index) => this.trackMemberCredentialRead(account,
@@ -1358,7 +1469,10 @@ export class TradingRunner {
         this.lastMemberTotals.set(memberContext.trading_account_id, Number(member.total));
         const equityJump = Number.isFinite(previousTotal) && previousTotal > 0
           && Math.abs(Number(member.total) - previousTotal) > Math.max(EQUITY_JUMP_RATIO * previousTotal, 20);
-        if (member.risk_halt_reason || equityJump) member = await this.recheckRiskWithFundFlows(member, { force: equityJump });
+        const confirming = Boolean(member.risk_halt_reason)
+          && this.pendingRiskHalts.get(memberContext.trading_account_id)?.seq === this.cycleSeq - 1;
+        if (member.risk_halt_reason || equityJump) member = await this.recheckRiskWithFundFlows(member, { force: equityJump, confirming });
+        member = this.confirmRiskHalt(member);
         memberStage = 'BASELINE_INIT';
         const baseline = session?.state === 'CLOSING' ? { positions: [], member_positions: [] }
           : {
@@ -1413,11 +1527,13 @@ export class TradingRunner {
             ...credentials(memberContext), channelId: this.channelId, baseUrl: this.baseUrl,
             fetchImpl: this.fetchImpl, positionMode: 'dual',
           });
-          member = await this.readAccount({
+          // The risk decision of this cycle (re-checked and confirmed above) is kept for the re-read account.
+          const { risk_halt_reason: riskHaltReason, risk_halt_pending: riskHaltPending = null, reduce_only: reduceOnly } = member;
+          member = { ...await this.readAccount({
             ...memberContext,
             master_baselines: activeBaselines,
             member_position_baselines: baseline?.member_positions || [],
-          });
+          }, { member: true }), risk_halt_reason: riskHaltReason, risk_halt_pending: riskHaltPending, reduce_only: reduceOnly };
           if (!accountSupportsDual(member)) {
             throw new GateApiError('회원 계정 양방향 모드 전환을 확인하지 못했습니다.', { code: 'DUAL_MODE_REQUIRED' });
           }
@@ -1549,8 +1665,9 @@ export class TradingRunner {
       try {
         const auth = { apiKey: job.api_key, secretKey: job.secret_key, channelId: this.channelId, baseUrl: this.baseUrl, fetchImpl: this.fetchImpl };
         if (!batchContext) {
-          const [rawContext, fundFlowTotals] = await Promise.all([this.rpc('get_copy_worker_context'), this.loadFundFlowTotals()]);
-          batchContext = withFundFlowNet(rawContext, fundFlowTotals);
+          const [rawContext, fundFlowTotals, riskContext] = await Promise.all([this.rpc('get_copy_worker_context'),
+            this.loadFundFlowTotals(), this.loadRiskContext()]);
+          batchContext = withRiskContext(withFundFlowNet(rawContext, fundFlowTotals), riskContext);
         }
         const context = batchContext;
         if (!context?.master) throw new GateApiError('마스터 조회가 필요합니다.', { code: 'MASTER_POSITION_NOT_FOUND' });
@@ -1564,7 +1681,7 @@ export class TradingRunner {
         // defeated assertSubmissionSnapshot's MEMBER_RISK_LIMIT check.
         const [memberSnapshot, masterSnapshot] = await Promise.all([
           this.readAccount({ ...memberContext, api_key: job.api_key, secret_key: job.secret_key,
-            expected_contracts: [job.contract], expected_legs: jobLeg }),
+            expected_contracts: [job.contract], expected_legs: jobLeg }, { member: true }),
           this.readAccount({ ...context.master, expected_contracts: [job.contract], expected_legs: jobLeg }),
         ]);
         const opposite = (p) => p.contract === job.contract
@@ -1573,8 +1690,18 @@ export class TradingRunner {
         const reversalContext = !job.reduce_only && memberSnapshot.positions.some(opposite)
           && !masterSnapshot.positions.some(opposite)
           ? await this.rpc('get_copy_reversal_entry_context', { p_intent_id: job.intent_id, p_version: job.resume_version }) : null;
-        assertSubmissionSnapshot(job, memberSnapshot, masterSnapshot, reversalContext);
-        if (!job.reduce_only && Number(job.target_leverage) > 0) {
+        // QA D7: Gate classic hedge mode shares leverage/margin mode per contract. While the member holds the other
+        // leg of this contract (opened after planning, e.g. a personal position), its setting is not changed: the
+        // order uses the current leverage, and the margin check uses it too.
+        const dualJob = String(job.position_mode || '').startsWith('dual');
+        const openOpposite = dualJob ? memberSnapshot.positions.find(opposite) : null;
+        const keepLeverage = !job.reduce_only && Number(job.target_leverage) > 0 && Boolean(openOpposite);
+        const checkedJob = keepLeverage && Number(openOpposite.leverage) > 0 ? { ...job, risk_leverage: Number(openOpposite.leverage) } : job;
+        assertSubmissionSnapshot(checkedJob, memberSnapshot, masterSnapshot, reversalContext);
+        if (keepLeverage && this.logger) this.logger('leverage_change_skipped', { intent_id: job.intent_id, contract: job.contract,
+          position_side: job.position_side, reason: 'OPPOSITE_LEG_OPEN', target_leverage: Number(job.target_leverage),
+          current_leverage: Number(openOpposite.leverage) || null });
+        if (!job.reduce_only && Number(job.target_leverage) > 0 && !keepLeverage) {
           await setFuturesLeverage({
             ...auth, contract: job.contract, leverage: job.target_leverage,
             marginMode: job.margin_mode || 'cross',

@@ -5,9 +5,9 @@ import { aggregateMemberPerformance } from './performance.js';
 import { observedAccount, position, contracts } from '../tests/fixtures/verified-runtime.js';
 import { anchorFromPlan } from '../tests/fixtures/anchor-mirror.js';
 
-// The D1/D2 tests assert the fixed FUTURE_ONLY behaviour (fix/qa-sizing).
-// QA 2026-10-21 area D (member behaviour, risk limits, admin controls). Each D-REPRO test asserts the CURRENT behaviour
+// QA 2026-10-21 area D (member behaviour, risk limits, admin controls). Each REPRO test asserts the behaviour
 // of 0c39e77; a passing "REPRO" test means the reported finding is reproduced (not that it is correct).
+// D-FIXED tests assert the corrected behaviour (D1/D2 fix/qa-sizing, D4/D5/D7 fix/qa-risk, D11 fix/qa-admin).
 
 const version = '30000000-0000-4000-8000-000000000004';
 const baseMember = (fields = {}) => observedAccount({ trading_account_id: 'member', user_id: 'user', resume_version: version,
@@ -16,7 +16,8 @@ const baseMaster = (positions) => observedAccount({ trading_account_id: 'master'
 const plan = (member, master) => planMemberPositions({ cycleId: 'c-' + Math.random(), system: { emergency_halted: false },
   master, member, contracts });
 
-test('D-REPRO classic futures account: risk limits ignore unrealised loss (wallet total only)', async () => {
+// FIXED 2026-10-21 (fix/qa-risk): risk is evaluated on the sizing equity basis (wallet + unrealised PnL).
+test('D-FIXED classic futures account: an unrealised loss counts for the risk limits', async () => {
   const runner = new TradingRunner({ supabase: {}, baseUrl: 'https://api.gateio.ws', workerId: 'qa', workerVersion: 'qa',
     mode: 'LIVE', fetchImpl: async (url) => {
       // Classic USDT futures account: `total` is the wallet balance, unrealised PnL is reported separately.
@@ -25,12 +26,13 @@ test('D-REPRO classic futures account: risk limits ignore unrealised loss (walle
       return new Response('[]');
     } });
   const account = await runner.readAccount({ trading_account_id: 'member', api_key: 'k', secret_key: 's',
-    day_start_equity: 1000, peak_equity: 1000, daily_loss_limit_pct: 15, max_drawdown_pct: 20, fund_flow_net: 0 });
+    day_start_equity: 1000, peak_equity: 1000, daily_loss_limit_pct: 15, max_drawdown_pct: 20, fund_flow_net: 0 }, { member: true });
   // Mark-to-market equity is 600 (-40% today, -40% from peak), far beyond 15% / 20%.
   assert.equal(account.total, 1000);
   assert.equal(account.equityIncludesUnrealised, false);
-  assert.equal(account.risk_halt_reason, null, 'no risk halt while the loss is unrealised');
-  assert.equal(account.reduce_only, false, 'new entries (e.g. Master averaging down) stay allowed');
+  assert.equal(account.risk_equity, 600);
+  assert.equal(account.risk_halt_reason, 'DAILY_LOSS_LIMIT');
+  assert.equal(account.reduce_only, true, 'new entries (e.g. Master averaging down) are blocked');
 });
 
 test('D1: a Master entry made while reduce-only is consumed, not bought at the current price once reduce-only lifts', () => {
@@ -89,7 +91,8 @@ test('D-REPRO CLOSE closes a personal position on a contract the Master never tr
   assert.equal(soxl.intent?.reduce_only, true);
 });
 
-test('D-REPRO dual mode: copy entry on SHORT sets contract-level leverage while the member holds a personal LONG', async () => {
+// FIXED 2026-10-21 (fix/qa-risk): the shared contract leverage is left alone while the opposite leg is open.
+test('D-FIXED dual mode: copy entry on SHORT keeps the contract leverage while the member holds a personal LONG', async () => {
   const own = { ...position(5), leverage: 3, posMarginMode: 'isolated' };
   const legs = plan(baseMember({ positions: [own], member_position_baselines: [{ contract: 'BTC_USDT', position_side: 'LONG', size: 5 }] }),
     baseMaster([position(-40)]));
@@ -97,8 +100,9 @@ test('D-REPRO dual mode: copy entry on SHORT sets contract-level leverage while 
   const long = legs.find((p) => p.position_side === 'LONG');
   assert.equal(long.target_size, 5, 'personal LONG kept');
   assert.equal(short.intent?.delta_size, -10);
-  assert.equal(short.intent?.target_leverage, 10, 'Master leverage is applied (only the same leg is exempted)');
-  assert.equal(short.intent?.margin_mode, 'cross');
+  assert.equal(short.intent?.target_leverage, null, 'no leverage change while the opposite leg is open');
+  assert.equal(short.risk_leverage, 3, 'margin is reserved at the current (shared) leverage');
+  assert.equal(short.leverage_reason, 'OPPOSITE_LEG_OPEN_LEVERAGE_KEPT');
 
   const requests = [];
   const runner = new TradingRunner({ supabase: {}, baseUrl: 'https://api.gateio.ws', workerId: 'qa', workerVersion: 'qa',
@@ -126,8 +130,10 @@ test('D-REPRO dual mode: copy entry on SHORT sets contract-level leverage while 
   runner.readAccount = async (account) => observedAccount({ ...account,
     positions: account.trading_account_id === 'master' ? [position(-40)] : [own] });
   assert.equal(await runner.submitOrders(), 1);
-  // Gate classic hedge mode: one contract-level leverage for both legs (gate.js setFuturesLeverage comment).
-  assert.match(requests[0], /dual_comp\/positions\/BTC_USDT\/leverage\?leverage=0&cross_leverage_limit=10$/);
+  // A job planned before the personal LONG existed still carries target_leverage 10: the fresh snapshot shows the
+  // open LONG, so no leverage request is sent (Gate classic hedge mode: one contract-level leverage for both legs).
+  assert.equal(requests.some((url) => url.includes('/leverage')), false);
+  assert.match(requests[0], /\/futures\/usdt\/orders$/);
 });
 
 test('D11 FIXED performance: opening and closing equity are both raw, so an earlier deposit is no gain', () => {
@@ -140,7 +146,9 @@ test('D11 FIXED performance: opening and closing equity are both raw, so an earl
   assert.equal(daily.dailyReturnPct, 0);
 });
 
-test('D-REPRO two withdrawals within 60 s: the second is not re-checked, so the cycle carries a false DAILY_LOSS_LIMIT', async () => {
+// FIXED 2026-10-21 (fix/qa-risk): a violation pending confirmation is re-checked without the 60 s throttle, and a new
+// halt is persisted only when confirmed on consecutive cycles (worker/qa-20261021-risk-fixes.test.js).
+test('D-FIXED two withdrawals within 60 s: the confirming re-check records the second one and clears the halt', async () => {
   let ledger = [];
   const recorded = new Map();
   const runner = new TradingRunner({ supabase: {}, baseUrl: 'https://api.gateio.ws', workerId: 'qa', workerVersion: 'qa', mode: 'LIVE',
@@ -164,10 +172,13 @@ test('D-REPRO two withdrawals within 60 s: the second is not re-checked, so the 
   ledger = [...ledger, { id: 'w2', type: 'dnw', change: '-200', time: now }];
   let next = { ...base, total: 600, fund_flow_net: -200 };
   next = { ...next, ...evaluateMemberRisk({ account: next, total: 600 }), reduce_only: true };
-  const after = await runner.recheckRiskWithFundFlows(next, { force: true });
-  assert.equal(after.risk_halt_reason, 'DAILY_LOSS_LIMIT', 'false risk halt survives this cycle');
-  assert.equal(after.reduce_only, true);
-  // record_copy_worker_cycle then sets profiles.reduce_only=true for this member (sticky until a resume).
+  assert.equal(next.risk_halt_reason, 'DAILY_LOSS_LIMIT');
+  const throttled = await runner.recheckRiskWithFundFlows(next, { force: true });
+  assert.equal(throttled.risk_halt_reason, 'DAILY_LOSS_LIMIT', 'an ordinary re-check is still throttled');
+  const after = await runner.recheckRiskWithFundFlows(next, { confirming: true });
+  assert.equal(after.risk_halt_reason, null, 'the confirming re-check is not throttled');
+  assert.equal(after.fund_flow_net, -400);
+  assert.equal(after.reduce_only, false);
 });
 
 test('D-REPRO withdrawal shrinks the position cap: existing copy is SOLD with the Master unchanged', () => {
