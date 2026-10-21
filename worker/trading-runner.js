@@ -1131,7 +1131,7 @@ export class TradingRunner {
           getMyFuturesTradesInRange({ ...auth, from: previousRange.from, to: previousRange.to }),
         ]);
         await this.writeMemberPerformanceDay({
-          member: { ...member, day_start_equity: lastDay.openingEquity, total: lastDay.closingEquity,
+          member: { ...member, opening_equity: lastDay.openingEquity, total: lastDay.closingEquity,
             unrealisedPnl: lastDay.unrealisedPnl },
           tradingDate: previousRange.tradingDate, ledger: previousLedger, trades: previousTrades, contracts, observedAt,
         });
@@ -1149,16 +1149,18 @@ export class TradingRunner {
     ]);
     // Deposits/withdrawals since yesterday's KST start (a dedicated type=dnw query). Recorded once per Gate row;
     // risk limits use the resulting net.
+    let fundFlowNetAfterSync = null;
     if (member.trading_account_id) {
       try {
         const transfers = await getFuturesAccountBook({ ...auth, from: range.from - 86_400, to: range.to, type: 'dnw' });
-        await this.recordFundFlows(member.trading_account_id, transfers);
+        fundFlowNetAfterSync = await this.recordFundFlows(member.trading_account_id, transfers);
       } catch (error) {
         if (this.logger) this.logger('fund_flow_sync_failed', { trading_account_id: member.trading_account_id, error_code: safeError(error, 'FUND_FLOW') });
       }
     }
-    const performance = await this.writeMemberPerformanceDay({ member, tradingDate: range.tradingDate, ledger, trades,
-      contracts, observedAt });
+    // The opening equity adds back transfers recorded before today (worker/performance.js openingEquityFor).
+    const performance = await this.writeMemberPerformanceDay({ member: { ...member, fund_flow_net_after_sync: fundFlowNetAfterSync },
+      tradingDate: range.tradingDate, ledger, trades, contracts, observedAt });
     this.performanceDays.set(member.user_id, { tradingDate: range.tradingDate,
       openingEquity: performance.daily.openingEquity, closingEquity: performance.daily.closingEquity,
       unrealisedPnl: performance.daily.unrealisedPnl });

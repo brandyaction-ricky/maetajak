@@ -130,13 +130,14 @@ test('D-REPRO dual mode: copy entry on SHORT sets contract-level leverage while 
   assert.match(requests[0], /dual_comp\/positions\/BTC_USDT\/leverage\?leverage=0&cross_leverage_limit=10$/);
 });
 
-test('D-REPRO performance: opening equity is transfer-adjusted while closing equity is raw', () => {
+test('D11 FIXED performance: opening and closing equity are both raw, so an earlier deposit is no gain', () => {
   // Member started tracking with 1000 and deposited 1000 earlier (net flows +1000). No trades today.
   // day_start_equity from get_copy_worker_context = total - net = 1000; Gate total = 2000.
-  const { daily } = aggregateMemberPerformance({ member: { day_start_equity: 1000, total: 2000, unrealisedPnl: 0 },
-    ledger: [], trades: [], observedAt: new Date().toISOString() });
-  assert.equal(daily.openingEquity, 1000);
-  assert.equal(daily.closingEquity, 2000, 'the day row shows 1000 -> 2000 with zero PnL and zero deposits today');
+  const { daily } = aggregateMemberPerformance({ member: { day_start_equity: 1000, total: 2000, unrealisedPnl: 0,
+    fund_flow_net: 1000 }, ledger: [], trades: [], observedAt: new Date().toISOString() });
+  assert.equal(daily.openingEquity, 2000, 'transfers before today are added back to the risk day-start');
+  assert.equal(daily.closingEquity, 2000);
+  assert.equal(daily.dailyReturnPct, 0);
 });
 
 test('D-REPRO two withdrawals within 60 s: the second is not re-checked, so the cycle carries a false DAILY_LOSS_LIMIT', async () => {

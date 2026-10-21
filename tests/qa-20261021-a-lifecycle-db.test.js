@@ -5,8 +5,8 @@ import { randomUUID } from 'node:crypto';
 import { createVerifiedDatabase, seedVerifiedAccount, cyclePayload, record, ids, observedAccount, position } from './fixtures/verified-runtime.js';
 
 // QA 2026-10-21 area A (onboarding, account lifecycle, Master (re)registration, restart from empty).
-// Tests named "[BUG]" assert the SAFE/expected behaviour and are expected to FAIL on 0c39e77: each
-// failure documents a finding. The other tests document scenarios that were checked and are safe.
+// Tests named "[BUG ...]" assert the SAFE/expected behaviour; they failed on 0c39e77 (findings A1, A2, A4, A7)
+// and pass with 20261021032000_qa_admin_lifecycle.sql. The other tests document scenarios that were safe.
 const admin = '30000000-0000-4000-8000-0000000000a1';
 const KEY = 'K'.repeat(20);
 let db;
@@ -51,6 +51,12 @@ begin
 end;
 $function$;`);
   await db.exec(readFileSync('supabase/migrations/20261021020000_uid_accounts.sql', 'utf8'));
+  await db.exec(`create table if not exists public.member_daily_performance (user_id uuid not null, trading_date date not null,
+    opening_equity numeric not null default 0, closing_equity numeric not null default 0, deposits numeric not null default 0,
+    withdrawals numeric not null default 0, realised_pnl numeric not null default 0, unrealised_pnl numeric not null default 0,
+    fees numeric not null default 0, funding_pnl numeric not null default 0, trading_volume numeric not null default 0,
+    trade_count integer not null default 0, winning_trade_count integer not null default 0, losing_trade_count integer not null default 0,
+    daily_return_pct numeric, source_snapshot_at timestamptz not null default now(), primary key (user_id, trading_date))`);
 });
 after(async () => { await db?.close(); });
 beforeEach(async () => {
@@ -113,15 +119,15 @@ test('master key re-save with the same UID: no rebind, members are not archived'
   await seedMasterAndActiveMember();
   await asAdmin();
   await db.query('select public.save_admin_gate_api_credentials($1,$2,$3,true)', ['55500011', KEY, KEY]);
-  // While the new key waits for verification the Master is absent from the worker context.
+  // 2026-10-21 fix (A1): while the new key waits for verification the current key keeps the Master in the context.
   await asWorker();
-  assert.equal((await one('select public.get_copy_worker_context() v')).v.master, null);
+  assert.equal((await one('select public.get_copy_worker_context() v')).v.master?.gate_uid, '55500011');
   await completeJob(admin);
   assert.equal(await n('select count(*) n from private.trading_account_rebind_archive'), 0);
   assert.ok(await n('select count(*) n from private.copy_target_anchors where trading_account_id=$1', [ids.member]) >= 0);
 });
 
-test('[BUG] master same-UID re-save pauses every member session but profiles still read as copying (admin shows 카피 중)', async () => {
+test('[BUG A1 fixed] master same-UID re-save keeps every member session ACTIVE (no hidden pause behind 카피 중)', async () => {
   await seedMasterAndActiveMember();
   assert.equal((await one('select state from private.copy_resume_sessions where trading_account_id=$1', [ids.member])).state, 'ACTIVE');
   await asAdmin();
@@ -130,36 +136,55 @@ test('[BUG] master same-UID re-save pauses every member session but profiles sti
   await completeJob(admin);
   const s = await one('select state,blocker_reason from private.copy_resume_sessions where trading_account_id=$1', [ids.member]);
   const p = await one('select copy_paused,member_halted from public.profiles where id=$1', [ids.user]);
-  // get_admin_operations_metrics.copy_status is computed from profiles (+API status, position states) only:
-  // a PAUSED session with copy_paused=false is shown as COPYING although the worker holds every leg.
+  // Before the fix the account/credential triggers paused every session (copy_paused stayed false, so the admin
+  // list still showed 카피 중). Now the verified new key is swapped in place.
   assert.ok(s.state === 'ACTIVE' || p.copy_paused,
     `session ${s.state}/${s.blocker_reason} but profiles.copy_paused=${p.copy_paused}: copying stopped, status still COPYING, no auto-resume`);
+  assert.equal(s.state, 'ACTIVE');
+  const c = await one('select status,api_key_last4,pending_status from private.gate_api_credentials where user_id=$1', [admin]);
+  assert.deepEqual([c.status, c.api_key_last4, c.pending_status], ['VERIFIED', 'KKKK', 'VERIFIED']);
+  assert.equal((await one('select status from private.trading_accounts where id=$1', [ids.master])).status, 'ACTIVE');
 });
 
 // ---------------------------------------------------------------------------------------------
 // Scenario 4: a member key revoked/IP-whitelist removed mid-session.
 // ---------------------------------------------------------------------------------------------
-test('[BUG] a member whose Gate reads fail with INVALID_CREDENTIALS every cycle keeps API status VERIFIED and unchanged leg states', async () => {
+test('[BUG A2 fixed] a member whose Gate reads fail with INVALID_CREDENTIALS every cycle is shown as API 오류 after 5 minutes', async () => {
   await seedMasterAndActiveMember(0);
-  const before = await one("select array_agg(state order by contract,position_side) s from public.copy_position_states where trading_account_id=$1", [ids.member]);
+  const firstErrorAt = async () => (await one('select error_since from private.copy_current_verifications where trading_account_id=$1', [ids.member])).error_since;
   for (let i = 0; i < 3; i++) {
     const payload = cyclePayload({ masterSize: 40, actualSize: 0 });
     payload.members[0] = { ...payload.members[0], error_code: 'MEMBER_ACCOUNT_READ_INVALID_CREDENTIALS', positions: [], planned_positions: [] };
     payload.current_state.members[0] = { ...payload.current_state.members[0], error_code: 'MEMBER_ACCOUNT_READ_INVALID_CREDENTIALS', positions: [] };
     await record(db, payload);
+    if (i === 0) var since = await firstErrorAt(); // eslint-disable-line no-var
   }
-  const g = await one('select status from private.gate_api_credentials where user_id=$1', [ids.user]);
-  const after = await one("select array_agg(state order by contract,position_side) s from public.copy_position_states where trading_account_id=$1", [ids.member]);
-  const v = await one('select status from private.copy_current_verifications where trading_account_id=$1', [ids.member]);
-  assert.equal(v.status, 'ERROR', 'the read failure is recorded only in copy_current_verifications');
-  assert.ok(g.status !== 'VERIFIED' || after.s.some((state) => ['ERROR', 'HALTED'].includes(state)),
-    `credentials ${g.status}, leg states ${after.s} (before ${before.s}): admin copy_status/API label stay 카피 중/정상`);
+  const v = await one('select status,error_since from private.copy_current_verifications where trading_account_id=$1', [ids.member]);
+  assert.equal(v.status, 'ERROR');
+  assert.equal(String(v.error_since), String(since), 'error_since is the start of the run of failed reads');
+  const status = async () => {
+    await asAdmin();
+    const m = (await one('select public.get_admin_operations_metrics() v')).v.members.find((x) => x.id === ids.user);
+    await asWorker();
+    return m;
+  };
+  let m = await status();
+  assert.equal(m.copy_status, 'READ_ERROR', 'a fresh read failure is not shown as 카피 중');
+  assert.equal(m.read_error_code, 'MEMBER_ACCOUNT_READ_INVALID_CREDENTIALS');
+  await db.query("update private.copy_current_verifications set error_since=now()-interval '6 minutes' where trading_account_id=$1", [ids.member]);
+  m = await status();
+  assert.equal(m.copy_status, 'API_ERROR', 'credential errors for 5+ minutes: API 오류');
+  // One verified read ends the run.
+  await record(db, cyclePayload({ masterSize: 40, actualSize: 0 }));
+  assert.equal(await firstErrorAt(), null);
+  m = await status();
+  assert.equal(m.copy_status, 'COPYING');
 });
 
 // ---------------------------------------------------------------------------------------------
 // Scenario 5: withdrawal keeps profiles.gate_uid -> a UID can never be registered again.
 // ---------------------------------------------------------------------------------------------
-test('[BUG] a squatted/withdrawn UID stays reserved forever: the real owner can never sign up with it', async () => {
+test('[BUG A4 fixed] a squatted/withdrawn UID is released: the real owner can sign up with it', async () => {
   const squatter = randomUUID();
   await db.query("insert into auth.users(id,email,raw_user_meta_data,email_confirmed_at) values($1,'70000002@uid.maetajak.trading',$2,now())",
     [squatter, { gate_uid: '70000002', full_name: 'x', phone: '010-0000-0000' }]);
@@ -171,9 +196,11 @@ test('[BUG] a squatted/withdrawn UID stays reserved forever: the real owner can 
   const still = (await one('select gate_uid from public.profiles where id=$1', [squatter])).gate_uid;
   // uid-signup refuses UID_TAKEN whenever any profile row has the UID (supabase/functions/uid-signup/index.ts:98-105).
   assert.equal(still, null, `withdrawn profile still holds gate_uid=${still}; no RPC/UI frees it`);
+  const u = await one('select email from auth.users where id=$1', [squatter]);
+  assert.notEqual(u.email, '70000002@uid.maetajak.trading', 'the synthetic login email is free for the real owner');
 });
 
-test('withdrawn member: restore returns PENDING but member_halted stays true, so the member cannot resume by themselves', async () => {
+test('[BUG A7 fixed] withdrawn member: restore lifts member_halted (still paused), so the member can resume after re-approval', async () => {
   await seedMasterAndActiveMember();
   await db.query("insert into auth.users(id) values($1) on conflict do nothing", [ids.user]);
   await asAdmin();
@@ -181,7 +208,7 @@ test('withdrawn member: restore returns PENDING but member_halted stays true, so
   await db.query('select public.admin_restore_withdrawn_member($1)', [ids.user]);
   await db.query("select public.set_user_approval($1,'APPROVED')", [ids.user]);
   const p = await one('select approval_status,member_halted,copy_paused from public.profiles where id=$1', [ids.user]);
-  assert.deepEqual([p.approval_status, p.member_halted, p.copy_paused], ['APPROVED', true, true]);
+  assert.deepEqual([p.approval_status, p.member_halted, p.copy_paused], ['APPROVED', false, true]);
   assert.equal((await one('select status from private.trading_accounts where id=$1', [ids.member])).status, 'DISABLED');
   // Context excludes the member until a new API key verifies (credential DISABLED).
   await asWorker();
