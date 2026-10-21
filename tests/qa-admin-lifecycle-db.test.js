@@ -417,11 +417,50 @@ test('D11 dashboard MDD ignores deposits/withdrawals and counts the first day\'s
 // ---------------------------------------------------------------------------------------------
 // The migration is idempotent.
 // ---------------------------------------------------------------------------------------------
+const fnDef = async (sig) => (await one(`select pg_get_functiondef('${sig}'::regprocedure) d`)).d;
+const CORE = 'private.copy_resume_ownership_core(uuid,uuid,jsonb,jsonb)';
+const OBSERVE = 'private.observe_copy_ownership()';
+// Review R5: only the evidence clauses carry the epoch; the "filled, not observed yet" guards do not.
+function assertEpochOnlyOnEvidence(core, observe) {
+  assert.equal(core.split('copy_ownership_reset_at').length - 1, 2, 'core: journal check + no-checkpoint check');
+  assert.equal(observe.split('copy_ownership_reset_at').length - 1, 3, 'observe: CLOSE journal, no-checkpoint check, journal loop');
+  for (const def of [core, observe]) {
+    assert.doesNotMatch(def, /observation_confirmed_at is null[^;]{0,80}copy_ownership_reset_at/);
+    assert.match(def, /i\.observation_confirmed_at is null and i\.resume_version is not null\)/);
+  }
+}
 test('the migration can be applied twice and patches the ownership functions once', async () => {
   await db.exec(readFileSync(MIGRATION, 'utf8'));
-  const core = (await one("select pg_get_functiondef('private.copy_resume_ownership_core(uuid,uuid,jsonb,jsonb)'::regprocedure) d")).d;
-  assert.equal(core.split('copy_ownership_reset_at').length - 1, 3);
+  const core = await fnDef(CORE);
+  assertEpochOnlyOnEvidence(core, await fnDef(OBSERVE));
   const wrapper = (await one("select pg_get_functiondef('private.copy_resume_ownership(uuid,uuid,jsonb,jsonb)'::regprocedure) d")).d;
   assert.match(wrapper, /copy_resume_ownership_core/);
   assert.doesNotMatch(wrapper, /copy_ownership_reset_at/);
+});
+
+test('R5 a re-run repairs an earlier, broader epoch patch of the guard clauses', async () => {
+  // The pre-review patch also limited the three "filled but not observed" guards.
+  for (const sig of [CORE, OBSERVE]) {
+    const broad = (await fnDef(sig)).replace(/i\.observation_confirmed_at is null and i\.resume_version is not null\)/g,
+      'i.observation_confirmed_at is null and i.resume_version is not null and i.created_at>private.copy_ownership_reset_at(i.trading_account_id))');
+    await db.exec(broad);
+  }
+  assert.match(await fnDef(CORE), /is null and i\.resume_version is not null and i\.created_at/);
+  await db.exec(readFileSync(MIGRATION, 'utf8'));
+  assertEpochOnlyOnEvidence(await fnDef(CORE), await fnDef(OBSERVE));
+});
+
+test('R5 a fill still unobserved at an ownership reset keeps blocking the resume (not hidden by the epoch)', async () => {
+  await seedMasterAndMember(10);
+  await seedConfirmedCopy(10);
+  // A platform fill not yet confirmed by an observation, created before the reset.
+  await db.query(`insert into private.copy_order_intents(cycle_id,user_id,trading_account_id,contract,target_size,actual_size_at_plan,
+      delta_size,idempotency_key,gate_order_text,status,filled_size,submit_attempts,exchange_terminal,resume_version,resolved_at,position_side)
+    values(gen_random_uuid(),$1,$2,'BTC_USDT',15,10,5,'k-'||gen_random_uuid(),'t-'||gen_random_uuid(),'FILLED',5,1,true,$3,now(),'LONG')`,
+  [ids.user, ids.member, ids.version]);
+  await db.query(`insert into private.copy_ownership_resets(trading_account_id,reset_at,reason) values($1,clock_timestamp()+interval '1 second','ACCOUNT_RESET')
+    on conflict (trading_account_id) do update set reset_at=excluded.reset_at`, [ids.member]);
+  await asWorker();
+  await rejects('select private.copy_resume_ownership_core($1,$2,$3,$4)',
+    [ids.member, ids.version, JSON.stringify(btc(80)), JSON.stringify(btc(15))], /RESUME_UNRESOLVED_OWNERSHIP/);
 });

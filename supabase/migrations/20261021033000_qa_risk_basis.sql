@@ -441,3 +441,11 @@ end;
 $$;
 revoke all on function public.get_copy_risk_context() from public, anon, authenticated;
 grant execute on function public.get_copy_risk_context() to service_role;
+
+-- Review R8: rows stored before this migration are on the wallet basis. Marking them so means the first write after
+-- apply only restarts peak/day-start once, at the switch to MTM_V1 (not NULL -> WALLET_V0 -> MTM_V1 when an older
+-- worker writes first). Operation-period rows first: the account update below fires observe_copy_operation_risk,
+-- which must find them on the same basis. Neither update moves observed_at, so no trigger recomputes a value.
+-- Idempotent (only null rows; a null set later by a new operation start is wallet-based too).
+update private.copy_operation_risk set risk_basis = 'WALLET_V0' where risk_basis is null;
+update private.copy_current_accounts set risk_basis = 'WALLET_V0' where risk_basis is null;

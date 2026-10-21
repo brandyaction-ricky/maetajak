@@ -14,6 +14,7 @@ export const ADMIN_COPY_STATUS_META = {
   REDUCE_ONLY: ['축소 전용', 'chip yellow', '신규 진입은 막고 포지션 축소만 허용합니다.'],
   API_ERROR: ['API 오류', 'chip red', 'Gate API 연결이 확인되지 않거나 키·권한·IP 오류로 계좌 조회가 계속 실패합니다.'],
   READ_ERROR: ['조회 지연', 'chip yellow', '최근 Gate 계좌 조회가 실패했습니다. 계속되면 API 오류로 표시됩니다.'],
+  ACCOUNT_POLICY_BLOCKED: ['통합계정 미지원', 'chip red', '회원 Gate 계정이 통합계정(Unified) 모드라 신규 진입·증액을 막고 기존 카피 포지션의 축소·청산만 따라갑니다. 회원에게 클래식 계정 전환을 안내해 주세요.'],
   ERROR: ['주문 오류', 'chip red', '주문 또는 포지션 처리 중 오류가 발생했습니다.'],
   ATTENTION: ['확인 필요', 'chip yellow', '회원이 직접 변경한 종목이 있습니다.'],
 };

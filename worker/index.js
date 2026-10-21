@@ -99,11 +99,17 @@ export async function runVerificationBatch() {
         error_status: result.diagnostic?.status || null,
         upstream_label: result.diagnostic?.label || null,
       });
+      // Review R7: the claim this result belongs to (a requeued job keeps its id; a stale result is refused).
       const { error: completionError } = await supabase.rpc('complete_gate_api_verification', {
         p_job_id: job.job_id, p_success: result.success, p_gate_user_id: result.gateUserId || null,
         p_error_code: result.errorCode || null, p_error_message: result.errorMessage || null,
         p_worker_public_ip: workerPublicIp || null,
+        ...(job.claimed_at ? { p_claimed_at: job.claimed_at } : {}),
       });
+      if (completionError && String(completionError.message || '').includes('VERIFICATION_JOB_CLAIM_STALE')) {
+        log('verification_result_stale', { gate_uid: job.gate_uid });
+        continue;
+      }
       if (completionError) throw completionError;
       if (!result.success) await sendAlert({ event: 'GATE_API_VERIFICATION_FAILED', details: { gate_uid: job.gate_uid, error_code: result.errorCode || 'UNKNOWN' } });
     }
@@ -175,9 +181,19 @@ export async function runTradingCycle() {
     let reconciled = await runner.reconcileOrders(10, { budgetMs: RECONCILE_BEFORE_SUBMIT_BUDGET_MS });
     const reconcileMs = Date.now() - reconcileStartedAt;
     const submitStartedAt = Date.now();
-    const submitted = await runner.submitOrders();
+    // Review R10: the deferred part of the reconciliation batch runs even when the order phase fails (its claimed
+    // jobs would otherwise wait for their lease to expire); the order-phase error still fails the cycle.
+    let submitted = 0;
+    let submitError = null;
+    try { submitted = await runner.submitOrders(); } catch (error) { submitError = error; }
     const submitMs = Date.now() - submitStartedAt;
-    reconciled += await runner.reconcileDeferredOrders();
+    try {
+      reconciled += await runner.reconcileDeferredOrders();
+    } catch (error) {
+      if (!submitError) throw error;
+      log('deferred_reconcile_failed', { code: error instanceof Error ? error.message : 'unknown' });
+    }
+    if (submitError) throw submitError;
     // P1-8: resume validation after the order phase, one member per cycle.
     const resumeStartedAt = Date.now();
     const resumes = await runner.processPendingResumes(1);

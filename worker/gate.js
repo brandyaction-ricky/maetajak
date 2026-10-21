@@ -316,7 +316,8 @@ export function normalizeGatePositions(payload) {
     size: Number(position.size || 0),
     markPrice: Number(position.mark_price || 0),
     entryPrice: Number(position.entry_price || 0),
-    leverage: Number(position.lever ?? (Number(position.leverage || 0) > 0 ? position.leverage : position.cross_leverage_limit) ?? 0),    mode: String(position.mode || 'single'),
+    leverage: Number(position.lever ?? (Number(position.leverage || 0) > 0 ? position.leverage : position.cross_leverage_limit) ?? 0),
+    mode: String(position.mode || 'single'),
     positionSide: String(position.mode || '').toLowerCase() === 'dual_long' ? 'LONG'
       : String(position.mode || '').toLowerCase() === 'dual_short' ? 'SHORT'
         : Number(position.size || 0) < 0 ? 'SHORT' : 'LONG',

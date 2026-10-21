@@ -168,7 +168,13 @@ export function evaluateMemberRisk({ account, total }) {
 
 // Risk of an observed account (context fields + Gate summary) on RISK_EQUITY_BASIS. Peak/day-start stored on another
 // basis (`stored_risk_basis` from get_copy_risk_context) are never compared: the DB resets them on this cycle's write.
+// Review R3 (deploy order): until get_copy_risk_context has loaded once (database without 20261021033000, or the RPC
+// failing since start) the DB keeps peak/day-start on the wallet total (this worker then sends no risk_equity either,
+// buildCurrentStatePayload riskBasis), so risk is evaluated on the wallet total, as before D5.
 export function evaluateAccountRisk(account) {
+  if (account?.risk_context_unavailable === true) {
+    return { ...evaluateMemberRisk({ account, total: Number(account?.total) }), risk_basis_fallback: 'WALLET_V0' };
+  }
   const risk = evaluateMemberRisk({ account, total: sizingEquity(account) });
   const storedBasis = account?.stored_risk_basis;
   if (typeof storedBasis === 'string' && storedBasis !== RISK_EQUITY_BASIS) {
@@ -178,7 +184,11 @@ export function evaluateAccountRisk(account) {
 }
 
 export function withRiskContext(context, riskContext) {
-  if (!context || !Array.isArray(context.members) || !Array.isArray(riskContext?.accounts)) return context;
+  if (!context || !Array.isArray(context.members)) return context;
+  // Never loaded: peak/day-start are on the wallet basis (evaluateAccountRisk).
+  if (!Array.isArray(riskContext?.accounts)) {
+    return { ...context, members: context.members.map((member) => ({ ...member, risk_context_unavailable: true })) };
+  }
   const basis = new Map(riskContext.accounts.map((row) => [row.trading_account_id,
     row.risk_basis == null ? 'UNKNOWN' : String(row.risk_basis)]));
   return { ...context, members: context.members.map((member) => (basis.has(member.trading_account_id)
@@ -216,7 +226,9 @@ export function partialAnchorMasterSize({ anchorMaster, masterSize, lots, rawLot
   return anchored;
 }
 
-export function buildCurrentStatePayload({ cycleId, observedAt, master, members }) {
+// `riskBasis`: null while get_copy_risk_context has never loaded (review R3): no risk_equity is sent, so a database
+// with 20261021033000 keeps the wallet basis the worker evaluates on, instead of switching under it.
+export function buildCurrentStatePayload({ cycleId, observedAt, master, members, riskBasis = RISK_EQUITY_BASIS }) {
   const accountPayload = (account, accountRole, positions) => ({
     trading_account_id: account.trading_account_id,
     user_id: account.user_id || null,
@@ -225,7 +237,7 @@ export function buildCurrentStatePayload({ cycleId, observedAt, master, members 
     available_equity: account.available,
     unrealised_pnl: account.unrealisedPnl ?? null,
     // Equity the risk limits use (before transfer adjustment); the DB keeps peak/day-start on it.
-    ...(Number.isFinite(sizingEquity(account)) ? { risk_equity: sizingEquity(account), risk_basis: RISK_EQUITY_BASIS } : {}),
+    ...(riskBasis && Number.isFinite(sizingEquity(account)) ? { risk_equity: sizingEquity(account), risk_basis: riskBasis } : {}),
     error_code: account.error_code || null,
     positions: (positions || []).map((position) => ({
       contract: position.contract,
@@ -338,6 +350,8 @@ function planMemberLegs({ cycleId, system, master, member, contracts, simulateSy
   const memberPositionBaselines = new Map((member.member_position_baselines || []).map((position) => [positionKey(position), Number(position.size || 0)]));
   const targetAnchors = new Map((member.target_anchors || []).map((anchor) => [positionKey(anchor), anchor]));
   const continuedCopyLegs = new Set((member.continued_copy_positions || []).map(positionKey));
+  // Review R9: legs whose anchor could not move while the system was blocked (TradingRunner.trackHaltStaleAnchors).
+  const haltStaleLegs = new Set(member.halt_stale_anchor_legs || []);
   // K4: the ownership ledger (member's own + COPY + confirmed fills not yet journaled). When present, a leg
   // it does not explain was changed by the member (or is still settling): hold it until the DB has
   // attributed the change, instead of latching MANUAL_OVERRIDE. Absent (older DB, legacy account): as before.
@@ -742,7 +756,13 @@ function planMemberLegs({ cycleId, system, master, member, contracts, simulateSy
       }
       target.targetNotional = Math.abs(target.targetSize) * unitNotional;
     }
-    const reduceOnly = Boolean(member.reduce_only) || Boolean(member.close_positions_requested) || contractInfo.inDelisting === true;
+    // Review R9: a leg whose anchor stayed at its pre-halt value through a system block (halt, execution off, non-LIVE)
+    // would buy the Master increase made during the block once released. Its first increase after the block is
+    // consumed instead (reduce-only for this cycle; the anchor stores the quantity held against the current Master).
+    const staleHaltIncrease = !systemBlocked && haltStaleLegs.has(symbol) && !member.close_positions_requested
+      && Math.abs(target.targetSize) > (Math.sign(memberPosition.size) === Math.sign(target.targetSize) ? Math.abs(memberPosition.size) : 0);
+    const reduceOnly = Boolean(member.reduce_only) || Boolean(member.close_positions_requested) || contractInfo.inDelisting === true
+      || staleHaltIncrease;
     const state = deriveCopyState({
       systemHalted: Boolean(system.emergency_halted) && !simulateSystemHalt, memberHalted: Boolean(member.halted),
       symbolPaused: Boolean(member.resume_required) || hasUnresolvedOrder || hasOpenExchangeOrder || reversalCloseRequired
@@ -772,9 +792,15 @@ function planMemberLegs({ cycleId, system, master, member, contracts, simulateSy
     // Master quantity, so nothing missed is bought on release, while the reference keeps the Master quantity
     // the held COPY corresponds to (a later Master reduction back to it sells nothing). Reductions still
     // follow; legs whose anchor may not move (unresolved/open orders, manual changes) are unaffected.
-    const increaseBlocked = reduceOnly || Boolean(member.halted) || systemBlocked
+    // Review R2: a risk violation still awaiting confirmation (QA D4, reduce-only in this cycle only) HOLDS an increase
+    // instead: no entry and no anchor move, so the Master increase is still bought if the violation is not confirmed
+    // (an unrecorded transfer). A confirmed halt is sticky in the profile (profile_reduce_only) and consumes as above.
+    const riskPendingOnly = Boolean(member.risk_halt_pending) && !member.profile_reduce_only && !member.account_policy_block
+      && !member.close_positions_requested && contractInfo.inDelisting !== true;
+    const increaseBlocked = (reduceOnly && !riskPendingOnly) || staleHaltIncrease || Boolean(member.halted) || systemBlocked
       || Boolean(member.copy_paused) || protectedOppositePosition;
     const heldOnSide = Math.sign(memberPosition.size) === Math.sign(target.targetSize) ? Number(memberPosition.size) : 0;
+    const holdForPendingRisk = riskPendingOnly && !increaseBlocked && Math.abs(target.targetSize) > Math.abs(heldOnSide);
     let consumedAnchorTarget = null;
     if (increaseBlocked && !member.close_positions_requested && Math.abs(target.targetSize) > Math.abs(heldOnSide)) {
       consumedAnchorTarget = heldOnSide;
@@ -790,7 +816,7 @@ function planMemberLegs({ cycleId, system, master, member, contracts, simulateSy
           ? Number((reference * Math.min(1, heldCopy / decidedCopy)).toPrecision(15)) : 0;
       anchorMasterCopyableSize = null;
       desiredTargetSize = heldOnSide;
-      target.targetLockReason = 'INCREASE_CONSUMED_WHILE_BLOCKED';
+      target.targetLockReason = staleHaltIncrease ? 'INCREASE_CONSUMED_AFTER_SYSTEM_BLOCK' : 'INCREASE_CONSUMED_WHILE_BLOCKED';
     }
     // B5: remember the higher ratio only while the held quantity still needs it.
     const anchorTargetForRatio = consumedAnchorTarget ?? target.targetSize;
@@ -815,7 +841,7 @@ function planMemberLegs({ cycleId, system, master, member, contracts, simulateSy
       target_lock_reason: target.targetLockReason,
       anchor_update_allowed: !hasUnresolvedOrder && !hasOpenExchangeOrder && !member.resume_required
         && !manual.detected && !reversalCloseRequired && previous?.state !== 'MANUAL_OVERRIDE'
-        && !masterUnconfirmed && !ledgerUnexplained,
+        && !masterUnconfirmed && !ledgerUnexplained && !holdForPendingRisk,
       ...(anchorMasterCopyableSize == null ? {} : { anchor_master_copyable_size: anchorMasterCopyableSize }),
       ...(desiredTargetSize == null || member.close_positions_requested || !Number.isFinite(desiredTargetSize)
         ? {} : { anchor_desired_target_size: desiredTargetSize }),
@@ -901,7 +927,31 @@ export class TradingRunner {
     this.pendingRiskHalts = new Map();
     // QA D5/D6: get_copy_risk_context (unified-member policy, stored risk basis). null until first loaded.
     this.riskContext = null;
-    this.unifiedBlockLogged = new Set();
+    // Review R4: account policy (unified member) alerts { code, at } and the last code reported to the DB { code, retryAt }.
+    this.accountPolicyAlerts = new Map();
+    this.accountPolicyReported = new Map();
+    // Review R9: `${account}:${contract}:${side}` legs whose anchor could not move during a system block.
+    this.haltStaleAnchorLegs = new Set();
+  }
+  // Review R9: during a system-blocked cycle every leg's Master increase is consumed into its anchor (D1/B4) except on
+  // legs whose anchor may not move (unresolved/open order, manual change, Master unconfirmed, ...). Such a leg that
+  // wanted to grow (target above the quantity held) is remembered until a cycle moves its anchor; the first one that
+  // is not blocked consumes that increase (planMemberLegs) instead of buying it.
+  static wantsIncrease(leg) {
+    const target = Number(leg?.target_size || 0);
+    const held = Number(leg?.size || 0);
+    return Math.abs(target) > (Math.sign(held) === Math.sign(target) ? Math.abs(held) : 0);
+  }
+  haltStaleLegsFor(accountId) {
+    const prefix = `${accountId}:`;
+    return [...this.haltStaleAnchorLegs].filter((key) => key.startsWith(prefix)).map((key) => key.slice(prefix.length));
+  }
+  trackHaltStaleAnchors(accountId, plannedPositions, systemBlocked) {
+    for (const leg of plannedPositions || []) {
+      const key = `${accountId}:${leg.contract}:${leg.position_side}`;
+      if (systemBlocked && !leg.anchor_update_allowed && TradingRunner.wantsIncrease(leg)) this.haltStaleAnchorLegs.add(key);
+      else if (leg.anchor_update_allowed) this.haltStaleAnchorLegs.delete(key);
+    }
   }
   // A FUTURE_ONLY baseline only shrinks, permanently. One empty or partial Master read must not
   // shrink it (the member would then copy the Master's pre-resume holdings): require the same
@@ -1027,10 +1077,7 @@ export class TradingRunner {
     const policyBlock = member && summary.accountMode === 'unified' && this.riskContext?.allow_unified_members !== true
       ? UNIFIED_ACCOUNT_UNSUPPORTED : null;
     const risk = policyBlock ? { risk_halt_reason: null } : evaluateAccountRisk({ ...account, ...summary });
-    if (policyBlock && this.logger && !this.unifiedBlockLogged.has(account.trading_account_id)) {
-      this.unifiedBlockLogged.add(account.trading_account_id);
-      this.logger('member_unified_account_blocked', { trading_account_id: account.trading_account_id, error_code: policyBlock });
-    }
+    if (member) this.alertAccountPolicy(account, policyBlock);
     return { ...account, ...summary, positions, open_orders: openOrders,
       unconfirmed_contracts: positions.unconfirmedContracts || [],
       list_empty_fallback_contracts: positions.listEmptyFallbackContracts || [],
@@ -1087,8 +1134,46 @@ export class TradingRunner {
     if (this.logger) this.logger('member_risk_halt_pending', { trading_account_id: id, reason, cycles: count });
     return { ...member, risk_halt_reason: null, risk_halt_pending: reason, reduce_only: true };
   }
+  // Review R4: the hold of a unified member is not a log line only. A safety alert per account (repeated at most every
+  // CREDENTIAL_ALERT_REPEAT_MS = 6 h, an undelivered one retried after 5 minutes); a cleared policy re-arms it.
+  alertAccountPolicy(account, policyBlock, now = Date.now()) {
+    const id = account?.trading_account_id;
+    if (!id) return;
+    if (!policyBlock) { this.accountPolicyAlerts.delete(id); return; }
+    const last = this.accountPolicyAlerts.get(id);
+    if (last && last.code === policyBlock && now - last.at < CREDENTIAL_ALERT_REPEAT_MS) return;
+    const entry = { code: policyBlock, at: now };
+    this.accountPolicyAlerts.set(id, entry);
+    if (this.logger) this.logger('member_unified_account_blocked', { trading_account_id: id, error_code: policyBlock });
+    if (!this.onSafetyEvent) return;
+    const retryLater = () => { entry.at = now - CREDENTIAL_ALERT_REPEAT_MS + CREDENTIAL_ALERT_RETRY_MS; };
+    Promise.resolve(this.onSafetyEvent({ event: 'MEMBER_ACCOUNT_POLICY_BLOCKED', severity: 'WARNING',
+      details: { ...memberLabelDetail(account), user_id: account.user_id, trading_account_id: id, error_code: policyBlock,
+        action: '신규 진입·증액 차단 (축소·청산만 따라감)' } }))
+      .then((result) => { if (!result?.sent) retryLater(); }, retryLater);
+  }
+  // Review R4: the account policy each observed member is held under, for the administrator status
+  // (report_copy_account_policy, 20261021034000). Only changes are sent (and once per account after a start);
+  // it runs in the background so the order phase is not delayed, and a failure is retried after 5 minutes.
+  reportAccountPolicies(members, now = Date.now()) {
+    const reports = [];
+    for (const member of members || []) {
+      const id = member?.trading_account_id;
+      if (!id || member.error_code) continue;
+      const code = member.account_policy_block || null;
+      const last = this.accountPolicyReported.get(id);
+      if (last && (last.code === code || now < (last.retryAt || 0))) continue;
+      this.accountPolicyReported.set(id, { code: undefined, retryAt: now + CREDENTIAL_ALERT_RETRY_MS });
+      reports.push(Promise.resolve().then(() => this.rpc('report_copy_account_policy', { p_trading_account_id: id, p_policy_code: code }))
+        .then(() => { this.accountPolicyReported.set(id, { code }); }, (error) => {
+          if (this.logger) this.logger('account_policy_report_failed', { trading_account_id: id,
+            error_code: safeError(error, 'ACCOUNT_POLICY_REPORT') });
+        }));
+    }
+    return Promise.all(reports);
+  }
   // Unified-member policy and the basis of stored peak/day-start. A failed read keeps the last value; a database
-  // without the RPC leaves it null (unified members held, risk evaluated without basis check).
+  // without the RPC leaves it null (unified members held, risk evaluated on the wallet basis, review R3).
   async loadRiskContext() {
     try {
       const value = await this.rpc('get_copy_risk_context');
@@ -1251,8 +1336,8 @@ export class TradingRunner {
           getMyFuturesTradesInRange({ ...auth, from: previousRange.from, to: previousRange.to }),
         ]);
         await this.writeMemberPerformanceDay({
-          member: { ...member, opening_equity: lastDay.openingEquity, total: lastDay.closingEquity,
-            unrealisedPnl: lastDay.unrealisedPnl },
+          member: { ...member, opening_equity: lastDay.openingEquity, closing_equity: lastDay.closingEquity,
+            total: lastDay.closingEquity, unrealisedPnl: lastDay.unrealisedPnl },
           tradingDate: previousRange.tradingDate, ledger: previousLedger, trades: previousTrades, contracts, observedAt,
         });
         if (this.logger) this.logger('member_performance_previous_day_resynced', { user_id: member.user_id,
@@ -1542,6 +1627,7 @@ export class TradingRunner {
         member.resume_member_positions = !closing && Array.isArray(session?.resume_member_positions)
           ? session.resume_member_positions : null;
         memberStage = 'MEMBER_PLAN';
+        member.halt_stale_anchor_legs = this.haltStaleLegsFor(member.trading_account_id);
         const plannedPositions = planMemberPositions({
           cycleId,
           system: context.system,
@@ -1552,6 +1638,8 @@ export class TradingRunner {
           // Only a LIVE worker executes; elsewhere Master increases are consumed (FUTURE_ONLY, B4).
           executionBlocked: this.mode !== 'LIVE',
         });
+        this.trackHaltStaleAnchors(member.trading_account_id, plannedPositions, this.mode !== 'LIVE'
+          || Boolean(context.system?.emergency_halted) || context.system?.execution_enabled === false);
         simulatedIntents += plannedPositions.filter((position) => position.intent).length;
         if (this.mode === 'DRY_RUN') {
           dryRunPlans.push(...plannedPositions.map((position) => ({
@@ -1590,12 +1678,14 @@ export class TradingRunner {
         quanto_multiplier: contracts.get(position.contract)?.quantoMultiplier || null,
       })),
     };
-    const currentStatePayload = buildCurrentStatePayload({ cycleId, observedAt, master: recordedMaster, members });
+    const currentStatePayload = buildCurrentStatePayload({ cycleId, observedAt, master: recordedMaster, members,
+      riskBasis: this.riskContext ? RISK_EQUITY_BASIS : null });
     const legacyPayload = { cycle_id: cycleId, source_version: sourceHash({ observedAt, master: master.positions }),
       observed_at: observedAt, master: recordedMaster, members: members.map(withoutCredentials), current_state: currentStatePayload };
     const legacyWriteStartedAt = Date.now();
     await this.rpc('record_verified_copy_worker_cycle', { p_payload: legacyPayload });
     timings.legacy_write_ms = elapsedMs(legacyWriteStartedAt);
+    this.reportAccountPolicies(members).catch(() => {});
     if (this.mode === 'DRY_RUN' && this.logger && dryRunPlans.length) {
       const planHash = sourceHash(dryRunPlans);
       if (planHash !== this.lastDryRunPlanHash) {

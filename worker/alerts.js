@@ -40,6 +40,7 @@ const EVENT_MESSAGES = {
     INVALID_ORDERS_RESPONSE: 'Gate 미체결 주문 응답 형식이 올바르지 않습니다. Gate API 변경 또는 장애 여부를 확인해 주세요.',
     POSITIONS_PAGINATION_LIMIT: '회원 포지션 수가 너무 많아 전부 조회하지 못했습니다. 회원 계정의 포지션 구성을 확인해 주세요.',
   } },
+  MEMBER_ACCOUNT_POLICY_BLOCKED: { title: '통합계정 회원 카피 제한', state: '해당 회원 신규 진입 차단 (축소·청산만 따라감)', description: '회원의 Gate.io 계정이 통합계정(Unified Account) 모드입니다. 통합계정은 현물 등 다른 자산이 자산에 섞여 입출금과 리스크 한도를 정확히 계산할 수 없어, 신규 진입과 증액을 막고 기존 카피 포지션의 축소·청산만 마스터를 따라갑니다.', action: '회원에게 Gate.io에서 클래식 계정으로 전환하도록 안내해 주세요. 관리자 화면에는 \'통합계정 미지원\'으로 표시됩니다. 계속되면 6시간마다 다시 알립니다.' },
   MEMBER_ACCOUNT_READ_RECOVERED: { title: '회원 계정 조회 복구', state: '정상 조회 재개', description: '계속 실패하던 회원 계정의 Gate.io 조회가 다시 정상입니다.', action: '추가 조치는 필요하지 않습니다. 이 회원은 이번 회차부터 다시 마스터를 따라갑니다.' },
   COPY_WORKER_GAP_AUTO_HALTED: { title: '워커 공백 후 자동 중단', state: '전체 카피 중단 (관리자 재개 필요)', description: '카피 워커가 3분 넘게 동작하지 않다가 다시 연결되었습니다. 그 사이 마스터 변화를 현재 가격으로 한꺼번에 따라가지 않도록 신규 카피 주문을 차단했습니다.', action: '서버·네트워크·DB 상태와 회원 포지션을 확인한 뒤 관리자 화면에서 실거래를 다시 켜 주세요. 재개 후에는 이후 마스터 변화만 따라갑니다.' },
   COPY_ORDER_CLAIM_STALLED: { title: '카피 주문 실행 지연', state: '해당 회원 주문 미실행', description: '계산된 카피 주문이 여러 회차 연속으로 실행 단계에 들어가지 못했습니다(주문 계획이 15초 안에 실행되지 못해 만료).', action: '워커 회차 시간(DB·Gate 응답 지연, 미확정 주문 대조 적체)과 이 회원의 미확정 주문을 확인해 주세요. 계속되면 30분마다 다시 알립니다.' },
@@ -81,6 +82,7 @@ const VALUE_LABELS = {
   SPLIT_POSITION_UNSUPPORTED: '분할 포지션 (지원 안 함)', OPEN_ORDERS_LIMIT_REACHED: '미체결 주문 100건 이상',
   POSITIONS_INCONSISTENT: '포지션 조회 결과 불일치', INVALID_ACCOUNT_EQUITY: '계정 잔고 확인 불가',
   LIQUIDATION: '강제청산', AUTO_DELEVERAGE: '자동 디레버리징 (ADL)',
+  UNIFIED_ACCOUNT_UNSUPPORTED: '통합계정 미지원 (클래식 계정 전환 필요)',
 };
 
 function koreanTime(value) {

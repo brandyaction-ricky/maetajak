@@ -1,6 +1,8 @@
 -- 2026-10-21 QA (scenario A/D): administrator, account lifecycle and member-control fixes.
 -- Idempotent: every statement may be re-run. No table is dropped; the only data written at apply time
--- is the backfill of the administrator restriction flags (section 6) from the current session state.
+-- is the backfill of the administrator restriction flags (section 6; only in the run that adds the columns, from
+-- the session blocker and the latest administrator control) and the removal of stale ADMIN_* blockers on ACTIVE
+-- sessions without an administrator restriction.
 --
 --  1. A1  Master key replacement with the SAME Gate UID (key rotation, IP whitelist fix, re-verify) no
 --         longer disables the Master account and pauses every member. While the Master key is VERIFIED
@@ -55,6 +57,9 @@ comment on column private.gate_api_credentials.pending_status is
 
 alter table private.copy_current_verifications add column if not exists error_since timestamptz;
 
+-- Review R6: the administrator-restriction backfill (section 6) runs only in the run that adds the columns.
+select pg_catalog.set_config('maetajak.qa_admin_restriction_backfill', case when exists (select 1 from pg_catalog.pg_attribute
+  where attrelid = 'public.profiles'::regclass and attname = 'admin_reduce_only' and not attisdropped) then 'off' else 'on' end, false);
 alter table public.profiles
   add column if not exists admin_paused boolean not null default false,
   add column if not exists admin_reduce_only boolean not null default false,
@@ -90,8 +95,21 @@ as $$
 $$;
 revoke all on function private.copy_ownership_reset_at(uuid) from public, anon, authenticated;
 
+-- Review R5: only the ownership EVIDENCE clauses are limited to the current epoch (fills the journal must explain,
+-- fills that make an account without a checkpoint "already traded", and the fills journalled by CLOSE). The guards
+-- "filled but not observed yet" (observation_confirmed_at is null) and the CLOSE update that confirms older terminal
+-- fills are NOT: a fill in flight across a reset still changes the holdings and must still block. Each clause is
+-- matched literally (whitespace-tolerant) exactly once, and the result is checked before it is executed.
 do $$
-declare sig text; def text; patched text;
+declare sig text; def text; base text; patched text; spec text[]; pattern text; hits integer; expected integer;
+  -- {function, clause (regex, whitespace-tolerant), aliased: 'i' or ''}
+  specs text[][] := array[
+    ['core', 'i\.trading_account_id=p_account\s+and\s+i\.filled_size<>0\s+and\s+i\.resume_version\s+is\s+not\s+null(?=\s+and\s+not\s+exists\(select\s+1\s+from\s+private\.copy_ownership_fills)', 'i'],
+    ['core', 'from\s+private\.copy_order_intents\s+where\s+trading_account_id=p_account\s+and\s+filled_size<>0\s+and\s+resume_version\s+is\s+not\s+null(?=\))', ''],
+    ['observe', 'i\.trading_account_id=new\.trading_account_id\s+and\s+i\.filled_size<>0\s+and\s+i\.resume_version\s+is\s+not\s+null(?=\s+and\s+not\s+exists\(select\s+1\s+from\s+private\.copy_ownership_fills)', 'i'],
+    ['observe', 'i\.trading_account_id=new\.trading_account_id\s+and\s+i\.filled_size<>0\s+and\s+i\.resume_version\s+is\s+not\s+null(?=\s+and\s+i\.observation_confirmed_at\s+is\s+not\s+null)', 'i'],
+    ['observe', 'from\s+private\.copy_order_intents\s+where\s+trading_account_id=new\.trading_account_id\s+and\s+filled_size<>0(?=\))', '']];
+  guard_re constant text := 'observation_confirmed_at\s+is\s+null\s+and\s+(i\.)?resume_version\s+is\s+not\s+null\)';
 begin
   -- On a re-run copy_resume_ownership is the D8 wrapper (section 7) and the original body is *_core.
   foreach sig in array array[case when to_regprocedure('private.copy_resume_ownership_core(uuid,uuid,jsonb,jsonb)') is null
@@ -99,14 +117,32 @@ begin
     'private.observe_copy_ownership()'] loop
     if to_regprocedure(sig) is null then raise notice 'ownership epoch patch skipped, missing %', sig; continue; end if;
     def := pg_get_functiondef(to_regprocedure(sig));
-    if position('copy_ownership_reset_at' in def) > 0 then continue; end if;
-    patched := regexp_replace(def, '\m(i\.)?resume_version is not null',
-      '\1resume_version is not null and \1created_at>private.copy_ownership_reset_at(\1trading_account_id)', 'g');
-    patched := replace(patched,
-      'where trading_account_id=new.trading_account_id and filled_size<>0)',
-      'where trading_account_id=new.trading_account_id and filled_size<>0 and created_at>private.copy_ownership_reset_at(trading_account_id))');
-    if patched = def then raise exception 'OWNERSHIP_EPOCH_ANCHOR_MISSING: %', sig; end if;
-    execute patched;
+    -- Idempotent: start from the unpatched text (this also repairs an earlier, broader patch).
+    base := regexp_replace(def, '\s+and\s+(i\.)?created_at>private\.copy_ownership_reset_at\((i\.)?trading_account_id\)', '', 'g');
+    patched := base; expected := 0;
+    foreach spec slice 1 in array specs loop
+      if spec[1] <> (case when sig like 'private.observe%' then 'observe' else 'core' end) then continue; end if;
+      pattern := spec[2];
+      select count(*) into hits from regexp_matches(base, pattern, 'g');
+      if hits <> 1 then raise exception 'OWNERSHIP_EPOCH_ANCHOR_MISSING: % (% matches of %)', sig, hits, pattern; end if;
+      patched := regexp_replace(patched, '(' || pattern || ')', '\1 and '
+        || case when spec[3] = 'i' then 'i.created_at>private.copy_ownership_reset_at(i.trading_account_id)'
+          else 'created_at>private.copy_ownership_reset_at(trading_account_id)' end);
+      expected := expected + 1;
+    end loop;
+    -- Post-patch checks: exactly the intended clauses, guards untouched, unaliased references only in the
+    -- single-table (no alias, no join) intent queries.
+    if (select count(*) from regexp_matches(patched, 'copy_ownership_reset_at', 'g')) <> expected
+      or (select count(*) from regexp_matches(patched, guard_re, 'g')) <> (select count(*) from regexp_matches(base, guard_re, 'g'))
+      or patched ~ 'observation_confirmed_at\s+is\s+null[^;]{0,80}copy_ownership_reset_at'
+      or (select count(*) from regexp_matches(patched, '(^|[^.a-z_])created_at>private\.copy_ownership_reset_at\(trading_account_id\)', 'g'))
+        <> (select count(*) from regexp_matches(patched,
+          'from\s+private\.copy_order_intents\s+where\s+trading_account_id=[a-z_.]+\s+and\s+filled_size<>0(\s+and\s+resume_version\s+is\s+not\s+null)?\s+and\s+created_at>private\.copy_ownership_reset_at\(trading_account_id\)', 'g'))
+      or (select count(*) from regexp_matches(patched, '[a-z_]+\.created_at>private\.copy_ownership_reset_at\(([a-z_]+\.)?trading_account_id\)', 'g'))
+        <> (select count(*) from regexp_matches(patched, 'i\.created_at>private\.copy_ownership_reset_at\(i\.trading_account_id\)', 'g')) then
+      raise exception 'OWNERSHIP_EPOCH_PATCH_UNSAFE: %', sig;
+    end if;
+    if patched <> def then execute patched; end if;
   end loop;
 end $$;
 
@@ -570,9 +606,13 @@ revoke all on function public.retry_admin_master_gate_api_verification(boolean) 
 grant execute on function public.retry_admin_master_gate_api_verification(boolean) to authenticated;
 
 -- The worker verifies the pending key when one is waiting (the current key's status is left alone).
-create or replace function public.claim_gate_api_verification_jobs(p_limit integer default 5)
+-- Review R7: the claim returns its claimed_at; complete_gate_api_verification refuses a completion whose claim is no
+-- longer the job's current one (a requeue keeps the job id: a late result for the previous key must not verify the
+-- next one). The return type changes, so the function is dropped first.
+drop function if exists public.claim_gate_api_verification_jobs(integer);
+create function public.claim_gate_api_verification_jobs(p_limit integer default 5)
 returns table (
-  job_id bigint, user_id uuid, connection_role text, gate_uid text, api_key text, secret_key text
+  job_id bigint, user_id uuid, connection_role text, gate_uid text, api_key text, secret_key text, claimed_at timestamptz
 )
 language plpgsql security definer set search_path = public, extensions, pg_temp
 as $$
@@ -593,9 +633,10 @@ begin
     limit greatest(1, least(coalesce(p_limit, 5), 20))
   ), updated_jobs as (
     update private.gate_api_verification_jobs as job
-    set claimed_at = now(), attempts = job.attempts + 1, updated_at = now()
+    -- clock_timestamp(): the claim token is unique even for two claims in one transaction.
+    set claimed_at = clock_timestamp(), attempts = job.attempts + 1, updated_at = now()
     from claimed where job.id = claimed.id
-    returning job.id, job.user_id
+    returning job.id, job.user_id, job.claimed_at
   ), marked as (
     update private.gate_api_credentials as credentials
     set status = case when credentials.pending_api_key_ciphertext is null then 'VERIFYING' else credentials.status end,
@@ -607,7 +648,8 @@ begin
   select updated_jobs.id, credentials.user_id, credentials.connection_role,
     coalesce(credentials.pending_gate_uid, credentials.gate_uid),
     pgp_sym_decrypt(coalesce(credentials.pending_api_key_ciphertext, credentials.api_key_ciphertext), encryption_key),
-    pgp_sym_decrypt(coalesce(credentials.pending_secret_key_ciphertext, credentials.secret_key_ciphertext), encryption_key)
+    pgp_sym_decrypt(coalesce(credentials.pending_secret_key_ciphertext, credentials.secret_key_ciphertext), encryption_key),
+    updated_jobs.claimed_at
   from updated_jobs
   join private.gate_api_credentials as credentials on credentials.user_id = updated_jobs.user_id
   join marked on marked.user_id = updated_jobs.user_id;
@@ -616,7 +658,12 @@ $$;
 revoke all on function public.claim_gate_api_verification_jobs(integer) from public, anon, authenticated;
 grant execute on function public.claim_gate_api_verification_jobs(integer) to service_role;
 
-create or replace function public.complete_gate_api_verification(p_job_id bigint, p_success boolean, p_gate_user_id text DEFAULT NULL::text, p_error_code text DEFAULT NULL::text, p_error_message text DEFAULT NULL::text, p_worker_public_ip text DEFAULT NULL::text)
+-- Review R7: p_claimed_at is the claim this result belongs to (claim_gate_api_verification_jobs.claimed_at); a result
+-- of a superseded claim is refused (VERIFICATION_JOB_CLAIM_STALE). null = a worker from before this change (no check;
+-- remove the default once every worker passes it). The old 6-argument signature is dropped (an overload with a
+-- defaulted 7th argument would make 6-argument calls ambiguous).
+drop function if exists public.complete_gate_api_verification(bigint, boolean, text, text, text, text);
+create or replace function public.complete_gate_api_verification(p_job_id bigint, p_success boolean, p_gate_user_id text DEFAULT NULL::text, p_error_code text DEFAULT NULL::text, p_error_message text DEFAULT NULL::text, p_worker_public_ip text DEFAULT NULL::text, p_claimed_at timestamptz DEFAULT NULL::timestamptz)
  returns void
  language plpgsql
  security definer
@@ -630,16 +677,22 @@ declare previous_master private.trading_accounts;
 declare rebind jsonb;
 declare pending_key boolean;
 declare pending_uid text;
+declare job_claimed_at timestamptz;
 begin
   if p_success and nullif(trim(p_worker_public_ip), '') is null then raise exception 'WORKER_IP_REQUIRED'; end if;
   perform pg_advisory_xact_lock(hashtextextended('maetajak:copy-execution',0));
   select job.user_id, credentials.connection_role, trim(credentials.gate_uid),
-    credentials.pending_api_key_ciphertext is not null, trim(credentials.pending_gate_uid)
-  into target_user_id, target_connection_role, target_gate_uid, pending_key, pending_uid
+    credentials.pending_api_key_ciphertext is not null, trim(credentials.pending_gate_uid), job.claimed_at
+  into target_user_id, target_connection_role, target_gate_uid, pending_key, pending_uid, job_claimed_at
   from private.gate_api_verification_jobs job
   join private.gate_api_credentials credentials on credentials.user_id = job.user_id
   where job.id = p_job_id for update of job;
   if target_user_id is null then raise exception 'JOB_NOT_FOUND'; end if;
+  -- Compared at millisecond precision (a JavaScript client may drop the microseconds).
+  if p_claimed_at is not null
+    and date_trunc('milliseconds', job_claimed_at) is distinct from date_trunc('milliseconds', p_claimed_at) then
+    raise exception 'VERIFICATION_JOB_CLAIM_STALE';
+  end if;
 
   -- Same-UID key replacement: swap in place on success, keep the current key on failure.
   if pending_key then
@@ -723,6 +776,8 @@ begin
       'verification_version', case when p_success then 2 else 1 end, 'error_code', p_error_code));
 end;
 $function$;
+revoke all on function public.complete_gate_api_verification(bigint, boolean, text, text, text, text, timestamptz) from public, anon, authenticated;
+grant execute on function public.complete_gate_api_verification(bigint, boolean, text, text, text, text, timestamptz) to service_role;
 
 -- ---------------------------------------------------------------------------------------------
 -- 2. Read-error run start (copy_current_verifications.error_since).
@@ -767,15 +822,31 @@ drop trigger if exists enforce_admin_copy_restrictions on public.profiles;
 create trigger enforce_admin_copy_restrictions before update on public.profiles
 for each row execute function private.enforce_admin_copy_restrictions();
 
--- Backfill: restrictions an administrator set before this migration.
+-- Backfill: restrictions an administrator set before this migration. Review R6: only in the run that added the
+-- columns (a re-run must not turn a later risk reduce-only into an administrator one), and only with both pieces of
+-- evidence: the session blocker the administrator control wrote AND the member's latest administrator control
+-- (admin_audit_logs) being that restriction (an earlier administrator RESUME left ACTIVE sessions on ADMIN_REDUCE_ONLY).
 update public.profiles p set admin_reduce_only = true
-where p.reduce_only and not p.admin_reduce_only and exists (select 1 from private.copy_resume_sessions s
+where pg_catalog.current_setting('maetajak.qa_admin_restriction_backfill', true) = 'on'
+  and p.reduce_only and not p.admin_reduce_only and exists (select 1 from private.copy_resume_sessions s
   join private.trading_accounts a on a.id = s.trading_account_id
-  where a.user_id = p.id and a.account_role = 'MEMBER' and s.blocker_reason = 'ADMIN_REDUCE_ONLY');
+  where a.user_id = p.id and a.account_role = 'MEMBER' and s.blocker_reason = 'ADMIN_REDUCE_ONLY')
+  and (select l.next_value->>'mode' from public.admin_audit_logs l where l.target_user_id = p.id
+    and l.action = 'MEMBER_COPY_CONTROL_UPDATED' order by l.created_at desc, l.id desc limit 1) = 'REDUCE_ONLY';
 update public.profiles p set admin_paused = true
-where p.copy_paused and not p.admin_paused and exists (select 1 from private.copy_resume_sessions s
+where pg_catalog.current_setting('maetajak.qa_admin_restriction_backfill', true) = 'on'
+  and p.copy_paused and not p.admin_paused and exists (select 1 from private.copy_resume_sessions s
   join private.trading_accounts a on a.id = s.trading_account_id
-  where a.user_id = p.id and a.account_role = 'MEMBER' and s.state = 'PAUSED' and s.blocker_reason in ('ADMIN_PAUSE', 'ADMIN_HALT'));
+  where a.user_id = p.id and a.account_role = 'MEMBER' and s.state = 'PAUSED' and s.blocker_reason in ('ADMIN_PAUSE', 'ADMIN_HALT'))
+  and (select l.next_value->>'mode' from public.admin_audit_logs l where l.target_user_id = p.id
+    and l.action = 'MEMBER_COPY_CONTROL_UPDATED' order by l.created_at desc, l.id desc limit 1) in ('PAUSE', 'HALT');
+select pg_catalog.set_config('maetajak.qa_admin_restriction_backfill', 'off', false);
+-- An ACTIVE session's ADMIN_* blocker without an administrator restriction is left over from an administrator RESUME
+-- (review R6; set_member_copy_control now clears it).
+update private.copy_resume_sessions s set blocker_reason = null, updated_at = now()
+from private.trading_accounts a join public.profiles p on p.id = a.user_id
+where a.id = s.trading_account_id and s.state = 'ACTIVE' and s.blocker_reason like 'ADMIN\_%'
+  and not p.admin_reduce_only and not p.admin_paused;
 
 -- Resume request. p_reclassify (D8): the member confirmed that confirmed COPY legs the Master no longer
 -- holds become their own quantity (applied by copy_resume_ownership for this generation only).
@@ -863,6 +934,10 @@ begin
     update public.profiles set member_halted=false,admin_paused=false,
       reduce_only=case when admin_reduce_only then false else reduce_only end,admin_reduce_only=false,updated_at=now()
       where id=p_user_id and role='MEMBER';
+    -- Review R6: an ACTIVE session keeps copying through the RESUME below; its administrator blocker is lifted here.
+    update private.copy_resume_sessions s set blocker_reason=null,updated_at=now()
+      from private.trading_accounts a where a.id=s.trading_account_id and a.user_id=p_user_id
+        and s.state='ACTIVE' and s.blocker_reason like 'ADMIN\_%';
     result:=private.request_member_copy_resume(p_user_id, false);
   else
     update public.profiles set
@@ -1533,7 +1608,9 @@ grant execute on function public.get_admin_operations_metrics(date, date) to aut
 
 -- ---------------------------------------------------------------------------------------------
 -- 8. D11: MDD on the daily-return index (a deposit/withdrawal moves equity, not the index). The worker
---    writes daily_return_pct = (closing - opening - net transfers) / opening from 2026-10-21.
+--    writes daily_return_pct = (closing - opening - net transfers) / opening from 2026-10-21, opening and closing
+--    on one equity basis (review R1: MTM when the opening is the risk day-start, wallet when rebuilt from the
+--    ledger); these functions only compound daily_return_pct, so they need no basis of their own.
 --    Definitions 202608280004 / 202608290004 + KST dates (20261020020000 section 1).
 -- ---------------------------------------------------------------------------------------------
 create or replace function public.get_my_dashboard_performance(p_days integer default 30)
