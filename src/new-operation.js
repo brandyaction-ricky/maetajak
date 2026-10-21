@@ -1,3 +1,4 @@
+import { accountDisplayId } from './account-id.js';
 const escape = (value) => String(value ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 // Same currency notation as the rest of the console ($ amounts, USDT-margined accounts).
 const money = (value) => `$${Number(value || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -47,7 +48,7 @@ export function createNewOperationPanel({ root, rpc, onRequested }) {
     const reasons = preview.blockers || [];
     root.innerHTML = `<form class="new-operation-form">
       <div class="new-operation-heading"><h4>새 운용 시작</h4><button class="btn" type="button" data-new-operation-close>닫기</button></div>
-      <p><strong>${escape(preview.member_name)}</strong> · ${escape(preview.member_email)}</p>
+      <p><strong>${escape(preview.member_name)}</strong> · ${escape(accountDisplayId(preview.member_gate_uid, preview.member_email))}</p>
       <dl class="new-operation-values">
         <div><dt>새 시작 자산</dt><dd>${escape(money(preview.equity))}</dd></div>
         <div><dt>이전 위험 기준 최고 자산</dt><dd>${escape(money(preview.previous_peak_equity))}</dd></div>

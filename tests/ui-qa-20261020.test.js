@@ -83,7 +83,7 @@ test('no inline event handlers and a strict CSP is deployed', () => {
 
 test('accessibility: labelled auth forms, dialogs, toast live region and boot splash', () => {
   assert.match(html, /<form id="loginForm"/);
-  assert.match(html, /<label for="loginEmail">/);
+  assert.match(html, /<label for="loginId">아이디<\/label>/);
   assert.match(html, /id="toast" class="toast" role="status" aria-live="polite"/);
   assert.match(html, /id="bootSplash"/);
   assert.match(html, /<section id="auth" class="auth hidden">/);
