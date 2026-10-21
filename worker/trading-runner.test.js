@@ -324,7 +324,8 @@ test('DRY_RUN records target, actual, and delta without an intent key', async ()
     details: { total_equity: 10_000, available_equity: 9_000, positions: [{ contract: 'BTC_USDT', position_side: 'LONG', size: 100, mark_price: 50_000, leverage: null, margin_mode: null }] },
   }, {
     event: 'dry_run_plan',
-    details: { positions: [{ contract: 'BTC_USDT', position_side: 'LONG', target_size: 30, actual_size: 0, delta_size: 30, target_leverage: null, state: 'DRIFT', pause_reason: null }] },
+    // The Master leg reports no leverage: the capped default (DEFAULT_CROSS_LEVERAGE) instead of 0 (QA 2026-10-21 5b).
+    details: { positions: [{ contract: 'BTC_USDT', position_side: 'LONG', target_size: 30, actual_size: 0, delta_size: 30, target_leverage: 10, state: 'DRIFT', pause_reason: null }] },
   }]);
 });
 

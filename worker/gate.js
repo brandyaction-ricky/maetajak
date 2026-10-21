@@ -178,7 +178,11 @@ export function normalizeGatePermissions(keyInfo) {
   }).filter((permission) => permission.name);
 }
 
-export async function verifyGateAccount({ gateUid, apiKey, secretKey, expectedPublicIp, requiresTradingPermission = true, fetchImpl = fetch, baseUrl = GATE_API_BASE_URL }) {
+export const UNIFIED_ACCOUNT_UNSUPPORTED = 'UNIFIED_ACCOUNT_UNSUPPORTED';
+export const UNIFIED_ACCOUNT_UNSUPPORTED_MESSAGE = '통합계정(Unified Account) 모드는 회원 카피를 지원하지 않습니다. Gate.io에서 클래식 계정으로 전환한 뒤 다시 연결해 주세요.';
+
+export async function verifyGateAccount({ gateUid, apiKey, secretKey, expectedPublicIp, requiresTradingPermission = true,
+  rejectUnifiedAccount = requiresTradingPermission, fetchImpl = fetch, baseUrl = GATE_API_BASE_URL }) {
   if (!expectedPublicIp) {
     return { success: false, errorCode: 'WORKER_IP_NOT_CONFIGURED', errorMessage: '고정 Worker IP가 아직 설정되지 않았습니다.' };
   }
@@ -243,6 +247,12 @@ export async function verifyGateAccount({ gateUid, apiKey, secretKey, expectedPu
     if (unsafePermission) {
       return { success: false, gateUserId, errorCode: 'EXCESS_API_PERMISSIONS', errorMessage: `${unsafePermission.name} 쓰기 권한을 비활성화하고 Futures 권한만 사용해 주세요.` };
     }
+    // A unified account's equity includes spot and other assets while deposits/withdrawals are only tracked from the
+    // futures ledger, so its risk limits and sizing would be wrong (QA D6). Members are refused unless the operator
+    // opted in (copy_system_control.allow_unified_members); the Master is never refused (equity used for ratios only).
+    if (rejectUnifiedAccount && Number(futuresResponse.payload?.margin_mode || 0) > 0) {
+      return { success: false, gateUserId, errorCode: UNIFIED_ACCOUNT_UNSUPPORTED, errorMessage: UNIFIED_ACCOUNT_UNSUPPORTED_MESSAGE };
+    }
     return { success: true, gateUserId, futuresRead: true, futuresTrade, ipWhitelisted: true, withdrawalDisabled: true };
   } catch (error) {
     return {
@@ -268,10 +278,12 @@ export async function getFuturesAccount(options) {
   // Unified equity already includes unrealised PnL; the classic futures `total` is the wallet
   // balance without it. Sizing must compare both accounts on the same basis.
   let equityIncludesUnrealised = false;
+  let accountMode = 'classic';
   if (marginMode > 0 || (!(classicTotal > 0) && !(crossMarginBalance > 0))) {
     const unified = await gateRequest({ ...options, path: UNIFIED_ACCOUNT_PATH });
     total = Number(unified.payload?.unified_account_total_equity || 0);
     equityIncludesUnrealised = true;
+    accountMode = 'unified';
   } else {
     total = classicTotal > 0 ? classicTotal : crossMarginBalance;
     // `cross_margin_balance` is a margin balance (unrealised PnL included); adding the PnL again
@@ -289,6 +301,8 @@ export async function getFuturesAccount(options) {
     available,
     unrealisedPnl: Number(payload?.unrealised_pnl ?? payload?.unrealized_pnl ?? payload?.cross_unrealised_pnl ?? 0),
     equityIncludesUnrealised,
+    // 'unified': equity came from the unified-account endpoint (spot and other assets included).
+    accountMode,
     positionMode: String(payload?.position_mode || (payload?.in_dual_mode ? 'dual' : 'single')),
   };
 }
@@ -302,8 +316,7 @@ export function normalizeGatePositions(payload) {
     size: Number(position.size || 0),
     markPrice: Number(position.mark_price || 0),
     entryPrice: Number(position.entry_price || 0),
-    leverage: Number(position.lever ?? (Number(position.leverage || 0) > 0 ? position.leverage : position.cross_leverage_limit) ?? 0),
-    mode: String(position.mode || 'single'),
+    leverage: Number(position.lever ?? (Number(position.leverage || 0) > 0 ? position.leverage : position.cross_leverage_limit) ?? 0),    mode: String(position.mode || 'single'),
     positionSide: String(position.mode || '').toLowerCase() === 'dual_long' ? 'LONG'
       : String(position.mode || '').toLowerCase() === 'dual_short' ? 'SHORT'
         : Number(position.size || 0) < 0 ? 'SHORT' : 'LONG',
@@ -419,26 +432,20 @@ export async function setFuturesLeverage({ contract, leverage, marginMode = 'cro
     throw new GateApiError('마스터 증거금 모드를 확인할 수 없습니다.', { code: 'INVALID_MARGIN_MODE' });
   }
   const isDual = positionSide === 'LONG' || positionSide === 'SHORT';
-  // Gate classic hedge mode exposes one contract-level leverage setting for
-  // both legs. Its legacy dual endpoint remains the compatible write path;
-  // cross margin is expressed as leverage=0 plus cross_leverage_limit.
-  if (isDual) {
-    const { payload } = await gateRequest({
-      ...options,
-      method: 'POST',
-      path: `${FUTURES_DUAL_POSITIONS_PATH}/${encodeURIComponent(contract)}/leverage`,
-      query: marginMode === 'cross'
-        ? { leverage: 0, cross_leverage_limit: normalizedLeverage }
-        : { leverage: normalizedLeverage },
-      expiresAtMs: Date.now() + 5_000,
-    });
-    return payload;
-  }
+  // Gate API v4 (FuturesApi update_position_leverage / update_dual_mode_position_leverage): both take query
+  // `leverage` and optional `cross_leverage_limit`, which is valid only when leverage=0 (cross margin); a positive
+  // leverage means isolated margin. Classic hedge mode exposes one contract-level leverage setting for both legs
+  // (the dual endpoint returns both legs). The single-mode path used `/set_leverage?margin_mode=`, the Hedge Split
+  // (dual_plus) endpoint of 2026-04, whose parameter placement was never verified; it now uses the documented
+  // `/positions/{contract}/leverage` with the same parameters as the dual path that runs in production.
+  const query = marginMode === 'cross'
+    ? { leverage: 0, cross_leverage_limit: normalizedLeverage }
+    : { leverage: normalizedLeverage };
   const { payload } = await gateRequest({
     ...options,
     method: 'POST',
-    path: `${FUTURES_POSITIONS_PATH}/${encodeURIComponent(contract)}/set_leverage`,
-    query: { leverage: normalizedLeverage, margin_mode: marginMode },
+    path: `${isDual ? FUTURES_DUAL_POSITIONS_PATH : FUTURES_POSITIONS_PATH}/${encodeURIComponent(contract)}/leverage`,
+    query,
     expiresAtMs: Date.now() + 5_000,
   });
   return payload;

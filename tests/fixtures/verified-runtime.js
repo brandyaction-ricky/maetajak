@@ -38,6 +38,8 @@ export const migrationFiles = [
   '20261020020000_qa_fixes.sql',
   // 2026-10-21 administrator member withdrawal / restore.
   '20261021010000_admin_member_withdrawal.sql',
+  // 2026-10-21 QA D: risk on the sizing equity basis, unified-member policy.
+  '20261021033000_qa_risk_basis.sql',
 ];
 export async function createVerifiedDatabase() {
   const db = new PGlite();

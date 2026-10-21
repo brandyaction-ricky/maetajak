@@ -81,10 +81,14 @@ export async function runVerificationBatch() {
   try {
     const { data: jobs, error } = await supabase.rpc('claim_gate_api_verification_jobs', { p_limit: 5 });
     if (error) throw error;
+    // QA D6: a MEMBER in Gate unified-account mode is refused unless the operator set
+    // copy_system_control.allow_unified_members (unknown policy = refused). The Master is never refused.
+    const riskContext = jobs?.length ? await runner.loadRiskContext() : null;
     for (const job of jobs || []) {
       const result = await verifyGateAccount({
         gateUid: job.gate_uid, apiKey: job.api_key, secretKey: job.secret_key,
-        expectedPublicIp: workerPublicIp, requiresTradingPermission: job.connection_role !== 'MASTER', baseUrl,
+        expectedPublicIp: workerPublicIp, requiresTradingPermission: job.connection_role !== 'MASTER',
+        rejectUnifiedAccount: job.connection_role !== 'MASTER' && riskContext?.allow_unified_members !== true, baseUrl,
       });
       log('verification_result', {
         gate_uid: job.gate_uid,
