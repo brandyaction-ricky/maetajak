@@ -660,3 +660,33 @@ tbody tr:hover { background: #141416; }
   .member-performance-table td.empty-cell::before { content: none; }
   .toast { left: 16px; right: 16px; max-width: none; }
 }
+
+/* 2026-10-21 회원 관리: 회원 / 탈퇴 회원 탭 */
+.admin-member-tabs { display: inline-flex; gap: 4px; margin: 0 0 14px; }
+.admin-member-tabs span { margin-left: 4px; color: var(--muted); font-size: 11px; }
+.admin-member-tabs button.active span { color: inherit; }
+.admin-withdrawn-table .withdrawal-reason { max-width: 280px; word-break: keep-all; white-space: normal; color: var(--muted); }
+.member-withdraw-actions .muted { margin-top: 6px; font-size: 11px; color: var(--muted); word-break: keep-all; }
+.admin-withdrawn-members { padding: 16px; }
+.admin-withdrawn-table { min-width: 760px; }
+.admin-withdrawn-table th:last-child, .admin-withdrawn-table td.table-actions { position: sticky; right: 0; z-index: 1; background: var(--panel); box-shadow: -10px 0 12px -10px rgba(0, 0, 0, .8); }
+.admin-withdrawn-table th:last-child { background: #101012; }
+
+/* 2026-10-21 Gate UID accounts: login ID hint, admin-contact note, temporary password box. */
+#authMessage { margin-bottom: 14px; }
+.notice.success { border-style: solid; border-color: rgba(54, 201, 143, .28); background: var(--green-bg); color: #72e6af; }
+.field-hint { color: var(--subtle); font-size: 11px; line-height: 1.5; }
+.auth-help { margin: 14px 0 0; text-align: center; font-size: 12px; }
+.account-password-help { margin: 0 0 4px; color: var(--muted); font-size: 11px; line-height: 1.6; }
+.member-temp-password { display: grid; gap: 10px; margin-top: 12px; padding: 16px 18px; border: 1px solid rgba(54, 201, 143, .28); border-radius: 11px; background: var(--green-bg); }
+.member-temp-password-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 4px 12px; }
+.member-temp-password-head b { font-size: 13px; }
+.member-temp-password-head small { color: var(--amber); font-size: 11px; }
+.member-temp-password-row { display: flex; align-items: center; gap: 10px; }
+.member-temp-password-row code { flex: 1 1 auto; min-width: 0; padding: 10px 12px; border: 1px solid var(--line-strong); border-radius: 8px; background: #0b0b0d; color: #fff; font: 600 16px/1.3 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; letter-spacing: .08em; overflow-wrap: anywhere; user-select: all; }
+.member-temp-password-row .btn { flex: 0 0 auto; min-height: 40px; padding: 0 16px; }
+.member-temp-password p { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.6; }
+@media (max-width: 760px) {
+  .field-hint, .auth-help { font-size: 12px; }
+  .member-temp-password-row .btn { min-height: 44px; }
+}

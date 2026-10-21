@@ -36,6 +36,8 @@ export const migrationFiles = [
   '20261020010000_admin_member_weights_no_member_trade_lock.sql',
   // 2026-10-20 DB QA fixes (KST dates, admin member disconnect, least privilege, alert retry cap).
   '20261020020000_qa_fixes.sql',
+  // 2026-10-21 administrator member withdrawal / restore.
+  '20261021010000_admin_member_withdrawal.sql',
 ];
 export async function createVerifiedDatabase() {
   const db = new PGlite();

@@ -1,6 +1,7 @@
 import { createClient } from '@supabase/supabase-js';
 import { getAccessDecision } from './access.js';
 import { createNewOperationPanel } from './new-operation.js';
+import { accountDisplayId, isValidGateUid, loginIdToEmail } from './account-id.js';
 import './prototype-theme.css';
 
 // The prototype stylesheet is the single visual source of truth.
@@ -107,6 +108,9 @@ let adminOperationsMetrics = null;
 let adminMembersCache = [];
 let adminMasterAccount = null;
 let adminMemberSearch = '';
+let adminWithdrawnCache = [];
+let adminMemberTab = 'active';
+let adminWithdrawBusy = false;
 let newOperationPanel = null;
 let copySettingsBaseline = null;
 let copySettingsBusy = false;
@@ -157,7 +161,7 @@ function enhanceGateApiForm() {
   connectionCard.innerHTML = `
     <div class="section-head"><h3>Gate.io API 연결</h3><span id="gateConnectionStatus" class="chip yellow">미연결</span></div>
     <form id="gateApiForm" class="form" autocomplete="off">
-      <div class="field"><label for="gateUid">Gate.io UID</label><input id="gateUid" inputmode="numeric" autocomplete="off" placeholder="Gate.io UID 입력" required></div>
+      <div class="field"><label for="gateUid">Gate.io UID</label><input id="gateUid" inputmode="numeric" autocomplete="off" placeholder="Gate.io UID 입력" aria-describedby="gateUidHint" required><small id="gateUidHint" class="field-hint hidden">가입한 Gate.io UID로 고정됩니다. 이 UID 계정에서 발급한 API만 연결할 수 있습니다.</small></div>
       <div class="field"><label for="gateApiKey">API Key</label><input id="gateApiKey" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="API Key 입력" required></div>
       <div class="field"><label for="gateSecretKey">Secret Key</label><input id="gateSecretKey" type="password" autocomplete="new-password" autocapitalize="off" spellcheck="false" placeholder="Secret Key 입력" required></div>
       <label class="permission-check"><input id="gatePermissionConfirmed" type="checkbox" required><span>Trading Account · Perpetual Futures Read/Write만 허용하고 출금 권한은 사용하지 않았습니다.</span></label>
@@ -179,10 +183,11 @@ function enhanceGateApiForm() {
   if (accountCard) accountCard.innerHTML = `
     <div class="section-head"><div><h3>계정 정보</h3><p>회원정보와 로그인 비밀번호를 관리합니다.</p></div></div>
     <div class="field"><label for="accountName">이름</label><input id="accountName" readonly></div>
-    <div class="field"><label for="accountEmail">이메일</label><input id="accountEmail" type="email" readonly></div>
+    <div class="field"><label for="accountEmail">아이디</label><input id="accountEmail" readonly></div>
     <form id="nicknameForm" class="form account-nickname-form" autocomplete="off"><div class="field"><label for="accountNickname">닉네임</label><input id="accountNickname" minlength="2" maxlength="20" placeholder="2~20자 닉네임" required></div><button id="nicknameSaveButton" class="btn" type="submit">닉네임 저장</button></form>
     <div class="account-password-divider"></div>
     <div id="passwordRecoveryNotice" class="notice password-recovery-notice hidden">재설정 링크가 확인되었습니다. 새 비밀번호를 입력해 주세요.</div>
+    <p class="account-password-help">관리자에게 임시 비밀번호를 받았다면 현재 비밀번호 칸에 입력하고 새 비밀번호로 변경해 주세요. 비밀번호를 잊으셨다면 관리자에게 문의하세요.</p>
     <form id="passwordChangeForm" class="form password-change-form" autocomplete="off">
       <div id="currentPasswordField" class="field"><label for="currentPassword">현재 비밀번호</label><input id="currentPassword" type="password" autocomplete="current-password" minlength="8" placeholder="현재 비밀번호"></div>
       <div class="field"><label for="newPassword">새 비밀번호</label><input id="newPassword" type="password" autocomplete="new-password" minlength="8" placeholder="8자 이상 새 비밀번호" required></div>
@@ -381,7 +386,7 @@ function enhanceAdminApiPage() {
 function enhanceAdminMembersPage() {
   const page = byId('admin-members');
   if (!page) return;
-  page.innerHTML = `<section class="card admin-pending-members"><div class="panel-title"><div><h3>가입 승인 대기</h3><p>승인 전 회원을 확인하고 접근 권한을 관리합니다.</p></div><span id="pendingCount" class="chip yellow">대기 0명</span></div><div class="table"><table><thead><tr><th>신청자</th><th>이메일</th><th>휴대폰</th><th>신청시간</th><th>관리</th></tr></thead><tbody id="pendingMembers"><tr><td colspan="5" class="empty-cell">승인 대기 회원을 불러오는 중입니다.</td></tr></tbody></table></div></section><section class="card admin-member-directory"><div class="panel-title"><div><h3>전체 회원</h3><p id="memberDirectorySummary">회원 상태와 실제 계좌 지표를 확인합니다.</p></div><input id="adminMemberSearch" class="admin-member-search" type="search" placeholder="회원 검색" aria-label="회원 검색"></div><div class="table"><table class="admin-members-table"><thead><tr><th>회원</th><th>카피 상태</th><th title="거래소 잔고 · 미실현 손익 제외">총 자산</th><th title="총 자산 + 미실현 손익">현재 자산</th><th>오늘 PNL</th><th>카피 비율</th><th>증거금 사용</th><th>API 상태</th><th>마지막 동기화</th><th>관리</th></tr></thead><tbody id="memberList"><tr><td colspan="10" class="empty-cell">회원 목록을 불러오는 중입니다.</td></tr></tbody></table></div></section>`;
+  page.innerHTML = `<div class="admin-period-tabs admin-member-tabs" role="tablist" aria-label="회원 구분"><button type="button" role="tab" data-member-tab="active" class="active" aria-selected="true">회원</button><button type="button" role="tab" data-member-tab="withdrawn" aria-selected="false">탈퇴 회원 <span id="withdrawnCount">0</span></button></div><section class="card admin-pending-members"><div class="panel-title"><div><h3>가입 승인 대기</h3><p>승인 전 회원을 확인하고 접근 권한을 관리합니다.</p></div><span id="pendingCount" class="chip yellow">대기 0명</span></div><div class="table"><table><thead><tr><th>신청자</th><th>아이디(UID)</th><th>휴대폰</th><th>신청시간</th><th>관리</th></tr></thead><tbody id="pendingMembers"><tr><td colspan="5" class="empty-cell">승인 대기 회원을 불러오는 중입니다.</td></tr></tbody></table></div></section><section class="card admin-member-directory" data-member-tab-panel="active"><div class="panel-title"><div><h3>전체 회원</h3><p id="memberDirectorySummary">회원 상태와 실제 계좌 지표를 확인합니다.</p></div><input id="adminMemberSearch" class="admin-member-search" type="search" placeholder="회원 검색" aria-label="회원 검색"></div><div class="table"><table class="admin-members-table"><thead><tr><th>회원</th><th>카피 상태</th><th title="거래소 잔고 · 미실현 손익 제외">총 자산</th><th title="총 자산 + 미실현 손익">현재 자산</th><th>오늘 PNL</th><th>카피 비율</th><th>증거금 사용</th><th>API 상태</th><th>마지막 동기화</th><th>관리</th></tr></thead><tbody id="memberList"><tr><td colspan="10" class="empty-cell">회원 목록을 불러오는 중입니다.</td></tr></tbody></table></div></section><section class="card admin-withdrawn-members hidden" data-member-tab-panel="withdrawn"><div class="panel-title"><div><h3>탈퇴 회원</h3><p>탈퇴 처리된 회원입니다. 거래·수익 기록은 보존되며, 복구하면 승인 대기로 돌아갑니다.</p></div></div><div class="table"><table class="admin-withdrawn-table"><thead><tr><th>회원</th><th>휴대폰</th><th>가입일</th><th>탈퇴일시</th><th>사유</th><th>관리</th></tr></thead><tbody id="withdrawnMembers"><tr><td colspan="6" class="empty-cell">탈퇴 회원을 불러오는 중입니다.</td></tr></tbody></table></div></section>`;
 }
 
 function enhanceMemberDetailModal() {
@@ -406,8 +411,13 @@ function enhanceMemberDetailModal() {
         </section>
         <section class="member-detail-panel hidden" data-member-detail-panel="security">
           <div id="memberPasswordResetActions" class="member-password-reset-actions hidden">
-            <div><h3>로그인 비밀번호</h3><p>회원에게 일회성 비밀번호 재설정 링크를 이메일로 전송합니다.</p></div>
-            <button id="memberPasswordResetButton" class="btn" type="button">비밀번호 재설정 메일 발송</button>
+            <div><h3>로그인 비밀번호</h3><p>회원이 비밀번호를 잊은 경우 임시 비밀번호를 발급합니다. 기존 비밀번호는 즉시 사용할 수 없게 됩니다.</p></div>
+            <button id="memberPasswordResetButton" class="btn" type="button">임시 비밀번호 발급</button>
+          </div>
+          <div id="memberTempPasswordResult" class="member-temp-password hidden" role="status" aria-live="polite">
+            <div class="member-temp-password-head"><b>임시 비밀번호</b><small>이 화면을 닫으면 다시 볼 수 없습니다.</small></div>
+            <div class="member-temp-password-row"><code id="memberTempPasswordValue" aria-label="임시 비밀번호"></code><button id="memberTempPasswordCopy" class="btn" type="button">복사</button></div>
+            <p>문자 메시지·메신저 등 회원 본인에게만 안전하게 전달하고, 로그인 후 계정 설정에서 새 비밀번호로 변경하도록 안내해 주세요.</p>
           </div>
         </section>
       </div>
@@ -667,8 +677,9 @@ function showApp(profile) {
   byId('memberNav').classList.toggle('hidden', role !== 'member');
   byId('adminNav').classList.toggle('hidden', role !== 'admin');
   byId('accountName').value = profile.full_name || '';
-  byId('accountEmail').value = profile.email || '';
+  byId('accountEmail').value = accountDisplayId(profile.gate_uid, profile.email) || '';
   if (byId('accountNickname')) byId('accountNickname').value = profile.nickname || '';
+  applyAccountGateUid();
   populateCopySettingsForm(profile);
   openPage(role === 'admin' ? 'admin-dashboard' : 'member-dashboard');
   loadCopySystemStatus();
@@ -744,38 +755,73 @@ window.authTab = (tab) => {
   showAuth(tab);
 };
 
+const SIGNUP_ERRORS = {
+  UID_TAKEN: '이미 가입 신청된 Gate.io UID입니다. 본인의 UID가 맞다면 관리자에게 문의해 주세요.',
+  INVALID_INPUT: '입력값을 확인해 주세요. UID는 숫자 4~15자리, 휴대폰은 숫자 8자리 이상, 비밀번호는 8~72자입니다.',
+};
+
+// Edge Function errors arrive as a non-2xx Response; read its { error } code without throwing.
+async function functionErrorCode(error) {
+  try {
+    const body = await error?.context?.json?.();
+    return typeof body?.error === 'string' ? body.error : '';
+  } catch {
+    return '';
+  }
+}
+
 window.signup = () => withAuthBusy(async () => {
   setAuthMessage();
   if (!configured) return setAuthMessage('Supabase 환경변수가 설정되지 않았습니다.');
+  const uid = byId('signupUid').value.trim();
   const fullName = byId('signupName').value.trim();
   const phone = byId('signupPhone').value.trim();
-  const email = byId('signupEmail').value.trim();
   const password = byId('signupPassword').value;
   const passwordConfirm = byId('signupPasswordConfirm').value;
   const terms = byId('signupTerms').checked;
-  if (!fullName || !phone || !email || password.length < 8) return setAuthMessage('이름, 휴대폰, 이메일과 8자 이상 비밀번호를 입력해 주세요.');
+  if (!isValidGateUid(uid)) return setAuthMessage('Gate.io UID는 숫자 4~15자리로 입력해 주세요.');
+  if (!fullName || [...fullName].length > 40) return setAuthMessage('이름을 40자 이내로 입력해 주세요.');
+  if (!/^[0-9+\- ]{8,20}$/.test(phone)) return setAuthMessage('휴대폰 번호를 숫자로 정확히 입력해 주세요.');
+  if (password.length < 8 || password.length > 72) return setAuthMessage('비밀번호는 8자 이상 72자 이하로 입력해 주세요.');
   if (password !== passwordConfirm) return setAuthMessage('비밀번호와 비밀번호 확인이 일치하지 않습니다.');
   if (!terms) return setAuthMessage('서비스 이용약관과 개인정보 처리방침에 동의해 주세요.');
-  const { data, error } = await supabase.auth.signUp({
-    email,
+  const body = {
+    uid,
     password,
-    options: { data: { full_name: fullName, phone, terms_accepted_at: new Date().toISOString(), terms_version: LEGAL_VERSION, privacy_version: LEGAL_VERSION } },
-  });
-  if (error) return setAuthMessage(error.message);
-  setPendingMessage('승인 대기', data.session
-    ? '관리자가 가입 정보를 확인한 뒤 승인합니다.'
-    : '이메일 인증 후 관리자 승인이 완료되어야 이용할 수 있습니다.');
-  showAuth('pending');
+    full_name: fullName,
+    phone,
+    terms_accepted_at: new Date().toISOString(),
+    terms_version: LEGAL_VERSION,
+    privacy_version: LEGAL_VERSION,
+  };
+  let result;
+  try {
+    result = await supabase.functions.invoke('uid-signup', { body });
+  } catch (error) {
+    result = { data: null, error };
+  }
+  if (result.error || !result.data?.ok) {
+    const code = result.data?.error || await functionErrorCode(result.error);
+    return setAuthMessage(SIGNUP_ERRORS[code] || '가입 신청을 처리하지 못했습니다. 잠시 후 다시 시도해 주세요.');
+  }
+  // No auto-login: the account waits for administrator approval.
+  byId('signupForm').reset();
+  showAuth('login');
+  byId('loginId').value = uid;
+  byId('loginPassword').value = '';
+  setAuthMessage('가입 신청이 접수되었습니다. 관리자 승인 후 로그인할 수 있습니다.', 'success');
 });
 
 window.login = () => withAuthBusy(async () => {
   setAuthMessage();
   if (!configured) return setAuthMessage('Supabase 환경변수가 설정되지 않았습니다.');
-  const email = byId('loginEmail').value.trim();
+  const loginId = byId('loginId').value.trim();
   const password = byId('loginPassword').value;
-  if (!email || !password) return setAuthMessage('이메일과 비밀번호를 입력해 주세요.');
+  if (!loginId || !password) return setAuthMessage('아이디와 비밀번호를 입력해 주세요.');
+  if (!loginId.includes('@') && !isValidGateUid(loginId)) return setAuthMessage('아이디는 가입한 Gate.io UID(숫자 4~15자리)입니다.');
+  const email = loginIdToEmail(loginId);
   const { data, error } = await supabase.auth.signInWithPassword({ email, password });
-  if (error) return setAuthMessage('이메일 또는 비밀번호를 확인해 주세요.');
+  if (error) return setAuthMessage('아이디 또는 비밀번호를 확인해 주세요. 비밀번호를 잊으셨다면 관리자에게 문의하세요.');
   await routeSession(data.session);
 });
 
@@ -804,7 +850,7 @@ async function changeMyPassword() {
   }
   try {
     if (!passwordRecoveryMode) {
-      const email = currentProfile?.email || byId('accountEmail')?.value;
+      const email = currentProfile?.email || '';
       const { error: verificationError } = await supabase.auth.signInWithPassword({ email, password: currentPassword });
       if (verificationError) return window.toast('현재 비밀번호가 올바르지 않습니다.');
     }
@@ -838,27 +884,73 @@ async function saveMyNickname() {
   window.toast('닉네임을 저장했습니다.');
 }
 
-async function requestMemberPasswordReset() {
+const TEMP_PASSWORD_ERRORS = {
+  ADMIN_REQUIRED: '승인된 관리자만 임시 비밀번호를 발급할 수 있습니다.',
+  AUTH_REQUIRED: '로그인이 만료되었습니다. 다시 로그인해 주세요.',
+  MEMBER_NOT_FOUND: '회원을 찾을 수 없습니다.',
+};
+
+function clearMemberTempPassword() {
+  const box = byId('memberTempPasswordResult');
+  if (!box) return;
+  box.classList.add('hidden');
+  if (byId('memberTempPasswordValue')) byId('memberTempPasswordValue').textContent = '';
+  if (byId('memberTempPasswordCopy')) byId('memberTempPasswordCopy').textContent = '복사';
+}
+
+// No email is sent: the administrator gets a one-time temporary password to hand over.
+async function issueMemberTemporaryPassword() {
   if (!supabase || currentProfile?.role !== 'ADMIN' || !selectedMemberId || adminPasswordResetBusy) return;
-  if (!window.confirm('이 회원에게 비밀번호 재설정 메일을 발송할까요?')) return;
+  const name = byId('memberDetailTitle')?.textContent?.trim() || '이 회원';
+  if (!window.confirm(`${name} 회원의 임시 비밀번호를 발급할까요?\n\n기존 비밀번호는 즉시 사용할 수 없게 됩니다. 발급된 비밀번호는 한 번만 표시됩니다.`)) return;
+  const userId = selectedMemberId;
   const button = byId('memberPasswordResetButton');
   adminPasswordResetBusy = true;
+  clearMemberTempPassword();
   if (button) {
     button.disabled = true;
-    button.textContent = '발송 중...';
+    button.textContent = '발급 중...';
   }
   try {
-    const { data, error } = await supabase.rpc('request_member_password_reset', { p_user_id: selectedMemberId });
-    if (error || !data?.email) return window.toast('관리자 권한 또는 회원 정보를 확인하지 못했습니다.');
-    const { error: mailError } = await supabase.auth.resetPasswordForEmail(data.email);
-    if (mailError) return window.toast(mailError.message || '재설정 메일 발송에 실패했습니다.');
-    window.toast(`${data.email}로 비밀번호 재설정 메일을 발송했습니다.`);
+    let result;
+    try {
+      result = await supabase.functions.invoke('admin-reset-password', { body: { user_id: userId } });
+    } catch (error) {
+      result = { data: null, error };
+    }
+    const password = result.data?.temporary_password;
+    if (result.error || !password) {
+      const code = result.data?.error || await functionErrorCode(result.error);
+      return window.toast(TEMP_PASSWORD_ERRORS[code] || '임시 비밀번호를 발급하지 못했습니다.', { kind: 'error' });
+    }
+    // The detail modal may have moved to another member meanwhile: never show it there.
+    if (selectedMemberId !== userId) return window.toast('임시 비밀번호가 발급되었지만 다른 회원 화면으로 바뀌어 표시하지 않았습니다. 다시 발급해 주세요.', { kind: 'error' });
+    byId('memberTempPasswordValue').textContent = password;
+    byId('memberTempPasswordResult').classList.remove('hidden');
+    byId('memberTempPasswordCopy')?.focus({ preventScroll: true });
+    window.toast('임시 비밀번호를 발급했습니다. 회원에게 안전하게 전달해 주세요.', { kind: 'success' });
   } finally {
     adminPasswordResetBusy = false;
     if (button) {
       button.disabled = false;
-      button.textContent = '비밀번호 재설정 메일 발송';
+      button.textContent = '임시 비밀번호 발급';
     }
+  }
+}
+
+async function copyMemberTempPassword() {
+  const value = byId('memberTempPasswordValue')?.textContent || '';
+  if (!value) return;
+  const button = byId('memberTempPasswordCopy');
+  try {
+    await navigator.clipboard.writeText(value);
+    if (button) button.textContent = '복사됨';
+  } catch {
+    const range = document.createRange();
+    range.selectNodeContents(byId('memberTempPasswordValue'));
+    window.getSelection()?.removeAllRanges();
+    window.getSelection()?.addRange(range);
+    window.toast('자동 복사가 차단되었습니다. 선택된 비밀번호를 직접 복사해 주세요.');
   }
 }
 
@@ -1183,7 +1275,7 @@ function renderAdminMasterPositions() {
   if (byId('masterLongCount')) byId('masterLongCount').textContent = String(longCount);
   if (byId('masterShortCount')) byId('masterShortCount').textContent = String(shortCount);
   if (byId('masterPositionBadge')) byId('masterPositionBadge').textContent = String(positions.length);
-  if (byId('adminPositionTitle')) byId('adminPositionTitle').textContent = isMaster ? '현재 포지션' : `${selectedMember?.name || selectedMember?.email || '회원'} 보유 포지션`;
+  if (byId('adminPositionTitle')) byId('adminPositionTitle').textContent = isMaster ? '현재 포지션' : `${selectedMember?.name || accountDisplayId(selectedMember?.gate_uid, selectedMember?.email) || '회원'} 보유 포지션`;
   if (byId('adminPositionDescription')) byId('adminPositionDescription').textContent = isMaster
     ? 'Gate.io에서 Worker가 확인한 Master 무기한 선물 포지션입니다.'
     : 'Gate.io Worker가 확인한 선택 회원의 실제 무기한 선물 포지션입니다.';
@@ -1215,7 +1307,7 @@ function renderAdminMasterPositions() {
 function renderAdminPositionOwnerOptions() {
   const select = byId('adminPositionOwner');
   if (!select) return;
-  select.innerHTML = '<option value="MASTER">Master 포지션</option>' + adminPositionMembers.map((member) => `<option value="${escapeHtml(member.user_id)}">${escapeHtml(member.name || member.email || '이름 없는 회원')}</option>`).join('');
+  select.innerHTML = '<option value="MASTER">Master 포지션</option>' + adminPositionMembers.map((member) => `<option value="${escapeHtml(member.user_id)}">${escapeHtml(member.name || accountDisplayId(member.gate_uid, member.email) || '이름 없는 회원')}</option>`).join('');
   if (!['MASTER', ...adminPositionMembers.map((member) => member.user_id)].includes(adminPositionOwner)) adminPositionOwner = 'MASTER';
   select.value = adminPositionOwner;
 }
@@ -1497,14 +1589,14 @@ async function loadAdminLiveData() {
     ...actionStates.map((state) => {
       const guide = stateGuides[state.state] || { label: '상태 확인 필요', guide: '현재 상태를 확인해야 합니다.' };
       return {
-        title: `${state.name || state.email || '-'} · ${state.contract} · ${guide.label}`,
+        title: `${state.name || accountDisplayId(state.gate_uid, state.email) || '-'} · ${state.contract} · ${guide.label}`,
         detail: `${guide.guide} 목표 수량 ${Number(state.target_size)} / 실제 수량 ${Number(state.actual_size)}`,
       };
     }),
     ...unknownOrders.map((order) => {
       const guide = orderGuides[order.status] || { label: '주문 확인 필요', guide: '주문 상태를 확인해야 합니다.' };
       return {
-        title: `${order.name || order.email || '-'} · ${order.contract} · ${guide.label}`,
+        title: `${order.name || accountDisplayId(order.gate_uid, order.email) || '-'} · ${order.contract} · ${guide.label}`,
         detail: `${guide.guide} 주문 수량 ${Number(order.delta_size)} / 체결 수량 ${Number(order.filled_size)}`,
       };
     }),
@@ -1541,8 +1633,8 @@ async function loadAdminLiveData() {
     const pnl = Number(position.unrealised_pnl || 0);
     return `<div class="admin-master-preview-card"><div>${positionLogo(position.contract)}<div><b>${escapeHtml(position.contract)}</b><small>무기한 선물</small></div></div><strong class="${signClass(pnl)}">${formatUsd(pnl)}</strong><span class="${size >= 0 ? 'pos' : 'neg'}">${size >= 0 ? 'LONG' : 'SHORT'} · ${Math.abs(size).toLocaleString()}</span></div>`;
   }).join('') : '<div class="member-chart-empty">현재 열린 마스터 포지션이 없습니다.</div>';
-  if (byId('adminLiveStates')) byId('adminLiveStates').innerHTML = states.length ? states.map((state) => `<tr><td>${escapeHtml(state.name || state.email || '-')}</td><td>${escapeHtml(state.contract)}</td><td>${Number(state.target_size)}</td><td>${Number(state.actual_size)}</td><td>${state.actual_notional == null ? '-' : formatAmount(Math.abs(Number(state.actual_notional)))}</td><td>${Number(state.delta_size)}</td><td>${stateChip(state.state)}${state.pause_reason ? `<small>${escapeHtml(state.pause_reason)}</small>` : ''}</td><td>${state.observed_at ? new Date(state.observed_at).toLocaleString('ko-KR') : '-'}</td></tr>`).join('') : '<tr><td colspan="8" class="empty-cell">회원 포지션 snapshot이 아직 없습니다.</td></tr>';
-  if (byId('adminLiveOrders')) byId('adminLiveOrders').innerHTML = orders.length ? orders.map((order) => `<tr><td>${escapeHtml(order.name || order.email || '-')}</td><td>${escapeHtml(order.contract)}</td><td>${Number(order.delta_size)}</td><td>${Number(order.filled_size)}</td><td>${stateChip(order.status)}${order.error_code ? `<small>${escapeHtml(order.error_code)}</small>` : ''}</td><td>${escapeHtml(order.gate_order_id || '-')}</td><td>${new Date(order.updated_at).toLocaleString('ko-KR')}</td></tr>`).join('') : '<tr><td colspan="7" class="empty-cell">실제 주문 내역이 아직 없습니다.</td></tr>';
+  if (byId('adminLiveStates')) byId('adminLiveStates').innerHTML = states.length ? states.map((state) => `<tr><td>${escapeHtml(state.name || accountDisplayId(state.gate_uid, state.email) || '-')}</td><td>${escapeHtml(state.contract)}</td><td>${Number(state.target_size)}</td><td>${Number(state.actual_size)}</td><td>${state.actual_notional == null ? '-' : formatAmount(Math.abs(Number(state.actual_notional)))}</td><td>${Number(state.delta_size)}</td><td>${stateChip(state.state)}${state.pause_reason ? `<small>${escapeHtml(state.pause_reason)}</small>` : ''}</td><td>${state.observed_at ? new Date(state.observed_at).toLocaleString('ko-KR') : '-'}</td></tr>`).join('') : '<tr><td colspan="8" class="empty-cell">회원 포지션 snapshot이 아직 없습니다.</td></tr>';
+  if (byId('adminLiveOrders')) byId('adminLiveOrders').innerHTML = orders.length ? orders.map((order) => `<tr><td>${escapeHtml(order.name || accountDisplayId(order.gate_uid, order.email) || '-')}</td><td>${escapeHtml(order.contract)}</td><td>${Number(order.delta_size)}</td><td>${Number(order.filled_size)}</td><td>${stateChip(order.status)}${order.error_code ? `<small>${escapeHtml(order.error_code)}</small>` : ''}</td><td>${escapeHtml(order.gate_order_id || '-')}</td><td>${new Date(order.updated_at).toLocaleString('ko-KR')}</td></tr>`).join('') : '<tr><td colspan="7" class="empty-cell">실제 주문 내역이 아직 없습니다.</td></tr>';
 }
 
 // Single definition of the dashboard "확인 필요" KPI: approved members that are not copying
@@ -1663,7 +1755,7 @@ async function loadAdminOperationalEvents() {
   if (!tbody) return;
   if (error) return void (tbody.innerHTML = '<tr><td colspan="6" class="empty-cell neg">운영 이벤트를 불러오지 못했습니다.</td></tr>');
   const events = Array.isArray(data) ? data : [];
-  tbody.innerHTML = events.length ? events.map((event) => `<tr><td>${new Date(event.occurred_at).toLocaleString('ko-KR')}</td><td>${escapeHtml(event.name || event.email || 'SYSTEM')}</td><td>${escapeHtml(event.contract || '-')}</td><td>${escapeHtml(event.type)}</td><td>${stateChip(event.severity)}</td><td class="payload-cell">${escapeHtml(compactPayload(event.payload))}</td></tr>`).join('') : '<tr><td colspan="6" class="empty-cell">아직 기록된 운영 이벤트가 없습니다.</td></tr>';
+  tbody.innerHTML = events.length ? events.map((event) => `<tr><td>${new Date(event.occurred_at).toLocaleString('ko-KR')}</td><td>${escapeHtml(event.name || accountDisplayId(event.gate_uid, event.email) || 'SYSTEM')}</td><td>${escapeHtml(event.contract || '-')}</td><td>${escapeHtml(event.type)}</td><td>${stateChip(event.severity)}</td><td class="payload-cell">${escapeHtml(compactPayload(event.payload))}</td></tr>`).join('') : '<tr><td colspan="6" class="empty-cell">아직 기록된 운영 이벤트가 없습니다.</td></tr>';
 }
 
 function auditDetail(log) {
@@ -1683,7 +1775,7 @@ async function loadAdminAuditLog() {
   if (!tbody) return;
   if (error) return void (tbody.innerHTML = '<tr><td colspan="5" class="empty-cell neg">감사 기록을 불러오지 못했습니다.</td></tr>');
   const logs = Array.isArray(data) ? data : [];
-  tbody.innerHTML = logs.length ? logs.map((log) => `<tr><td>${new Date(log.created_at).toLocaleString('ko-KR')}</td><td>${escapeHtml(log.actor_name || log.actor_email || '시스템')}</td><td>${escapeHtml(auditActionLabel(log.action))}</td><td>${escapeHtml(log.target_name || log.target_email || '-')}</td><td class="payload-cell">${escapeHtml(auditDetail(log))}</td></tr>`).join('') : '<tr><td colspan="5" class="empty-cell">아직 기록된 관리자 작업이 없습니다.</td></tr>';
+  tbody.innerHTML = logs.length ? logs.map((log) => `<tr><td>${new Date(log.created_at).toLocaleString('ko-KR')}</td><td>${escapeHtml(log.actor_name || accountDisplayId(log.actor_gate_uid, log.actor_email) || '시스템')}</td><td>${escapeHtml(auditActionLabel(log.action))}</td><td>${escapeHtml(log.target_name || accountDisplayId(log.target_gate_uid, log.target_email) || '-')}</td><td class="payload-cell">${escapeHtml(auditDetail(log))}</td></tr>`).join('') : '<tr><td colspan="5" class="empty-cell">아직 기록된 관리자 작업이 없습니다.</td></tr>';
 }
 
 function executionStatusMeta(status) {
@@ -1752,7 +1844,7 @@ async function loadAdminExecutionStatus() {
   const selectedMember = memberSelect?.value || '';
   const members = Array.isArray(data?.members) ? data.members : [];
   if (memberSelect) {
-    memberSelect.innerHTML = `<option value="">전체 회원</option>${members.map((member) => `<option value="${escapeHtml(member.id)}">${escapeHtml(member.name || member.email)}${member.name && member.email ? ` · ${escapeHtml(member.email)}` : ''}</option>`).join('')}`;
+    memberSelect.innerHTML = `<option value="">전체 회원</option>${members.map((member) => `<option value="${escapeHtml(member.id)}">${escapeHtml(member.name || accountDisplayId(member.gate_uid, member.email))}${member.name && (member.gate_uid || member.email) ? ` · ${escapeHtml(accountDisplayId(member.gate_uid, member.email))}` : ''}</option>`).join('')}`;
     memberSelect.value = selectedMember;
   }
   const rows = Array.isArray(data?.rows) ? data.rows : [];
@@ -1761,7 +1853,7 @@ async function loadAdminExecutionStatus() {
     const side = row.position_side === 'SHORT' ? '<span class="neg">SHORT</span>' : '<span class="pos">LONG</span>';
     const sizes = `${Number(row.target_size || 0).toLocaleString()} / ${Number(row.delta_size || 0).toLocaleString()} / ${Number(row.filled_size || 0).toLocaleString()}`;
     const orderId = row.gate_order_id || (row.record_type === 'STATE' ? '주문 미생성' : '-');
-    return `<tr><td>${new Date(row.occurred_at).toLocaleString('ko-KR')}</td><td><b>${escapeHtml(row.member_name || '-')}</b><small class="execution-member-email">${escapeHtml(row.member_email || '')}</small></td><td><b>${escapeHtml(row.contract || '-')}</b><small class="execution-side">${side}</small></td><td>${escapeHtml(sizes)}</td><td><span class="${statusClass}" title="${escapeHtml(row.status || '')}">${escapeHtml(statusLabel)}</span></td><td>${escapeHtml(orderId)}</td><td class="execution-reason">${escapeHtml(executionReasonLabel(row))}</td></tr>`;
+    return `<tr><td>${new Date(row.occurred_at).toLocaleString('ko-KR')}</td><td><b>${escapeHtml(row.member_name || '-')}</b><small class="execution-member-email">${escapeHtml(accountDisplayId(row.member_gate_uid, row.member_email))}</small></td><td><b>${escapeHtml(row.contract || '-')}</b><small class="execution-side">${side}</small></td><td>${escapeHtml(sizes)}</td><td><span class="${statusClass}" title="${escapeHtml(row.status || '')}">${escapeHtml(statusLabel)}</span></td><td>${escapeHtml(orderId)}</td><td class="execution-reason">${escapeHtml(executionReasonLabel(row))}</td></tr>`;
   }).join('') : '<tr><td colspan="7" class="empty-cell">선택한 조건에 해당하는 체결·차단 기록이 없습니다.</td></tr>';
 }
 
@@ -1771,6 +1863,8 @@ function auditActionLabel(action) {
     COPY_SYSTEM_CONTROL_UPDATED: '전체 카피 제어 변경',
     MEMBER_COPY_CONTROL_UPDATED: '회원 카피 상태 변경',
     MEMBER_COPY_SETTINGS_UPDATED: '회원 비중 변경',
+    MEMBER_WITHDRAWN: '회원 탈퇴 처리',
+    MEMBER_RESTORED: '탈퇴 회원 복구',
     MEMBER_NEW_OPERATION_STARTED: '회원 새 운용 기준 설정',
     LIVE_COPY_ENABLED: '실거래 카피 활성화',
     LIVE_COPY_HALTED: '실거래 카피 중단',
@@ -1811,7 +1905,7 @@ function renderAdminMemberWeightSettings(member) {
 }
 
 function setMemberDetailActionsDisabled(disabled) {
-  document.querySelectorAll('#memberDetailModal [data-member-control], #memberDetailModal [data-member-weight-save], #memberDetailModal [data-new-operation-open], #adminMemberCopyRatio, #adminMemberMaxPositionRatio')
+  document.querySelectorAll('#memberDetailModal [data-member-control], #memberDetailModal [data-member-weight-save], #memberDetailModal [data-new-operation-open], #memberDetailModal [data-member-withdraw], #adminMemberCopyRatio, #adminMemberMaxPositionRatio')
     .forEach((element) => { element.disabled = disabled; });
 }
 
@@ -1915,6 +2009,19 @@ async function disconnectAdminMasterGateApi() {
   });
 }
 
+// A Gate UID account can connect only its signup UID: prefill it and lock the field.
+function applyAccountGateUid() {
+  const input = byId('gateUid');
+  if (!input) return;
+  const accountUid = currentProfile?.role === 'MEMBER' ? String(currentProfile.gate_uid || '') : '';
+  input.readOnly = Boolean(accountUid);
+  if (accountUid) {
+    input.value = accountUid;
+    delete input.dataset.dirty;
+  }
+  byId('gateUidHint')?.classList.toggle('hidden', !accountUid);
+}
+
 // Polling must never overwrite what the user is typing: skip focused or edited inputs.
 function setInputIfIdle(input, value) {
   if (!input || document.activeElement === input || input.dataset.dirty === 'true') return;
@@ -1943,9 +2050,11 @@ function renderGateConnection(connection) {
     byId('gateWithdrawal').textContent = '확인 대기';
     byId('gateWithdrawal').className = 'warn';
     if (byId('memberTradeGateUid')) byId('memberTradeGateUid').textContent = 'Gate.io API 미연결';
+    applyAccountGateUid();
     return;
   }
   setInputIfIdle(byId('gateUid'), connection.gate_uid || '');
+  applyAccountGateUid();
   if (byId('memberTradeGateUid')) byId('memberTradeGateUid').textContent = `UID ${connection.gate_uid ? `****${String(connection.gate_uid).slice(-4)}` : '-'} · 선물 계정`;
   byId('gateApiKey').placeholder = connection.api_key_last4 ? `저장됨 ····${connection.api_key_last4}` : 'API Key 입력';
   const hasStoredCredential = Boolean(connection.api_key_last4);
@@ -2140,7 +2249,7 @@ async function loadGateConnection(showError = true) {
 
 async function saveGateApiCredentials() {
   if (!supabase || !currentProfile || gateApiBusy) return;
-  const gateUid = byId('gateUid').value.trim();
+  const gateUid = String(currentProfile.gate_uid || '') || byId('gateUid').value.trim();
   const apiKey = byId('gateApiKey').value.trim();
   const secretKey = byId('gateSecretKey').value.trim();
   const permissionConfirmed = byId('gatePermissionConfirmed').checked;
@@ -2172,6 +2281,9 @@ async function saveGateApiCredentials() {
   button.disabled = false;
   button.textContent = isReverification ? '저장된 API 재검증' : '저장 및 연결 검증';
   gateApiBusy = false;
+  if (error && String(error.message || '').includes('GATE_UID_MUST_MATCH_ACCOUNT')) {
+    return window.toast('가입한 Gate.io UID와 같은 계정의 API만 연결할 수 있습니다. UID를 확인해 주세요.', { kind: 'error' });
+  }
   if (error) return window.toast(isReverification
     ? '저장된 API의 재검증을 요청하지 못했습니다.'
     : 'API 정보를 저장하지 못했습니다. 입력값을 확인해 주세요.');
@@ -2371,7 +2483,7 @@ async function loadAdminAnalysisMembers() {
   if (!supabase || currentProfile?.role !== 'ADMIN') return;
   const list = byId('adminAnalysisMemberList');
   if (!list || list.dataset.loaded === 'true') return;
-  const { data, error } = await supabase.from('profiles').select('id,full_name,email').eq('role', 'MEMBER').eq('approval_status', 'APPROVED');
+  const { data, error } = await supabase.from('profiles').select('id,full_name,email,gate_uid').eq('role', 'MEMBER').eq('approval_status', 'APPROVED');
   if (error) return window.toast('수익 조회 회원을 불러오지 못했습니다.');
   list.dataset.loaded = 'true';
   adminAnalysisMembers = Array.isArray(data) ? data : [];
@@ -2383,8 +2495,8 @@ async function loadAdminAnalysisMembers() {
 function renderAdminAnalysisMembers() {
   const list = byId('adminAnalysisMemberList');
   if (!list) return;
-  const members = [...adminAnalysisMembers].sort((left, right) => String(left.full_name || left.email || '').localeCompare(String(right.full_name || right.email || ''), 'ko'));
-  list.innerHTML = members.length ? members.map((member) => `<button type="button" data-analysis-member="${escapeHtml(member.id)}" class="${member.id === adminAnalysisSelectedUserId ? 'active' : ''}" aria-pressed="${member.id === adminAnalysisSelectedUserId}"><b>${escapeHtml(member.full_name || '-')}</b><small>${escapeHtml(member.email || '-')}</small></button>`).join('') : '<span class="notice">조회할 승인 회원이 없습니다.</span>';
+  const members = [...adminAnalysisMembers].sort((left, right) => String(left.full_name || accountDisplayId(left.gate_uid, left.email)).localeCompare(String(right.full_name || accountDisplayId(right.gate_uid, right.email)), 'ko'));
+  list.innerHTML = members.length ? members.map((member) => `<button type="button" data-analysis-member="${escapeHtml(member.id)}" class="${member.id === adminAnalysisSelectedUserId ? 'active' : ''}" aria-pressed="${member.id === adminAnalysisSelectedUserId}"><b>${escapeHtml(member.full_name || '-')}</b><small>${escapeHtml(accountDisplayId(member.gate_uid, member.email) || '-')}</small></button>`).join('') : '<span class="notice">조회할 승인 회원이 없습니다.</span>';
 }
 
 function setAdminAnalysisDateRange(days = adminAnalysisRangeDays) {
@@ -2423,6 +2535,7 @@ function closeMemberDetail() {
   newOperationPanel?.clear();
   const modal = byId('memberDetailModal');
   if (!modal) return;
+  clearMemberTempPassword();
   closeModal(modal);
   selectedMemberId = null;
 }
@@ -2450,6 +2563,7 @@ async function openMemberDetail(userId) {
   byId('memberDetailSummary').innerHTML = '';
   setMemberDetailTab('overview');
   byId('memberPasswordResetActions')?.classList.add('hidden');
+  clearMemberTempPassword();
   byId('memberMonthlyPerformance').innerHTML = '<tr><td colspan="6" class="empty-cell">월별 수익을 불러오는 중입니다.</td></tr>';
   memberDetailBusy = true;
   const { data, error } = await supabase.rpc('get_admin_member_monthly_performance', {
@@ -2465,7 +2579,7 @@ async function openMemberDetail(userId) {
   const member = data?.member || {};
   const months = Array.isArray(data?.months) ? data.months : [];
   byId('memberDetailTitle').textContent = member.full_name || '-';
-  byId('memberDetailEmail').textContent = member.email || '-';
+  byId('memberDetailEmail').textContent = accountDisplayId(member.gate_uid, member.email) || '-';
   byId('memberDetailStatus').textContent = APPROVAL_STATUS_LABELS[member.approval_status] || (member.approval_status ? '확인 필요' : '-');
   byId('memberDetailStatus').className = member.approval_status === 'APPROVED' ? 'chip' : member.approval_status === 'REJECTED' ? 'chip red' : 'chip yellow';
   byId('memberDetailSummary').innerHTML = `
@@ -2474,7 +2588,8 @@ async function openMemberDetail(userId) {
     <div><small>최대 포지션 비중</small><b>${Number(member.max_position_ratio ?? 30)}%</b></div>
     <div><small>가입일</small><b>${member.created_at ? new Date(member.created_at).toLocaleDateString('ko-KR') : '-'}</b></div>
     ${member.role === 'MEMBER' ? renderAdminMemberWeightSettings(member) : ''}
-    ${member.role === 'MEMBER' ? '<div class="member-control-actions"><small>관리자 카피 제어</small><div class="actions"><button class="btn" type="button" data-member-control="PAUSE">일시중지</button><button class="btn" type="button" data-member-control="REDUCE_ONLY">축소 전용</button><button class="btn red" type="button" data-member-control="HALT">중단</button><button class="btn green" type="button" data-member-control="RESUME">재개</button><button class="btn" type="button" data-new-operation-open>새 운용 시작</button></div></div>' : ''}`;
+    ${member.role === 'MEMBER' ? '<div class="member-control-actions"><small>관리자 카피 제어</small><div class="actions"><button class="btn" type="button" data-member-control="PAUSE">일시중지</button><button class="btn" type="button" data-member-control="REDUCE_ONLY">축소 전용</button><button class="btn red" type="button" data-member-control="HALT">중단</button><button class="btn green" type="button" data-member-control="RESUME">재개</button><button class="btn" type="button" data-new-operation-open>새 운용 시작</button></div></div>' : ''}
+    ${member.role === 'MEMBER' && !member.withdrawn_at ? '<div class="member-control-actions member-withdraw-actions"><small>회원 탈퇴</small><div class="actions"><button class="btn red" type="button" data-member-withdraw>회원 탈퇴 처리</button></div><p class="muted">카피 중단·로그인 차단·API 키 폐기. 기록은 보존되고 탈퇴 회원 탭에서 복구할 수 있습니다.</p></div>' : ''}`;
   byId('memberPasswordResetActions')?.classList.toggle('hidden', member.role !== 'MEMBER');
   byId('memberMonthlyPerformance').innerHTML = months.length ? months.map((month) => {
     const netPnl = Number(month.net_pnl || 0);
@@ -2511,12 +2626,98 @@ function getMemberCopyProgress(profile, connection, positionStates = []) {
   return { label: '카피 진행 중', detail: 'API 연결 정상 · 포지션 동기화', className: 'chip' };
 }
 
+function renderAdminWithdrawnRows() {
+  if (byId('withdrawnCount')) byId('withdrawnCount').textContent = String(adminWithdrawnCache.length);
+  const body = byId('withdrawnMembers');
+  if (!body) return;
+  body.innerHTML = adminWithdrawnCache.length ? adminWithdrawnCache.map((member) => {
+    const accountId = accountDisplayId(member.gate_uid, member.email);
+    const name = member.full_name || accountId || '회원';
+    return `<tr><td><div class="admin-member-identity"><span>${escapeHtml(String(name).slice(0, 1))}</span><div><b>${escapeHtml(member.full_name || '-')}</b><small>${escapeHtml(accountId || '-')}</small></div></div></td>`
+      + `<td>${escapeHtml(member.phone || '-')}</td>`
+      + `<td>${member.created_at ? escapeHtml(new Date(member.created_at).toLocaleDateString('ko-KR')) : '-'}</td>`
+      + `<td>${member.withdrawn_at ? escapeHtml(new Date(member.withdrawn_at).toLocaleString('ko-KR')) : '-'}</td>`
+      + `<td class="withdrawal-reason">${escapeHtml(member.withdrawal_reason || '-')}</td>`
+      + `<td class="table-actions"><button class="btn" type="button" data-member-restore="${escapeHtml(member.id)}" data-member-name="${escapeHtml(name)}">복구</button></td></tr>`;
+  }).join('') : '<tr><td colspan="6" class="empty-cell">탈퇴 회원이 없습니다.</td></tr>';
+}
+
+function setAdminMemberTab(tab) {
+  adminMemberTab = tab === 'withdrawn' ? 'withdrawn' : 'active';
+  document.querySelectorAll('[data-member-tab]').forEach((button) => {
+    const active = button.dataset.memberTab === adminMemberTab;
+    button.classList.toggle('active', active);
+    button.setAttribute('aria-selected', String(active));
+  });
+  document.querySelectorAll('[data-member-tab-panel]').forEach((panel) => {
+    panel.classList.toggle('hidden', panel.dataset.memberTabPanel !== adminMemberTab);
+  });
+  document.querySelector('#admin-members .admin-pending-members')?.classList.toggle('hidden', adminMemberTab === 'withdrawn');
+}
+
+const WITHDRAW_ERRORS = {
+  MEMBER_HAS_UNRESOLVED_ORDERS: '결과를 확인 중인 주문이 있어 지금은 탈퇴 처리할 수 없습니다. 1~2분 뒤 다시 시도해 주세요.',
+  MEMBER_ALREADY_WITHDRAWN: '이미 탈퇴 처리된 회원입니다.',
+  MEMBER_NOT_FOUND: '회원을 찾을 수 없습니다.',
+  ADMIN_REQUIRED: '관리자만 처리할 수 있습니다.',
+};
+
+async function withdrawAdminMember() {
+  if (!selectedMemberId || currentProfile?.role !== 'ADMIN' || adminWithdrawBusy || adminControlBusy || adminWeightBusy) return;
+  const name = byId('memberDetailTitle')?.textContent?.trim() || '회원';
+  if (!window.confirm(`${name} 회원을 탈퇴 처리할까요?\n\n• 카피가 즉시 중단되고 로그인할 수 없게 됩니다.\n• 저장된 Gate API 키가 폐기됩니다.\n• Gate에 남은 포지션은 시스템이 더 이상 관리하지 않습니다(회원이 직접 정리).\n• 거래·수익·감사 기록은 보존되며 '탈퇴 회원' 탭에서 복구할 수 있습니다.`)) return;
+  const typed = window.prompt(`확인을 위해 회원 이름 "${name}"을(를) 입력해 주세요.`);
+  if (typed == null) return;
+  if (typed.trim() !== name) return window.toast('이름이 일치하지 않아 취소했습니다.', { kind: 'error' });
+  const reason = window.prompt('탈퇴 사유를 입력해 주세요. (선택, 비워도 됩니다)') ?? '';
+  adminWithdrawBusy = true;
+  setMemberDetailActionsDisabled(true);
+  let data = null; let error = null;
+  try {
+    ({ data, error } = await supabase.rpc('admin_withdraw_member', {
+      p_user_id: selectedMemberId, p_confirmation: 'ADMIN_WITHDRAW_MEMBER', p_reason: reason.trim() || null,
+    }));
+  } finally {
+    adminWithdrawBusy = false;
+    setMemberDetailActionsDisabled(false);
+  }
+  if (error) {
+    const code = Object.keys(WITHDRAW_ERRORS).find((key) => String(error.message || '').includes(key));
+    return window.toast(code ? WITHDRAW_ERRORS[code] : '탈퇴 처리하지 못했습니다.', { kind: 'error' });
+  }
+  const openPositions = Number(data?.open_positions || 0);
+  window.toast(openPositions > 0
+    ? `탈퇴 처리했습니다. Gate에 남은 포지션 ${openPositions}개는 회원이 직접 정리해야 합니다.`
+    : '탈퇴 처리했습니다.', { kind: 'success' });
+  invalidateSharedRpc('get_admin_operations_metrics', 'get_admin_live_trading_data', 'get_admin_gate_api_connections');
+  closeMemberDetail();
+  await loadAdminMembers();
+}
+
+async function restoreAdminMember(userId, name, button) {
+  if (!userId || currentProfile?.role !== 'ADMIN' || adminWithdrawBusy) return;
+  if (!window.confirm(`${name || '회원'} 회원을 복구할까요?\n\n로그인이 다시 가능해지고 '가입 승인 대기'로 돌아갑니다. 승인 후 회원이 Gate API를 다시 연결하고 카피를 재개해야 합니다.`)) return;
+  adminWithdrawBusy = true;
+  if (button) button.disabled = true;
+  let error = null;
+  try {
+    ({ error } = await supabase.rpc('admin_restore_withdrawn_member', { p_user_id: userId }));
+  } finally {
+    adminWithdrawBusy = false;
+    if (button) button.disabled = false;
+  }
+  if (error) return window.toast('회원을 복구하지 못했습니다.', { kind: 'error' });
+  window.toast('복구했습니다. 가입 승인 대기에서 승인해 주세요.', { kind: 'success' });
+  await loadAdminMembers();
+  setAdminMemberTab('active');
+}
+
 async function loadAdminMembers() {
   if (!supabase || currentProfile?.role !== 'ADMIN') return;
   const ticket = ++adminMembersRequestSeq;
   const today = kstDate();
   const [profilesResult, connectionsResult, liveResult, metricsResult] = await Promise.all([
-    supabase.from('profiles').select('id,email,full_name,phone,approval_status,role,copy_ratio,max_position_ratio,copy_paused,member_halted,reduce_only,created_at').order('created_at', { ascending: false }),
+    supabase.from('profiles').select('id,email,gate_uid,full_name,phone,approval_status,role,copy_ratio,max_position_ratio,copy_paused,member_halted,reduce_only,created_at,withdrawn_at,withdrawal_reason').order('created_at', { ascending: false }),
     sharedRpc('get_admin_gate_api_connections'),
     sharedRpc('get_admin_live_trading_data'),
     sharedRpc('get_admin_operations_metrics', { p_start_date: today, p_end_date: today }),
@@ -2537,14 +2738,17 @@ async function loadAdminMembers() {
     map.get(key).push(state);
     return map;
   }, new Map());
-  const pending = data.filter((profile) => profile.approval_status === 'PENDING');
+  adminWithdrawnCache = data.filter((profile) => profile.role === 'MEMBER' && profile.withdrawn_at)
+    .sort((a, b) => String(b.withdrawn_at).localeCompare(String(a.withdrawn_at)));
+  renderAdminWithdrawnRows();
+  const pending = data.filter((profile) => profile.approval_status === 'PENDING' && !profile.withdrawn_at);
   byId('pendingCount').textContent = `대기 ${pending.length}명`;
   byId('pendingMembers').innerHTML = pending.length ? pending.map((profile) => `
-    <tr><td>${escapeHtml(profile.full_name || '-')}</td><td>${escapeHtml(profile.email || '-')}</td><td>${escapeHtml(profile.phone || '-')}</td><td>${new Date(profile.created_at).toLocaleString('ko-KR')}</td><td class="table-actions"><button class="btn green" type="button" data-approval="APPROVED" data-user-id="${escapeHtml(profile.id)}" data-member-name="${escapeHtml(profile.full_name || profile.email || '신청자')}">승인</button> <button class="btn red" type="button" data-approval="REJECTED" data-user-id="${escapeHtml(profile.id)}" data-member-name="${escapeHtml(profile.full_name || profile.email || '신청자')}">거절</button></td></tr>
+    <tr><td>${escapeHtml(profile.full_name || '-')}</td><td>${escapeHtml(accountDisplayId(profile.gate_uid, profile.email) || '-')}</td><td>${escapeHtml(profile.phone || '-')}</td><td>${new Date(profile.created_at).toLocaleString('ko-KR')}</td><td class="table-actions"><button class="btn green" type="button" data-approval="APPROVED" data-user-id="${escapeHtml(profile.id)}" data-member-name="${escapeHtml(profile.full_name || accountDisplayId(profile.gate_uid, profile.email) || '신청자')}">승인</button> <button class="btn red" type="button" data-approval="REJECTED" data-user-id="${escapeHtml(profile.id)}" data-member-name="${escapeHtml(profile.full_name || accountDisplayId(profile.gate_uid, profile.email) || '신청자')}">거절</button></td></tr>
   `).join('') : '<tr><td colspan="5" class="empty-cell">승인 대기 회원이 없습니다.</td></tr>';
   const metricRows = new Map((Array.isArray(metricsResult.data?.members) ? metricsResult.data.members : []).map((member) => [member.id, member]));
   adminMasterAccount = metricsResult.data?.master || null;
-  adminMembersCache = data.filter((profile) => profile.role === 'MEMBER' && profile.approval_status !== 'PENDING').map((profile) => {
+  adminMembersCache = data.filter((profile) => profile.role === 'MEMBER' && profile.approval_status !== 'PENDING' && !profile.withdrawn_at).map((profile) => {
     const metric = metricRows.get(profile.id) || {};
     const progress = getMemberCopyProgress(profile, connectionByUserId.get(profile.id), statesByEmail.get(String(profile.email || '').toLowerCase()) || []);
     return { ...profile, ...metric, fallback_progress: progress, connection: connectionByUserId.get(profile.id) || null };
@@ -2566,14 +2770,14 @@ function renderAdminEquityCells(account) {
 
 function renderAdminMasterRow(master) {
   const observed = master.last_observed_at ? new Date(master.last_observed_at).toLocaleString('ko-KR') : '-';
-  return `<tr class="admin-master-row"><td><div class="admin-member-identity"><span>M</span><div><b>Master · 내 계정</b><small>${escapeHtml(master.email || master.full_name || '-')}</small></div></div></td><td><span class="chip">마스터</span></td>${renderAdminEquityCells(master)}<td>-</td><td>-</td><td>-</td><td>-</td><td>${observed}</td><td class="table-actions">-</td></tr>`;
+  return `<tr class="admin-master-row"><td><div class="admin-member-identity"><span>M</span><div><b>Master · 내 계정</b><small>${escapeHtml(accountDisplayId(master.gate_uid, master.email) || master.full_name || '-')}</small></div></div></td><td><span class="chip">마스터</span></td>${renderAdminEquityCells(master)}<td>-</td><td>-</td><td>-</td><td>-</td><td>${observed}</td><td class="table-actions">-</td></tr>`;
 }
 
 function renderAdminMemberRows() {
   const tableBody = byId('memberList');
   if (!tableBody) return;
   const query = adminMemberSearch.trim().toLowerCase();
-  const rows = adminMembersCache.filter((member) => !query || `${member.full_name || ''} ${member.email || ''}`.toLowerCase().includes(query));
+  const rows = adminMembersCache.filter((member) => !query || `${member.full_name || ''} ${member.gate_uid || ''} ${accountDisplayId(member.gate_uid, member.email)}`.toLowerCase().includes(query));
   const statusMeta = {
     COPYING: ['카피 중', 'chip'], PAUSED: ['일시 정지', 'chip yellow'], HALTED: ['중단', 'chip red'],
     REDUCE_ONLY: ['축소 전용', 'chip yellow'], API_ERROR: ['API 오류', 'chip red'], ERROR: ['주문 오류', 'chip red'],
@@ -2585,7 +2789,7 @@ function renderAdminMemberRows() {
     const pnl = member.today_pnl == null ? null : Number(member.today_pnl);
     const apiStatus = member.api_status || member.connection?.status || 'NOT_CONNECTED';
     const apiLabel = apiStatus === 'VERIFIED' ? '정상' : apiStatus === 'ERROR' ? '권한 오류' : apiStatus === 'DISABLED' ? '연결 해제' : '확인 필요';
-    return `<tr><td><div class="admin-member-identity"><span>${escapeHtml(String(member.full_name || member.email || '?').slice(0, 1))}</span><div><b>${escapeHtml(member.full_name || '-')}</b><small>${escapeHtml(member.email || '-')}</small></div></div></td><td><span class="${status[1]}">${escapeHtml(status[0])}</span></td>${renderAdminEquityCells(member)}<td class="${pnl == null ? '' : signClass(pnl)}"><b>${pnl == null ? '-' : formatUsd(pnl)}</b></td><td>${Number(member.copy_ratio ?? 100)}%</td><td><div class="member-margin-cell"><b>${Number(member.margin_usage_pct || 0).toFixed(1)}%</b><div><i style="width:${Math.min(100, Math.max(0, Number(member.margin_usage_pct || 0)))}%"></i></div></div></td><td class="${apiStatus === 'VERIFIED' ? 'pos' : 'neg'}">${escapeHtml(apiLabel)}</td><td>${member.last_observed_at ? new Date(member.last_observed_at).toLocaleString('ko-KR') : '-'}</td><td class="table-actions"><button class="btn" type="button" data-member-detail="${escapeHtml(member.id)}" aria-label="${escapeHtml(`${member.full_name || member.email || '회원'} 상세 보기`)}">상세</button></td></tr>`;
+    return `<tr><td><div class="admin-member-identity"><span>${escapeHtml(String(member.full_name || accountDisplayId(member.gate_uid, member.email) || '?').slice(0, 1))}</span><div><b>${escapeHtml(member.full_name || '-')}</b><small>${escapeHtml(accountDisplayId(member.gate_uid, member.email) || '-')}</small></div></div></td><td><span class="${status[1]}">${escapeHtml(status[0])}</span></td>${renderAdminEquityCells(member)}<td class="${pnl == null ? '' : signClass(pnl)}"><b>${pnl == null ? '-' : formatUsd(pnl)}</b></td><td>${Number(member.copy_ratio ?? 100)}%</td><td><div class="member-margin-cell"><b>${Number(member.margin_usage_pct || 0).toFixed(1)}%</b><div><i style="width:${Math.min(100, Math.max(0, Number(member.margin_usage_pct || 0)))}%"></i></div></div></td><td class="${apiStatus === 'VERIFIED' ? 'pos' : 'neg'}">${escapeHtml(apiLabel)}</td><td>${member.last_observed_at ? new Date(member.last_observed_at).toLocaleString('ko-KR') : '-'}</td><td class="table-actions"><button class="btn" type="button" data-member-detail="${escapeHtml(member.id)}" aria-label="${escapeHtml(`${member.full_name || accountDisplayId(member.gate_uid, member.email) || '회원'} 상세 보기`)}">상세</button></td></tr>`;
   }).join('') : '<tr><td colspan="10" class="empty-cell">조건에 맞는 회원이 없습니다.</td></tr>';
   if (adminMasterAccount && !query) tableBody.insertAdjacentHTML('afterbegin', renderAdminMasterRow(adminMasterAccount));
   if (byId('memberDirectorySummary')) byId('memberDirectorySummary').textContent = `${adminMembersCache.length}명 · 카피 중 ${adminMembersCache.filter((member) => member.copy_status === 'COPYING').length}명 · 확인 필요 ${adminMembersCache.filter((member) => member.copy_status !== 'COPYING').length}명`;
@@ -2602,8 +2806,8 @@ async function loadAdminGateConnections() {
     const statusClass = connection.status === 'VERIFIED' ? 'chip' : connection.status === 'ERROR' ? 'chip red' : 'chip yellow';
     const statusLabel = { VERIFIED: '연결됨', ERROR: '연결 오류', VERIFYING: '검증 중', PENDING_VERIFICATION: '검증 대기', NOT_CONNECTED: '미연결', DISABLED: '연결 해제' }[connection.status] || '확인 필요';
     const disconnect = connection.status !== 'NOT_CONNECTED' && connection.status !== 'DISABLED'
-      ? `<button class="btn red admin-api-disconnect" type="button" data-admin-disconnect-member="${escapeHtml(connection.user_id)}" data-member-name="${escapeHtml(connection.full_name || connection.email || '회원')}">연결 해지</button>` : '-';
-    return `<tr><td>${escapeHtml(connection.full_name || '-')}<small>${escapeHtml(connection.email || '')}</small></td><td>${escapeHtml(connection.gate_uid || '-')}</td><td><span class="${statusClass}" title="${escapeHtml(connection.status || '')}">${escapeHtml(statusLabel)}</span></td><td>${connection.futures_read ? '읽기 확인' : connection.permissions_confirmed ? '사용자 확인' : '-'}</td><td>${connection.status === 'VERIFIED' ? 'Worker 접속 통과' : '-'}</td><td>${connection.last_checked_at ? new Date(connection.last_checked_at).toLocaleString('ko-KR') : '-'}</td><td class="table-actions">${disconnect}</td></tr>`;
+      ? `<button class="btn red admin-api-disconnect" type="button" data-admin-disconnect-member="${escapeHtml(connection.user_id)}" data-member-name="${escapeHtml(connection.full_name || accountDisplayId(connection.gate_uid, connection.email) || '회원')}">연결 해지</button>` : '-';
+    return `<tr><td>${escapeHtml(connection.full_name || '-')}<small>${escapeHtml(accountDisplayId(null, connection.email))}</small></td><td>${escapeHtml(connection.gate_uid || '-')}</td><td><span class="${statusClass}" title="${escapeHtml(connection.status || '')}">${escapeHtml(statusLabel)}</span></td><td>${connection.futures_read ? '읽기 확인' : connection.permissions_confirmed ? '사용자 확인' : '-'}</td><td>${connection.status === 'VERIFIED' ? 'Worker 접속 통과' : '-'}</td><td>${connection.last_checked_at ? new Date(connection.last_checked_at).toLocaleString('ko-KR') : '-'}</td><td class="table-actions">${disconnect}</td></tr>`;
   }).join('') : '<tr><td colspan="7" class="empty-cell">승인 회원의 API 연결 정보가 없습니다.</td></tr>';
   const verifiedCount = connections.filter((item) => item.status === 'VERIFIED').length;
   const errorCount = connections.filter((item) => item.status === 'ERROR').length;
@@ -2706,7 +2910,8 @@ document.addEventListener('click', async (event) => {
   if (event.target.closest('#adminGateApiDisconnect')) await disconnectAdminMasterGateApi();
   if (event.target.closest('#adminAuditRefresh')) await loadAdminAuditLog();
   if (event.target.closest('#adminExecutionRefresh')) await loadAdminExecutionStatus();
-  if (event.target.closest('#memberPasswordResetButton')) await requestMemberPasswordReset();
+  if (event.target.closest('#memberPasswordResetButton')) await issueMemberTemporaryPassword();
+  if (event.target.closest('#memberTempPasswordCopy')) await copyMemberTempPassword();
   if (event.target.closest('#copySettingsSave')) await saveCopySettings();
   const adminRange = event.target.closest('[data-admin-range]');
   if (adminRange) {
@@ -2751,6 +2956,11 @@ document.addEventListener('click', async (event) => {
   const memberDetailButton = event.target.closest('[data-member-detail]');
   if (memberDetailButton) await openMemberDetail(memberDetailButton.dataset.memberDetail);
   if (event.target.closest('[data-member-weight-save]')) await saveAdminMemberWeights();
+  if (event.target.closest('[data-member-withdraw]')) await withdrawAdminMember();
+  const memberTabButton = event.target.closest('[data-member-tab]');
+  if (memberTabButton) setAdminMemberTab(memberTabButton.dataset.memberTab);
+  const restoreButton = event.target.closest('[data-member-restore]');
+  if (restoreButton) await restoreAdminMember(restoreButton.dataset.memberRestore, restoreButton.dataset.memberName, restoreButton);
   const memberControlButton = event.target.closest('[data-member-control]');
   if (memberControlButton) await setAdminMemberControl(memberControlButton.dataset.memberControl);
   if (event.target.closest('[data-new-operation-open]') && selectedMemberId && currentProfile?.role === 'ADMIN' && !adminControlBusy && !adminWeightBusy) {

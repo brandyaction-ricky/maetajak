@@ -520,3 +520,8 @@ test('review 10-20: a stop request ends the submit batch before any further POST
   runner.rpc = async (name) => { if (name === 'claim_copy_order_intents') return [{ intent_id: 'a', resume_version: 'v' }]; throw new Error(`unexpected ${name}`); };
   assert.equal(await runner.submitOrders(5), 0);
 });
+
+test('10-21: plans cancelled by a member withdrawal are never-sent (no failure alert)', async () => {
+  const { intentNeverSentToGate } = await import('./trading-runner.js');
+  assert.equal(intentNeverSentToGate({ result_status: 'CANCELLED', filled_size: 0, error_code: 'MEMBER_WITHDRAWN' }), true);
+});

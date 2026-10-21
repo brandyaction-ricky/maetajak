@@ -11,7 +11,7 @@ const gateVerificationMigration = readFileSync(new URL('../supabase/migrations/2
 const gateWorker = readFileSync(new URL('../worker/gate.js', import.meta.url), 'utf8');
 
 test('authentication controls are wired without demo credentials', () => {
-  for (const id of ['loginEmail', 'loginPassword', 'signupName', 'signupPhone', 'signupEmail', 'signupPassword', 'signupPasswordConfirm', 'signupTerms', 'pendingStatusLabel']) {
+  for (const id of ['loginId', 'loginPassword', 'signupUid', 'signupName', 'signupPhone', 'signupPassword', 'signupPasswordConfirm', 'signupTerms', 'pendingStatusLabel']) {
     assert.match(html, new RegExp(`id="${id}"`));
   }
   assert.doesNotMatch(html, /ricky@example\.com|value="12345678"/);
@@ -19,7 +19,7 @@ test('authentication controls are wired without demo credentials', () => {
   assert.match(html, /<script type="module" src="\/src\/main\.js"><\/script>/);
 });
 
-test('signup validates password confirmation before Supabase signup', () => {
+test('signup validates password confirmation before calling the uid-signup function', () => {
   assert.match(script, /password !== passwordConfirm/);
   assert.match(script, /비밀번호와 비밀번호 확인이 일치하지 않습니다/);
 });

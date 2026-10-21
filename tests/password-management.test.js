@@ -12,10 +12,13 @@ test('admin password reset requests require an approved admin and are audited', 
   assert.doesNotMatch(migration, /temporary_password|임시비밀번호/i);
 });
 
-test('member recovery uses Supabase email links without exposing service credentials', () => {
-  assert.match(browser, /resetPasswordForEmail/);
+test('member password recovery goes through an admin-issued temporary password, never email', () => {
+  assert.doesNotMatch(browser, /resetPasswordForEmail/);
+  assert.doesNotMatch(browser, /request_member_password_reset/);
+  assert.match(browser, /functions\.invoke\('admin-reset-password', \{ body: \{ user_id: userId \} \}\)/);
+  assert.match(browser, /비밀번호를 잊으셨다면 관리자에게 문의하세요/);
+  // Administrators can still finish a recovery link they requested themselves.
   assert.match(browser, /PASSWORD_RECOVERY/);
-  assert.match(browser, /request_member_password_reset/);
   assert.doesNotMatch(browser, /service_role|SERVICE_ROLE_KEY/);
 });
 
