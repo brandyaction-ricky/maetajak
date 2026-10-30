@@ -93,11 +93,14 @@ test('signup order, one at a time: the earliest member is requested FUTURE_ONLY,
   assert.deepEqual(await states(a, c, b), ['REQUESTED', 'QUEUED', 'QUEUED'], 'the fallback job does not start a second member');
 
   await activate(a);
-  assert.deepEqual(await states(a, c, b), ['ACTIVE', 'REQUESTED', 'QUEUED'], 'the trigger starts the next member right after ACTIVE');
+  assert.deepEqual(await states(a, c, b), ['ACTIVE', 'QUEUED', 'QUEUED'], 'the trigger only resolves (worker transaction)');
+  assert.equal((await session(c)).state, 'REQUIRED', 'no other member is requested inside the activation transaction');
+  await cron();
+  assert.deepEqual(await states(a, c, b), ['ACTIVE', 'REQUESTED', 'QUEUED'], 'the per-minute job starts the next member');
   assert.equal((await session(c)).state, 'REQUESTED');
   assert.equal((await session(b)).state, 'REQUIRED');
-  await activate(c);
-  await activate(b);
+  await activate(c); await cron();
+  await activate(b); await cron();
   assert.deepEqual(await states(a, c, b), ['ACTIVE', 'ACTIVE', 'ACTIVE']);
   const s = await status();
   assert.equal(s.running, false);
@@ -141,6 +144,7 @@ test('members not ready are skipped, not waited for (at enqueue and when their t
   await asAdmin();
   await db.query("select public.set_member_copy_control($1,'PAUSE','test')", [b.id]);
   await activate(a);
+  await cron();
   assert.deepEqual(await stateOf(b), { state: 'SKIPPED', reason: 'ADMIN_PAUSED', attempts: 0 });
   assert.equal((await stateOf(c)).state, 'REQUESTED', 'the next ready member is started without waiting for B');
   assert.equal((await session(b)).state, 'PAUSED', 'the skipped member is left untouched');
@@ -364,10 +368,11 @@ test('the migration re-applies cleanly and keeps the queue', async () => {
   assert.deepEqual(await states(a, b), ['REQUESTED', 'QUEUED']);
   assert.equal((await one("select count(*)::int n from pg_trigger where tgname='copy_start_queue_on_session_state'")).n, 1);
   await activate(a);
+  await cron();
   assert.deepEqual(await states(a, b), ['ACTIVE', 'REQUESTED']);
 });
 
-test('end to end with the worker: FUTURE_ONLY start buys nothing the Master holds, follows later increases; next member requested', async () => {
+test('end to end with the worker: FUTURE_ONLY start buys nothing the Master holds, follows later increases; next member by the job', async () => {
   // The fixture member (signed up first) was paused by a Master change and is ready again.
   await db.query('update public.profiles set copy_paused=true where id=$1', [ids.user]);
   await db.query("update private.copy_resume_sessions set state='PAUSED',blocker_reason='MASTER_CREDENTIAL_CHANGED' where trading_account_id=$1", [ids.member]);
@@ -391,11 +396,48 @@ test('end to end with the worker: FUTURE_ONLY start buys nothing the Master hold
   await asWorker();
   await runner.syncOnce(); await runner.processPendingResumes(5);
   assert.equal((await one('select state from private.copy_resume_sessions where trading_account_id=$1', [ids.member])).state, 'ACTIVE');
-  assert.deepEqual(await states({ id: ids.user }, next), ['ACTIVE', 'REQUESTED'], 'the activation transaction requests the next member');
+  assert.deepEqual(await states({ id: ids.user }, next), ['ACTIVE', 'QUEUED'], 'the activation transaction only resolves');
+  await cron();
+  assert.deepEqual(await states({ id: ids.user }, next), ['ACTIVE', 'REQUESTED'], 'the per-minute job requests the next member');
   await runner.syncOnce(); await runner.submitOrders();
   assert.equal(exchange.posts, 0, 'the position the Master already held is not bought');
   exchange.masterSize = 60;
   await runner.syncOnce(); await runner.submitOrders();
   assert.equal(exchange.posts, 1, 'a later Master increase is copied');
   assert.ok(exchange.orders[0].size > 0);
+});
+
+test('F6 readiness and resolution cover every ACTIVE member account of the user', async () => {
+  const a = await addMember('두 계정', daysAgo(5));
+  const second = randomUUID();
+  // Second (BTC-settled) account without a verified key (its credential owner has none).
+  await db.query("insert into private.trading_accounts(id,user_id,credential_user_id,account_role,status,settle) values($1,$2,$3,'MEMBER','ACTIVE','btc')",
+    [second, a.id, randomUUID()]);
+  await db.query("insert into private.copy_resume_sessions(trading_account_id,state) values($1,'REQUIRED')", [second]);
+  assert.equal((await one('select private.copy_start_readiness($1) r', [a.id])).r, 'GATE_API_NOT_VERIFIED');
+  await db.query('update private.trading_accounts set credential_user_id=$2 where id=$1', [second, a.id]);
+  await db.query("update private.copy_resume_sessions set state='PAUSED',blocker_reason='MEMBER_PAUSED' where trading_account_id=$1", [second]);
+  assert.equal((await one('select private.copy_start_readiness($1) r', [a.id])).r, 'MEMBER_PAUSED', 'a member pause on any account');
+  await db.query("update private.copy_resume_sessions set state='ACTIVE',blocker_reason=null where trading_account_id=$1", [second]);
+  assert.equal((await one('select private.copy_start_readiness($1) r', [a.id])).r, null, 'one account still to start');
+  await enqueue();
+  assert.equal((await stateOf(a)).state, 'REQUESTED');
+  assert.deepEqual([(await session(a)).state, (await session({ account: second })).state], ['REQUESTED', 'REQUESTED'],
+    'request_member_copy_resume requests every account of the paused member');
+  await db.query("update private.copy_resume_sessions set state='ACTIVE' where trading_account_id=$1", [a.account]);
+  assert.equal((await stateOf(a)).state, 'REQUESTED', 'not ACTIVE while another account is not');
+  await db.query("update private.copy_resume_sessions set state='ACTIVE',blocker_reason=null where trading_account_id=$1", [second]);
+  assert.equal((await stateOf(a)).state, 'ACTIVE', 'the trigger also fires for the other account');
+  assert.equal((await one("select private.copy_start_readiness($1) r", [a.id])).r, 'ALREADY_ACTIVE');
+});
+
+test('F2 expiry while not LIVE requeues whatever the last blocker was', async () => {
+  const a = await addMember('A', daysAgo(5));
+  await enqueue();
+  const sa = await session(a);
+  await db.exec('update public.copy_system_control set execution_enabled=false');
+  await db.query("update private.copy_resume_sessions set expires_at=clock_timestamp()-interval '1 second' where trading_account_id=$1", [a.account]);
+  await asWorker();
+  await db.query("select public.report_member_copy_resume_blocker($1,$2,'RESUME_PREVIEW_NOT_ZERO')", [a.account, sa.version]);
+  assert.deepEqual(await stateOf(a), { state: 'QUEUED', reason: 'WAITING_FOR_LIVE', attempts: 1 });
 });

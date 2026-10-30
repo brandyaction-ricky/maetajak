@@ -51,7 +51,7 @@ test('every state, readiness, queue and live code the migration produces has a K
     { QUEUED: '대기', REQUESTED: '시작 요청', ACTIVE: '카피 중', SKIPPED: '건너뜀', FAILED: '실패', CANCELLED: '취소됨' });
   const readiness = migration.slice(migration.indexOf('function private.copy_start_readiness'), migration.indexOf('function private.advance_copy_start_queue'));
   for (const [, code] of readiness.matchAll(/return '([A-Z_]+)'/g)) assert.ok(ORDERED_COPY_REASON_LABELS[code], code);
-  for (const code of ['ADMIN_CANCELLED', 'STARTED_OUTSIDE_QUEUE', 'WAITING_FOR_LIVE', 'RETRY_AFTER_EXPIRY', 'RESUME_SESSION_MISSING']) {
+  for (const code of ['ADMIN_CANCELLED', 'STARTED_OUTSIDE_QUEUE', 'WAITING_FOR_LIVE', 'RETRY_AFTER_EXPIRY', 'RETRY_TRANSIENT', 'RESUME_SESSION_MISSING']) {
     assert.match(migration, new RegExp(`'${code}'`));
     assert.ok(ORDERED_COPY_REASON_LABELS[code], code);
   }
@@ -127,6 +127,16 @@ test('progress view: per-member state labels and reasons, cancel button, waiting
   const idle = renderOrderedCopyStart({ live_ready: false, live_reason: 'EMERGENCY_HALTED', running: false, items, ready_members: ready }, { selected: new Set(['u1']) });
   assert.match(idle, /지금은 실거래\(LIVE\)가 아닙니다<\/b> · 긴급 중단 상태\. 시작하면 LIVE가 켜질 때까지 대기합니다\./);
   assert.match(idle, /<details class="ordered-copy-history"><summary>최근 진행 결과 \(6명\)<\/summary>/);
+});
+
+test('a recent swallowed trigger error is shown while a batch runs, an old one is not', () => {
+  const now = Date.parse('2026-10-30T01:05:00Z');
+  const data = { live_ready: true, running: true, items: [{ seq: 1, user_id: 'u1', state: 'REQUESTED' }],
+    trigger_error: { code: '55P03', at: '2026-10-30T01:00:00Z', count: 1 } };
+  assert.match(renderOrderedCopyStart(data, { now }), /class="ordered-copy-trace" role="status">최근 자동 진행 확인이 한 번 지연되었습니다\(55P03\)\. 1분마다 다시 확인합니다\./);
+  assert.doesNotMatch(renderOrderedCopyStart(data, { now: now + 20 * 60_000 }), /ordered-copy-trace/);
+  assert.doesNotMatch(renderOrderedCopyStart({ ...data, running: false, ready_members: [] }, { now }), /ordered-copy-trace/);
+  assert.match(migration, /'trigger_error'/);
 });
 
 test('rendering escapes member data', () => {

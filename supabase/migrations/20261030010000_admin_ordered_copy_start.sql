@@ -16,15 +16,22 @@
 --   FAILED     the session ended BLOCKED / expired / paused without becoming ACTIVE (reason = blocker)
 --   CANCELLED  the administrator cancelled the pending item
 -- Only one item is REQUESTED at a time; the next member is requested only after it resolves. A REQUESTED
--- item whose session expired because the system was not LIVE (or expired after validation, i.e. activation
--- never ran) or that was paused by a Master change goes back to QUEUED (at most 3 requests per member).
+-- item goes back to QUEUED (at most 3 requests per member) when its session expired while the system was not
+-- LIVE (whatever the last blocker), expired after validation (activation never ran) or was paused by a Master
+-- change; if the administrator cancelled the batch meanwhile (cancel_requested) it ends CANCELLED instead.
+-- A transient error while requesting (lock timeout 55P03, deadlock 40P01, serialization 40001) leaves the item
+-- QUEUED without counting an attempt; the next run retries.
+-- A member is resolved over ALL of its ACTIVE MEMBER trading accounts (as request_member_copy_resume resumes
+-- all of them): ACTIVE only when every session is ACTIVE.
 --
 -- Advancing (private.advance_copy_start_queue) runs under the copy-execution advisory lock:
---   * at the end of admin_enqueue_ordered_copy_start,
---   * from an AFTER UPDATE OF state trigger on private.copy_resume_sessions, only for an account with an open
---     queue item, non-blocking (try-lock, 2s lock_timeout, every error swallowed: the session update that fired
---     it never fails); the trigger requests the next member only when the transition was to ACTIVE,
---   * every minute from pg_cron job 'maetajak-ordered-copy-start' (fallback; a no-op without open items).
+--   * at the end of admin_enqueue_ordered_copy_start and every minute from pg_cron job
+--     'maetajak-ordered-copy-start' (a no-op without open items): resolve, then request the next member;
+--   * from an AFTER UPDATE OF state trigger on private.copy_resume_sessions, only for a member with an open
+--     queue item: RESOLVE ONLY (never requests the next member, never locks another member's rows), try-lock,
+--     200ms lock_timeout, every error (also query_canceled) swallowed with a WARNING and a trace in
+--     private.copy_start_queue_trigger_errors (exposed as trigger_error): the session update that fired it
+--     (e.g. the worker's activation) never fails.
 -- New requests are made only while the system can activate a session: execution_enabled, not emergency_halted,
 -- worker mode LIVE with a heartbeat in the last 60 seconds, Master account ACTIVE with a VERIFIED key. Otherwise
 -- items stay QUEUED and get_admin_ordered_copy_start reports waiting_for_live (+ live_reason).
@@ -57,8 +64,15 @@ create table if not exists private.copy_start_queue (
   requested_at timestamptz,
   resolved_at timestamptz,
   updated_at timestamptz not null default clock_timestamp(),
+  cancel_requested boolean not null default false,
+  last_error_code text,
+  last_error_at timestamptz,
   unique (batch_id, seq)
 );
+alter table private.copy_start_queue
+  add column if not exists cancel_requested boolean not null default false,
+  add column if not exists last_error_code text,
+  add column if not exists last_error_at timestamptz;
 alter table private.copy_start_queue enable row level security;
 revoke all on private.copy_start_queue from public, anon, authenticated;
 comment on table private.copy_start_queue is
@@ -66,10 +80,21 @@ comment on table private.copy_start_queue is
 -- A member is in at most one open item.
 create unique index if not exists copy_start_queue_open_user_uidx on private.copy_start_queue (user_id)
   where state in ('QUEUED', 'REQUESTED');
--- The session trigger's lookup.
 create index if not exists copy_start_queue_open_account_idx on private.copy_start_queue (trading_account_id)
   where state in ('QUEUED', 'REQUESTED');
 create index if not exists copy_start_queue_batch_idx on private.copy_start_queue (batch_id, seq);
+
+-- Last error the session trigger swallowed (one row): observable without failing the worker's transaction.
+create table if not exists private.copy_start_queue_trigger_errors (
+  singleton boolean primary key default true check (singleton),
+  last_error_code text,
+  last_error_message text,
+  last_error_at timestamptz,
+  trading_account_id uuid,
+  error_count bigint not null default 0
+);
+alter table private.copy_start_queue_trigger_errors enable row level security;
+revoke all on private.copy_start_queue_trigger_errors from public, anon, authenticated;
 
 -- ---------------------------------------------------------------------------------------------
 -- Can a requested session be activated now? null = yes, otherwise the reason (the worker activates only in
@@ -98,12 +123,13 @@ revoke all on function private.copy_start_live_state() from public, anon, authen
 
 -- ---------------------------------------------------------------------------------------------
 -- Is the member ready for an administrator copy start? null = ready, otherwise the reason.
--- Ready: MEMBER, approved, not withdrawn, not halted, no administrator pause/reduce-only, an ACTIVE MEMBER
--- trading account whose Gate key is VERIFIED with futures read+trade, and a session that is not ACTIVE, not
--- CLOSING / close requested, not paused by the member (MEMBER_PAUSED) or an administrator (ADMIN_*), and no
--- administrator new operation in progress. REQUIRED (never started), BLOCKED, PAUSED for any other reason
--- (Master change, settings change, key change, ...) and REQUESTED/VALIDATED are ready.
--- ALREADY_ACTIVE is returned for a member who is copying (an open queue item resolves ACTIVE).
+-- Ready: MEMBER, approved, not withdrawn, not halted, no administrator pause/reduce-only, at least one ACTIVE
+-- MEMBER trading account, and for EVERY such account (request_member_copy_resume resumes all of them): a Gate
+-- key VERIFIED with futures read+trade, and a session that is not CLOSING / close requested, not paused by the
+-- member (MEMBER_PAUSED) or an administrator (ADMIN_*), and no administrator new operation in progress.
+-- REQUIRED (never started), BLOCKED, PAUSED for any other reason (Master change, settings change, key change,
+-- ...) and REQUESTED/VALIDATED are ready. ALREADY_ACTIVE: every account's session is ACTIVE (an open queue
+-- item resolves ACTIVE).
 -- ---------------------------------------------------------------------------------------------
 create or replace function private.copy_start_readiness(p_user_id uuid)
 returns text
@@ -111,7 +137,7 @@ language plpgsql
 stable
 set search_path to 'pg_catalog'
 as $$
-declare p public.profiles; account_id uuid; s private.copy_resume_sessions;
+declare p public.profiles; accounts integer;
 begin
   select * into p from public.profiles where id = p_user_id;
   if p.id is null or p.role <> 'MEMBER' then return 'NOT_MEMBER'; end if;
@@ -120,20 +146,40 @@ begin
   if p.member_halted then return 'MEMBER_HALTED'; end if;
   if p.admin_paused then return 'ADMIN_PAUSED'; end if;
   if p.admin_reduce_only then return 'ADMIN_REDUCE_ONLY'; end if;
-  select a.id into account_id from private.trading_accounts a
-    where a.user_id = p_user_id and a.account_role = 'MEMBER' and a.status = 'ACTIVE' order by a.id limit 1;
-  if account_id is null then return 'TRADING_ACCOUNT_NOT_ACTIVE'; end if;
-  if not exists (select 1 from private.trading_accounts a join private.gate_api_credentials g on g.user_id = a.credential_user_id
-      where a.id = account_id and g.status = 'VERIFIED' and g.futures_read and g.futures_trade) then
+  select count(*) into accounts from private.trading_accounts a
+    where a.user_id = p_user_id and a.account_role = 'MEMBER' and a.status = 'ACTIVE';
+  if accounts = 0 then return 'TRADING_ACCOUNT_NOT_ACTIVE'; end if;
+  if exists (select 1 from private.trading_accounts a
+      where a.user_id = p_user_id and a.account_role = 'MEMBER' and a.status = 'ACTIVE'
+        and not exists (select 1 from private.gate_api_credentials g where g.user_id = a.credential_user_id
+          and g.status = 'VERIFIED' and g.futures_read and g.futures_trade)) then
     return 'GATE_API_NOT_VERIFIED';
   end if;
-  select * into s from private.copy_resume_sessions where trading_account_id = account_id;
-  if s.state = 'ACTIVE' then return 'ALREADY_ACTIVE'; end if;
-  if p.close_positions_requested or s.state = 'CLOSING' then return 'MEMBER_CLOSING'; end if;
-  if s.state = 'PAUSED' and s.blocker_reason = 'MEMBER_PAUSED' then return 'MEMBER_PAUSED'; end if;
-  if s.state = 'PAUSED' and s.blocker_reason like 'ADMIN\_%' then return 'ADMIN_PAUSED'; end if;
-  if (s.state = 'PAUSED' and s.blocker_reason = 'NEW_OPERATION_REQUESTED')
-    or (s.state in ('REQUESTED', 'VALIDATED') and s.sync_current_master and s.expires_at > clock_timestamp()) then
+  if not exists (select 1 from private.trading_accounts a
+      left join private.copy_resume_sessions s on s.trading_account_id = a.id
+      where a.user_id = p_user_id and a.account_role = 'MEMBER' and a.status = 'ACTIVE'
+        and s.state is distinct from 'ACTIVE') then
+    return 'ALREADY_ACTIVE';
+  end if;
+  if p.close_positions_requested or exists (select 1 from private.trading_accounts a
+      join private.copy_resume_sessions s on s.trading_account_id = a.id
+      where a.user_id = p_user_id and a.account_role = 'MEMBER' and a.status = 'ACTIVE' and s.state = 'CLOSING') then
+    return 'MEMBER_CLOSING';
+  end if;
+  if exists (select 1 from private.trading_accounts a join private.copy_resume_sessions s on s.trading_account_id = a.id
+      where a.user_id = p_user_id and a.account_role = 'MEMBER' and a.status = 'ACTIVE'
+        and s.state = 'PAUSED' and s.blocker_reason = 'MEMBER_PAUSED') then
+    return 'MEMBER_PAUSED';
+  end if;
+  if exists (select 1 from private.trading_accounts a join private.copy_resume_sessions s on s.trading_account_id = a.id
+      where a.user_id = p_user_id and a.account_role = 'MEMBER' and a.status = 'ACTIVE'
+        and s.state = 'PAUSED' and s.blocker_reason like 'ADMIN\_%') then
+    return 'ADMIN_PAUSED';
+  end if;
+  if exists (select 1 from private.trading_accounts a join private.copy_resume_sessions s on s.trading_account_id = a.id
+      where a.user_id = p_user_id and a.account_role = 'MEMBER' and a.status = 'ACTIVE'
+        and ((s.state = 'PAUSED' and s.blocker_reason = 'NEW_OPERATION_REQUESTED')
+          or (s.state in ('REQUESTED', 'VALIDATED') and s.sync_current_master and s.expires_at > clock_timestamp()))) then
     return 'NEW_OPERATION_PENDING';
   end if;
   return null;
@@ -141,8 +187,25 @@ end;
 $$;
 revoke all on function private.copy_start_readiness(uuid) from public, anon, authenticated;
 
+-- The session that decides a member's start over all its ACTIVE MEMBER accounts: a non-ACTIVE one (one still
+-- being validated first), otherwise (every session ACTIVE) an ACTIVE one. All-null when there is none.
+create or replace function private.copy_start_member_session(p_user_id uuid)
+returns private.copy_resume_sessions
+language sql
+stable
+set search_path to 'pg_catalog'
+as $$
+  select s.* from private.trading_accounts a
+  left join private.copy_resume_sessions s on s.trading_account_id = a.id
+  where a.user_id = p_user_id and a.account_role = 'MEMBER' and a.status = 'ACTIVE'
+  order by (s.state is not distinct from 'ACTIVE'), (s.state in ('REQUESTED', 'VALIDATED')) desc nulls last, a.id
+  limit 1
+$$;
+revoke all on function private.copy_start_member_session(uuid) from public, anon, authenticated;
+
 -- ---------------------------------------------------------------------------------------------
--- Advance the queue. p_nonblocking: try-lock only (trigger). p_request_next: may request the next member.
+-- Advance the queue. p_nonblocking: try-lock only (trigger). p_request_next: may request the next member
+-- (enqueue and the per-minute job only; the trigger resolves only).
 -- ---------------------------------------------------------------------------------------------
 create or replace function private.advance_copy_start_queue(p_nonblocking boolean default false,
   p_request_next boolean default true)
@@ -152,7 +215,7 @@ set search_path to 'pg_catalog'
 as $$
 declare
   q private.copy_start_queue; s private.copy_resume_sessions; live text; ready text; why text;
-  account_id uuid; before_version uuid; changed integer;
+  account_id uuid; before_versions jsonb; transient boolean; expired boolean;
   resolved integer := 0; requested integer := 0; skipped integer := 0; guard integer := 0;
 begin
   if coalesce(current_setting('maetajak.copy_start_queue_busy', true), '') = 'on' then
@@ -173,17 +236,19 @@ begin
   perform set_config('maetajak.copy_start_queue_busy', 'on', true);
   live := private.copy_start_live_state();
 
-  -- 1. A queued member who started another way (self-start, administrator RESUME).
-  update private.copy_start_queue cq set state = 'ACTIVE', reason = 'STARTED_OUTSIDE_QUEUE',
-      resolved_at = clock_timestamp(), updated_at = clock_timestamp()
-    from private.copy_resume_sessions rs
-    where cq.state = 'QUEUED' and rs.trading_account_id = cq.trading_account_id and rs.state = 'ACTIVE';
-  get diagnostics changed = row_count;
-  resolved := resolved + changed;
+  -- 1. A queued member who started another way (self-start, administrator RESUME): every session ACTIVE.
+  for q in select * from private.copy_start_queue where state = 'QUEUED' order by seq, id for update loop
+    s := private.copy_start_member_session(q.user_id);
+    if s.state = 'ACTIVE' then
+      update private.copy_start_queue set state = 'ACTIVE', reason = 'STARTED_OUTSIDE_QUEUE',
+        resolved_at = clock_timestamp(), updated_at = clock_timestamp() where id = q.id;
+      resolved := resolved + 1;
+    end if;
+  end loop;
 
   -- 2. Resolve the requested item(s).
   for q in select * from private.copy_start_queue where state = 'REQUESTED' order by seq, id for update loop
-    select * into s from private.copy_resume_sessions where trading_account_id = q.trading_account_id;
+    s := private.copy_start_member_session(q.user_id);
     if s.state = 'ACTIVE' then
       update private.copy_start_queue set state = 'ACTIVE', reason = null, resume_version = s.version,
         resolved_at = clock_timestamp(), updated_at = clock_timestamp() where id = q.id;
@@ -195,19 +260,27 @@ begin
       continue;
     end if;
     ready := private.copy_start_readiness(q.user_id);
+    expired := s.state in ('REQUESTED', 'VALIDATED', 'BLOCKED');
     why := coalesce(s.blocker_reason, case when s.state is null then 'RESUME_SESSION_MISSING'
       when s.state in ('REQUESTED', 'VALIDATED') then 'RESUME_REQUEST_EXPIRED' else 'RESUME_' || s.state end);
     if ready is not null and ready <> 'ALREADY_ACTIVE' then
       update private.copy_start_queue set state = 'SKIPPED', reason = ready,
         resolved_at = clock_timestamp(), updated_at = clock_timestamp() where id = q.id;
       skipped := skipped + 1;
-    elsif q.attempts < 3 and ((why = 'RESUME_REQUEST_EXPIRED' and (live is not null or s.validated_at is not null))
+    elsif q.attempts < 3 and ((expired and live is not null)
+        or (why = 'RESUME_REQUEST_EXPIRED' and s.validated_at is not null)
         or private.is_master_pause_reason(why)) then
       -- Not the member's fault: the system was not LIVE, activation never ran, or the Master changed.
-      update private.copy_start_queue set state = 'QUEUED', requested_at = null,
-        reason = case when private.is_master_pause_reason(why) then why
-          when live is not null then 'WAITING_FOR_LIVE' else 'RETRY_AFTER_EXPIRY' end,
-        updated_at = clock_timestamp() where id = q.id;
+      if q.cancel_requested then
+        update private.copy_start_queue set state = 'CANCELLED', reason = 'ADMIN_CANCELLED',
+          resolved_at = clock_timestamp(), updated_at = clock_timestamp() where id = q.id;
+        resolved := resolved + 1;
+      else
+        update private.copy_start_queue set state = 'QUEUED', requested_at = null,
+          reason = case when private.is_master_pause_reason(why) then why
+            when live is not null then 'WAITING_FOR_LIVE' else 'RETRY_AFTER_EXPIRY' end,
+          updated_at = clock_timestamp() where id = q.id;
+      end if;
     else
       update private.copy_start_queue set state = 'FAILED', reason = left(why, 80),
         resolved_at = clock_timestamp(), updated_at = clock_timestamp() where id = q.id;
@@ -237,23 +310,32 @@ begin
       end if;
       select a.id into account_id from private.trading_accounts a
         where a.user_id = q.user_id and a.account_role = 'MEMBER' and a.status = 'ACTIVE' order by a.id limit 1;
-      select version into before_version from private.copy_resume_sessions where trading_account_id = account_id;
+      select coalesce(jsonb_object_agg(a.id::text, rs.version), '{}'::jsonb) into before_versions
+        from private.trading_accounts a left join private.copy_resume_sessions rs on rs.trading_account_id = a.id
+        where a.user_id = q.user_id and a.account_role = 'MEMBER' and a.status = 'ACTIVE';
+      transient := false;
       begin
         -- The administrator resume path (FUTURE_ONLY; preserves an in-progress request).
         perform private.request_member_copy_resume(q.user_id, false);
-      exception when others then
-        update private.copy_start_queue set state = 'FAILED', reason = left(sqlerrm, 80),
-          resolved_at = clock_timestamp(), updated_at = clock_timestamp() where id = q.id;
-        resolved := resolved + 1;
-        continue;
+      exception
+        when lock_not_available or deadlock_detected or serialization_failure then
+          -- Transient: stay QUEUED (no attempt counted); the next run retries this member first.
+          update private.copy_start_queue set reason = 'RETRY_TRANSIENT', last_error_code = sqlstate,
+            last_error_at = clock_timestamp(), updated_at = clock_timestamp() where id = q.id;
+          transient := true;
+        when others then
+          update private.copy_start_queue set state = 'FAILED', reason = left(sqlerrm, 80), last_error_code = sqlstate,
+            last_error_at = clock_timestamp(), resolved_at = clock_timestamp(), updated_at = clock_timestamp() where id = q.id;
+          resolved := resolved + 1;
+          continue;
       end;
-      select * into s from private.copy_resume_sessions where trading_account_id = account_id;
-      -- A new generation is attributed to the administrator who queued it (the trigger may run in another
-      -- caller's transaction). Not a state change: the trigger does not fire.
-      if s.version is distinct from before_version then
-        update private.copy_resume_sessions set requested_by = q.requested_by
-          where trading_account_id = account_id and version = s.version;
-      end if;
+      exit when transient;
+      -- A new generation is attributed to the administrator who queued it. Not a state change: no trigger.
+      update private.copy_resume_sessions rs set requested_by = q.requested_by
+        from private.trading_accounts a
+        where a.id = rs.trading_account_id and a.user_id = q.user_id and a.account_role = 'MEMBER' and a.status = 'ACTIVE'
+          and rs.state = 'REQUESTED' and rs.version::text is distinct from (before_versions->>a.id::text);
+      s := private.copy_start_member_session(q.user_id);
       update private.copy_start_queue set state = 'REQUESTED', trading_account_id = account_id,
         resume_version = s.version, attempts = attempts + 1, reason = null,
         requested_at = clock_timestamp(), updated_at = clock_timestamp() where id = q.id;
@@ -273,28 +355,43 @@ $$;
 revoke all on function private.advance_copy_start_queue(boolean, boolean) from public, anon, authenticated;
 
 -- ---------------------------------------------------------------------------------------------
--- Session trigger: cheap for accounts without an open queue item; never fails the session update.
+-- Session trigger: cheap for members without an open queue item; RESOLVE ONLY (no request of the next member
+-- inside the caller's transaction, which is typically the worker's activation); never fails the session update.
 -- ---------------------------------------------------------------------------------------------
 create or replace function private.copy_start_queue_on_session_state()
 returns trigger
 language plpgsql
 set search_path to 'pg_catalog'
 as $$
-declare previous_timeout text;
+declare previous_timeout text; owner_id uuid; err_state text; err_message text;
 begin
   if coalesce(current_setting('maetajak.copy_start_queue_busy', true), '') = 'on' then return null; end if;
-  if not exists (select 1 from private.copy_start_queue
-      where trading_account_id = new.trading_account_id and state in ('QUEUED', 'REQUESTED')) then
+  select a.user_id into owner_id from private.trading_accounts a where a.id = new.trading_account_id;
+  if owner_id is null or not exists (select 1 from private.copy_start_queue
+      where user_id = owner_id and state in ('QUEUED', 'REQUESTED')) then
     return null;
   end if;
   previous_timeout := current_setting('lock_timeout');
   begin
-    perform set_config('lock_timeout', '2s', true);
-    -- Only a successful start requests the next member here; failures are followed up by the per-minute job.
-    perform private.advance_copy_start_queue(true, new.state = 'ACTIVE');
+    perform set_config('lock_timeout', '200ms', true);
+    perform private.advance_copy_start_queue(true, false);
     perform set_config('lock_timeout', previous_timeout, true);
-  exception when others then
-    null;
+  exception when others or query_canceled then
+    -- The subtransaction (and its lock_timeout / busy settings) is rolled back; the per-minute job resolves later.
+    get stacked diagnostics err_state = returned_sqlstate, err_message = message_text;
+    raise warning 'copy_start_queue trigger swallowed %: %', err_state, err_message;
+    begin
+      perform set_config('lock_timeout', '200ms', true);
+      insert into private.copy_start_queue_trigger_errors as e(singleton, last_error_code, last_error_message,
+          last_error_at, trading_account_id, error_count)
+        values (true, err_state, left(err_message, 200), clock_timestamp(), new.trading_account_id, 1)
+        on conflict (singleton) do update set last_error_code = excluded.last_error_code,
+          last_error_message = excluded.last_error_message, last_error_at = excluded.last_error_at,
+          trading_account_id = excluded.trading_account_id, error_count = e.error_count + 1;
+      perform set_config('lock_timeout', previous_timeout, true);
+    exception when others or query_canceled then
+      null;
+    end;
   end;
   return null;
 end;
@@ -322,14 +419,14 @@ begin
     select p.id, p.full_name, p.gate_uid, p.email, p.created_at, private.copy_start_readiness(p.id) as readiness,
       s.state as session_state, s.blocker_reason
     from public.profiles p
-    left join lateral (select a.id from private.trading_accounts a where a.user_id = p.id and a.account_role = 'MEMBER'
-      and a.status = 'ACTIVE' order by a.id limit 1) a on true
-    left join private.copy_resume_sessions s on s.trading_account_id = a.id
+    left join lateral private.copy_start_member_session(p.id) s on true
     where p.role = 'MEMBER' and p.approval_status = 'APPROVED' and p.withdrawn_at is null
   )
   select jsonb_build_object(
     'live_ready', live is null,
     'live_reason', live,
+    'trigger_error', (select jsonb_build_object('code', e.last_error_code, 'message', e.last_error_message,
+        'at', e.last_error_at, 'count', e.error_count) from private.copy_start_queue_trigger_errors e where e.singleton),
     'running', exists (select 1 from private.copy_start_queue where state in ('QUEUED', 'REQUESTED')),
     'waiting_for_live', live is not null and exists (select 1 from private.copy_start_queue where state = 'QUEUED')
       and not exists (select 1 from private.copy_start_queue where state = 'REQUESTED'),
@@ -342,11 +439,12 @@ begin
     'items', coalesce((select jsonb_agg(jsonb_build_object('id', q.id, 'seq', q.seq, 'user_id', q.user_id,
         'full_name', p.full_name, 'gate_uid', p.gate_uid, 'email', p.email, 'signup_at', q.signup_at,
         'state', q.state, 'reason', q.reason, 'attempts', q.attempts, 'requested_at', q.requested_at,
+        'cancel_requested', q.cancel_requested, 'last_error_code', q.last_error_code, 'last_error_at', q.last_error_at,
         'resolved_at', q.resolved_at, 'session_state', s.state, 'session_blocker', s.blocker_reason,
         'session_expires_at', s.expires_at) order by q.seq)
       from private.copy_start_queue q
       left join public.profiles p on p.id = q.user_id
-      left join private.copy_resume_sessions s on s.trading_account_id = q.trading_account_id
+      left join lateral private.copy_start_member_session(q.user_id) s on true
       where latest is not null and q.batch_id = latest), '[]'::jsonb),
     'ready_members', coalesce((select jsonb_agg(jsonb_build_object('user_id', m.id, 'full_name', m.full_name,
         'gate_uid', m.gate_uid, 'email', m.email, 'signup_at', m.created_at, 'session_state', m.session_state,
@@ -434,7 +532,8 @@ $$;
 revoke all on function public.admin_enqueue_ordered_copy_start(uuid[], text) from public, anon, service_role;
 grant execute on function public.admin_enqueue_ordered_copy_start(uuid[], text) to authenticated;
 
--- Cancel the pending (QUEUED) items. A REQUESTED item keeps its resume request and is still followed to its result.
+-- Cancel the pending (QUEUED) items. A REQUESTED item keeps its resume request and is followed to its result;
+-- it is marked cancel_requested so that it ends CANCELLED instead of going back to QUEUED.
 create or replace function public.admin_cancel_ordered_copy_start(p_confirmation text)
 returns jsonb
 language plpgsql
@@ -449,7 +548,9 @@ begin
   update private.copy_start_queue set state = 'CANCELLED', reason = 'ADMIN_CANCELLED',
     resolved_at = clock_timestamp(), updated_at = clock_timestamp() where state = 'QUEUED';
   get diagnostics cancelled = row_count;
-  select count(*) into in_progress from private.copy_start_queue where state = 'REQUESTED';
+  -- A requested member is still followed: ACTIVE stays ACTIVE, a requeue becomes CANCELLED.
+  update private.copy_start_queue set cancel_requested = true, updated_at = clock_timestamp() where state = 'REQUESTED';
+  get diagnostics in_progress = row_count;
   insert into public.admin_audit_logs(actor_id, action, next_value)
   values (auth.uid(), 'ADMIN_ORDERED_COPY_START_CANCELLED', jsonb_build_object('cancelled', cancelled, 'in_progress', in_progress));
   return private.copy_start_queue_status() || jsonb_build_object('cancelled', cancelled, 'in_progress', in_progress);
@@ -458,7 +559,7 @@ $$;
 revoke all on function public.admin_cancel_ordered_copy_start(text) from public, anon, service_role;
 grant execute on function public.admin_cancel_ordered_copy_start(text) to authenticated;
 
--- Every minute (fallback for the trigger); a no-op without open items. Re-running this migration replaces the
+-- Every minute: resolves and requests the next member (the trigger only resolves); a no-op without open items. Re-running this migration replaces the
 -- job. Skipped (notice) where pg_cron is not installed, e.g. a local test database.
 do $cron$
 begin

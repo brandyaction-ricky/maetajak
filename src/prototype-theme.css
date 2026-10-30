@@ -705,6 +705,7 @@ tbody tr:hover { background: #141416; }
 .admin-ordered-copy .chip.muted { background: var(--panel-3); color: var(--muted); }
 .ordered-copy-policy { margin: -4px 0 12px; color: var(--muted); font-size: 12px; line-height: 1.65; word-break: keep-all; }
 .ordered-copy-live { margin-bottom: 12px; padding: 11px 14px; font-size: 12px; }
+.ordered-copy-trace { margin: -4px 0 12px; color: var(--subtle); font-size: 11px; line-height: 1.6; word-break: keep-all; }
 .ordered-copy-table td b, .ordered-copy-not-ready li b { display: block; font-size: 12px; }
 .ordered-copy-table td small, .ordered-copy-not-ready li small { display: block; margin-top: 2px; color: var(--muted); font-size: 11px; }
 .ordered-copy-table .ordered-copy-reason { max-width: 320px; white-space: normal; word-break: keep-all; color: var(--muted); }

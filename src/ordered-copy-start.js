@@ -41,6 +41,7 @@ export const ORDERED_COPY_REASON_LABELS = {
   STARTED_OUTSIDE_QUEUE: '회원 또는 관리자가 직접 시작함',
   WAITING_FOR_LIVE: '실거래(LIVE)를 기다린 뒤 다시 시작',
   RETRY_AFTER_EXPIRY: '확인 시간이 지나 다시 시작',
+  RETRY_TRANSIENT: '일시적인 잠금으로 잠시 후 다시 시작',
   RESUME_SESSION_MISSING: '카피 세션 없음',
   RESUME_REQUIRED: '재개 확인 필요',
   RESUME_PAUSED: '카피 일시중지',
@@ -150,7 +151,7 @@ function selectionTable(ready, selected, balances) {
 }
 
 // HTML of the whole panel. selected: Set of user ids; balances: Map user id → 총 자산 (balance_equity).
-export function renderOrderedCopyStart(data, { selected = new Set(), balances = new Map(), busy = false } = {}) {
+export function renderOrderedCopyStart(data, { selected = new Set(), balances = new Map(), busy = false, now = Date.now() } = {}) {
   const ready = Array.isArray(data?.ready_members) ? data.ready_members : [];
   const notReady = Array.isArray(data?.not_ready_members) ? data.not_ready_members : [];
   const items = Array.isArray(data?.items) ? data.items : [];
@@ -166,6 +167,11 @@ export function renderOrderedCopyStart(data, { selected = new Set(), balances = 
   if (data && data.live_ready === false) {
     live = `<div class="notice warn-box ordered-copy-live" role="status"><b>${running ? '실거래(LIVE) 대기 중' : '지금은 실거래(LIVE)가 아닙니다'}</b> · ${escape(orderedCopyLiveLabel(data.live_reason))}. `
       + `${running ? 'LIVE가 켜지면 대기 중인 회원부터 이어서 시작합니다.' : '시작하면 LIVE가 켜질 때까지 대기합니다.'}</div>`;
+  }
+  // A progress check the session trigger had to skip (it never fails the worker); the per-minute job catches up.
+  const triggerError = data?.trigger_error;
+  if (running && triggerError?.at && now - Date.parse(triggerError.at) < 10 * 60_000) {
+    live += `<p class="ordered-copy-trace" role="status">최근 자동 진행 확인이 한 번 지연되었습니다(${escape(triggerError.code || '-')}). 1분마다 다시 확인합니다.</p>`;
   }
   let body;
   if (running) {
