@@ -48,6 +48,8 @@ export const migrationFiles = [
   '20261021033000_qa_risk_basis.sql',
   // 2026-10-21 review fixes: account policy (unified member) visible to the administrator.
   '20261021034000_qa_review_fixes.sql',
+  // 2026-10-30 administrator ordered copy start (signup order, one member at a time, FUTURE_ONLY).
+  '20261030010000_admin_ordered_copy_start.sql',
 ];
 // Production objects the structural fixture lacks (test-only stand-ins, no data). Every statement is
 // "if not exists"/"or replace", so a test may still create its own (narrower) stand-in first.

@@ -699,3 +699,38 @@ tbody tr:hover { background: #141416; }
   .field-hint, .auth-help { font-size: 12px; }
   .member-temp-password-row .btn { min-height: 44px; }
 }
+
+/* 2026-10-30 회원 관리: 가입 순서대로 카피 시작 */
+.admin-ordered-copy { padding: 16px; margin-bottom: 12px; }
+.admin-ordered-copy .chip.muted { background: var(--panel-3); color: var(--muted); }
+.ordered-copy-policy { margin: -4px 0 12px; color: var(--muted); font-size: 12px; line-height: 1.65; word-break: keep-all; }
+.ordered-copy-live { margin-bottom: 12px; padding: 11px 14px; font-size: 12px; }
+.ordered-copy-table td b, .ordered-copy-not-ready li b { display: block; font-size: 12px; }
+.ordered-copy-table td small, .ordered-copy-not-ready li small { display: block; margin-top: 2px; color: var(--muted); font-size: 11px; }
+.ordered-copy-table .ordered-copy-reason { max-width: 320px; white-space: normal; word-break: keep-all; color: var(--muted); }
+.ordered-copy-table .ordered-copy-check { width: 36px; }
+.ordered-copy-table input[type="checkbox"] { width: 18px; height: 18px; margin: 0; accent-color: #d4d4d8; }
+.ordered-copy-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-top: 12px; }
+.ordered-copy-actions small { color: var(--muted); font-size: 11px; line-height: 1.6; word-break: keep-all; }
+.ordered-copy-history, .ordered-copy-not-ready { margin-top: 12px; border-top: 1px solid var(--line); padding-top: 10px; }
+.ordered-copy-history summary, .ordered-copy-not-ready summary { cursor: pointer; color: var(--muted); font-size: 12px; font-weight: 700; }
+.ordered-copy-not-ready ul { display: grid; gap: 8px; margin: 10px 0 0; padding: 0; list-style: none; }
+.ordered-copy-not-ready li { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 4px 12px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 9px; background: var(--panel-2); }
+.ordered-copy-not-ready li span { color: var(--amber); font-size: 11px; }
+@media (max-width: 820px) {
+  .ordered-copy-actions .btn { min-height: 44px; }
+  .ordered-copy-table input[type="checkbox"] { width: 22px; height: 22px; }
+  .ordered-copy-history summary, .ordered-copy-not-ready summary { min-height: 40px; display: flex; align-items: center; }
+}
+@media (max-width: 560px) {
+  /* Rows become compact cards. */
+  .ordered-copy-table { min-width: 0; }
+  .ordered-copy-table thead { display: none; }
+  .ordered-copy-table tr { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 10px; padding: 12px 4px; border-bottom: 1px solid var(--line); }
+  .ordered-copy-table td { display: grid; gap: 3px; padding: 0; border: 0; white-space: normal; }
+  .ordered-copy-table td::before { content: attr(data-label); color: var(--muted); font-size: 11px; font-weight: 600; }
+  .ordered-copy-table td[data-label="회원"], .ordered-copy-table td.ordered-copy-reason { grid-column: 1 / -1; max-width: none; }
+  .ordered-copy-table td.empty-cell { display: block; grid-column: 1 / -1; }
+  .ordered-copy-table td.empty-cell::before { content: none; }
+  .ordered-copy-actions .btn { width: 100%; }
+}

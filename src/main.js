@@ -3,6 +3,8 @@ import { getAccessDecision } from './access.js';
 import { createNewOperationPanel } from './new-operation.js';
 import { accountDisplayId, isValidGateUid, loginIdToEmail } from './account-id.js';
 import { adminApiLabel, adminCopyStatus, resumeBlockerGuidance } from './copy-status.js';
+import { ORDERED_COPY_CANCEL_CONFIRMATION, ORDERED_COPY_CONFIRMATION, orderedCopyCancelText, orderedCopyConfirmText,
+  orderedCopyError, renderOrderedCopyStart } from './ordered-copy-start.js';
 import './prototype-theme.css';
 
 // The prototype stylesheet is the single visual source of truth.
@@ -114,6 +116,13 @@ let adminMemberTab = 'active';
 let adminWithdrawBusy = false;
 let adminBulkResumeBusy = false;
 let adminPausedByMaster = 0;
+// 2026-10-30 가입 순서대로 카피 시작 (src/ordered-copy-start.js).
+let adminOrderedCopy = null;
+let adminOrderedCopyBusy = false;
+let adminOrderedCopyMarkup = '';
+let adminOrderedCopyRequestSeq = 0;
+const adminOrderedCopySelection = new Set();
+const adminOrderedCopySeen = new Set();
 let newOperationPanel = null;
 let copySettingsBaseline = null;
 let copySettingsBusy = false;
@@ -395,7 +404,7 @@ function enhanceAdminApiPage() {
 function enhanceAdminMembersPage() {
   const page = byId('admin-members');
   if (!page) return;
-  page.innerHTML = `<div class="admin-period-tabs admin-member-tabs" role="tablist" aria-label="회원 구분"><button type="button" role="tab" data-member-tab="active" class="active" aria-selected="true">회원</button><button type="button" role="tab" data-member-tab="withdrawn" aria-selected="false">탈퇴 회원 <span id="withdrawnCount">0</span></button></div><section class="card admin-pending-members"><div class="panel-title"><div><h3>가입 승인 대기</h3><p>승인 전 회원을 확인하고 접근 권한을 관리합니다.</p></div><span id="pendingCount" class="chip yellow">대기 0명</span></div><div class="table"><table><thead><tr><th>신청자</th><th>아이디(UID)</th><th>휴대폰</th><th>신청시간</th><th>관리</th></tr></thead><tbody id="pendingMembers"><tr><td colspan="5" class="empty-cell">승인 대기 회원을 불러오는 중입니다.</td></tr></tbody></table></div></section><section class="card admin-member-directory" data-member-tab-panel="active"><div class="panel-title"><div><h3>전체 회원</h3><p id="memberDirectorySummary">회원 상태와 실제 계좌 지표를 확인합니다.</p></div><input id="adminMemberSearch" class="admin-member-search" type="search" placeholder="회원 검색" aria-label="회원 검색"></div><div id="adminMasterPauseNotice" class="notice admin-master-pause-notice hidden" role="status"><p id="adminMasterPauseText">-</p><button id="adminBulkResume" class="btn" type="button">전체 회원 카피 재개 요청</button></div><div class="table"><table class="admin-members-table"><thead><tr><th>회원</th><th>카피 상태</th><th title="거래소 잔고 · 미실현 손익 제외">총 자산</th><th title="총 자산 + 미실현 손익">현재 자산</th><th>오늘 PNL</th><th>카피 비율</th><th>증거금 사용</th><th>API 상태</th><th>마지막 동기화</th><th>관리</th></tr></thead><tbody id="memberList"><tr><td colspan="10" class="empty-cell">회원 목록을 불러오는 중입니다.</td></tr></tbody></table></div></section><section class="card admin-withdrawn-members hidden" data-member-tab-panel="withdrawn"><div class="panel-title"><div><h3>탈퇴 회원</h3><p>탈퇴 처리된 회원입니다. 거래·수익 기록은 보존되며, 복구하면 승인 대기로 돌아갑니다.</p></div></div><div class="table"><table class="admin-withdrawn-table"><thead><tr><th>회원</th><th>휴대폰</th><th>가입일</th><th>탈퇴일시</th><th>사유</th><th>관리</th></tr></thead><tbody id="withdrawnMembers"><tr><td colspan="6" class="empty-cell">탈퇴 회원을 불러오는 중입니다.</td></tr></tbody></table></div></section>`;
+  page.innerHTML = `<div class="admin-period-tabs admin-member-tabs" role="tablist" aria-label="회원 구분"><button type="button" role="tab" data-member-tab="active" class="active" aria-selected="true">회원</button><button type="button" role="tab" data-member-tab="withdrawn" aria-selected="false">탈퇴 회원 <span id="withdrawnCount">0</span></button></div><section class="card admin-pending-members"><div class="panel-title"><div><h3>가입 승인 대기</h3><p>승인 전 회원을 확인하고 접근 권한을 관리합니다.</p></div><span id="pendingCount" class="chip yellow">대기 0명</span></div><div class="table"><table><thead><tr><th>신청자</th><th>아이디(UID)</th><th>휴대폰</th><th>신청시간</th><th>관리</th></tr></thead><tbody id="pendingMembers"><tr><td colspan="5" class="empty-cell">승인 대기 회원을 불러오는 중입니다.</td></tr></tbody></table></div></section><section id="adminOrderedCopyStart" class="card admin-ordered-copy" data-member-tab-panel="active" aria-live="polite"><div class="panel-title"><div><h3>가입 순서대로 카피 시작</h3><p>회원 준비 상태를 불러오는 중입니다.</p></div></div></section><section class="card admin-member-directory" data-member-tab-panel="active"><div class="panel-title"><div><h3>전체 회원</h3><p id="memberDirectorySummary">회원 상태와 실제 계좌 지표를 확인합니다.</p></div><input id="adminMemberSearch" class="admin-member-search" type="search" placeholder="회원 검색" aria-label="회원 검색"></div><div id="adminMasterPauseNotice" class="notice admin-master-pause-notice hidden" role="status"><p id="adminMasterPauseText">-</p><button id="adminBulkResume" class="btn" type="button">전체 회원 카피 재개 요청</button></div><div class="table"><table class="admin-members-table"><thead><tr><th>회원</th><th>카피 상태</th><th title="거래소 잔고 · 미실현 손익 제외">총 자산</th><th title="총 자산 + 미실현 손익">현재 자산</th><th>오늘 PNL</th><th>카피 비율</th><th>증거금 사용</th><th>API 상태</th><th>마지막 동기화</th><th>관리</th></tr></thead><tbody id="memberList"><tr><td colspan="10" class="empty-cell">회원 목록을 불러오는 중입니다.</td></tr></tbody></table></div></section><section class="card admin-withdrawn-members hidden" data-member-tab-panel="withdrawn"><div class="panel-title"><div><h3>탈퇴 회원</h3><p>탈퇴 처리된 회원입니다. 거래·수익 기록은 보존되며, 복구하면 승인 대기로 돌아갑니다.</p></div></div><div class="table"><table class="admin-withdrawn-table"><thead><tr><th>회원</th><th>휴대폰</th><th>가입일</th><th>탈퇴일시</th><th>사유</th><th>관리</th></tr></thead><tbody id="withdrawnMembers"><tr><td colspan="6" class="empty-cell">탈퇴 회원을 불러오는 중입니다.</td></tr></tbody></table></div></section>`;
 }
 
 function enhanceMemberDetailModal() {
@@ -1186,7 +1195,10 @@ async function requestResumeReclassify() {
 function startCopySystemPolling() {
   stopCopySystemPolling();
   copySystemTimer = window.setInterval(() => {
-    if (!document.hidden) loadCopySystemStatus();
+    if (document.hidden) return;
+    loadCopySystemStatus();
+    // The ordered copy start progress refreshes while the member page is open.
+    if (currentProfile?.role === 'ADMIN' && byId('admin-members')?.classList.contains('active')) loadAdminOrderedCopyStart();
   }, 10_000);
 }
 
@@ -1951,6 +1963,9 @@ function auditActionLabel(action) {
     MEMBER_PASSWORD_RESET_REQUESTED: '회원 비밀번호 재설정 요청',
     MEMBERS_PAUSED_BY_MASTER: 'Master 변경으로 회원 카피 일시중지',
     ADMIN_BULK_COPY_RESUME_REQUESTED: '전체 회원 카피 재개 요청',
+    ADMIN_ORDERED_COPY_START_ENQUEUED: '가입 순서대로 카피 시작 요청',
+    ADMIN_ORDERED_COPY_START_REQUESTED: '가입 순서 카피 시작 · 회원 시작 요청',
+    ADMIN_ORDERED_COPY_START_CANCELLED: '가입 순서 카피 시작 · 대기 회원 취소',
     MASTER_GATE_API_KEY_ROTATION_REQUESTED: 'Master API Key 교체 요청',
     MASTER_GATE_API_KEY_ROTATED: 'Master API Key 교체 완료',
     MASTER_GATE_API_KEY_ROTATION_FAILED: 'Master API Key 교체 실패(기존 Key 유지)',
@@ -2922,6 +2937,7 @@ async function loadAdminMembers() {
   if (!supabase || currentProfile?.role !== 'ADMIN') return;
   const ticket = ++adminMembersRequestSeq;
   const today = kstDate();
+  loadAdminOrderedCopyStart();
   const [profilesResult, connectionsResult, liveResult, metricsResult] = await Promise.all([
     supabase.from('profiles').select('id,email,gate_uid,full_name,phone,approval_status,role,copy_ratio,max_position_ratio,copy_paused,member_halted,reduce_only,admin_paused,admin_reduce_only,released_gate_uid,created_at,withdrawn_at,withdrawal_reason').order('created_at', { ascending: false }),
     sharedRpc('get_admin_gate_api_connections'),
@@ -2962,6 +2978,100 @@ async function loadAdminMembers() {
     return { ...profile, ...metric, fallback_progress: progress, connection: connectionByUserId.get(profile.id) || null };
   });
   renderAdminMemberRows();
+  renderAdminOrderedCopyStart();
+}
+
+// 2026-10-30 가입 순서대로 카피 시작: READY members in signup order, one FUTURE_ONLY start at a time.
+function syncAdminOrderedCopySelection(data) {
+  const ready = new Set((data?.ready_members || []).map((member) => member.user_id));
+  // Newly ready members are selected by default; a member the admin unchecked stays unchecked.
+  for (const id of ready) {
+    if (!adminOrderedCopySeen.has(id)) { adminOrderedCopySeen.add(id); adminOrderedCopySelection.add(id); }
+  }
+  for (const id of [...adminOrderedCopySeen]) {
+    if (!ready.has(id)) { adminOrderedCopySeen.delete(id); adminOrderedCopySelection.delete(id); }
+  }
+}
+
+function renderAdminOrderedCopyStart() {
+  const root = byId('adminOrderedCopyStart');
+  if (!root || !adminOrderedCopy) return;
+  const balances = new Map(adminMembersCache.map((member) => [member.id, member.balance_equity ?? member.total_equity]));
+  const markup = renderOrderedCopyStart(adminOrderedCopy, { selected: adminOrderedCopySelection, balances, busy: adminOrderedCopyBusy });
+  // Polling re-renders only on change, so an open <details> or a focused checkbox is not reset every 10 s.
+  if (markup === adminOrderedCopyMarkup && root.dataset.rendered === 'true') return;
+  const open = [...root.querySelectorAll('details[open]')].map((node) => node.className);
+  root.innerHTML = markup;
+  root.dataset.rendered = 'true';
+  adminOrderedCopyMarkup = markup;
+  for (const name of open) root.querySelector(`details.${name.split(' ')[0]}`)?.setAttribute('open', '');
+}
+
+async function loadAdminOrderedCopyStart() {
+  if (!supabase || currentProfile?.role !== 'ADMIN') return;
+  const ticket = ++adminOrderedCopyRequestSeq;
+  const { data, error } = await supabase.rpc('get_admin_ordered_copy_start');
+  if (ticket !== adminOrderedCopyRequestSeq) return;
+  if (error) {
+    if (!adminOrderedCopy && byId('adminOrderedCopyStart')) {
+      byId('adminOrderedCopyStart').innerHTML = `<div class="panel-title"><div><h3>가입 순서대로 카피 시작</h3></div></div>${inlineRetry('가입 순서 카피 시작 현황을 불러오지 못했습니다.', 'admin-members')}`;
+    }
+    return;
+  }
+  adminOrderedCopy = data;
+  syncAdminOrderedCopySelection(data);
+  renderAdminOrderedCopyStart();
+}
+
+async function startAdminOrderedCopy() {
+  if (!supabase || currentProfile?.role !== 'ADMIN' || adminOrderedCopyBusy || !adminOrderedCopy) return;
+  const userIds = (adminOrderedCopy.ready_members || []).map((member) => member.user_id).filter((id) => adminOrderedCopySelection.has(id));
+  if (!userIds.length) return window.toast('시작할 회원을 선택해 주세요.', { kind: 'error' });
+  if (!window.confirm(orderedCopyConfirmText(userIds.length, adminOrderedCopy))) return;
+  adminOrderedCopyBusy = true;
+  renderAdminOrderedCopyStart();
+  let data = null; let error = null;
+  try {
+    ({ data, error } = await supabase.rpc('admin_enqueue_ordered_copy_start', { p_user_ids: userIds, p_confirmation: ORDERED_COPY_CONFIRMATION }));
+  } finally {
+    adminOrderedCopyBusy = false;
+  }
+  if (error) {
+    renderAdminOrderedCopyStart();
+    window.toast(orderedCopyError(error, '카피 시작을 요청하지 못했습니다.'), { kind: 'error' });
+    return loadAdminOrderedCopyStart();
+  }
+  adminOrderedCopy = data;
+  syncAdminOrderedCopySelection(data);
+  renderAdminOrderedCopyStart();
+  const skipped = Number(data?.skipped || 0);
+  window.toast(`${Number(data?.queued || 0)}명을 가입 순서대로 한 명씩 시작합니다.`
+    + (skipped ? ` ${skipped}명은 준비되지 않아 건너뜁니다.` : '')
+    + (data?.waiting_for_live ? ' 실거래(LIVE)가 켜지면 시작합니다.' : ''), { kind: 'success' });
+  invalidateSharedRpc('get_admin_operations_metrics', 'get_admin_live_trading_data');
+  await loadAdminMembers();
+}
+
+async function cancelAdminOrderedCopy() {
+  if (!supabase || currentProfile?.role !== 'ADMIN' || adminOrderedCopyBusy) return;
+  const queued = (adminOrderedCopy?.items || []).filter((item) => item.state === 'QUEUED').length;
+  if (!queued || !window.confirm(orderedCopyCancelText(queued))) return;
+  adminOrderedCopyBusy = true;
+  renderAdminOrderedCopyStart();
+  let data = null; let error = null;
+  try {
+    ({ data, error } = await supabase.rpc('admin_cancel_ordered_copy_start', { p_confirmation: ORDERED_COPY_CANCEL_CONFIRMATION }));
+  } finally {
+    adminOrderedCopyBusy = false;
+  }
+  if (error) {
+    renderAdminOrderedCopyStart();
+    return window.toast(orderedCopyError(error, '대기 회원을 취소하지 못했습니다.'), { kind: 'error' });
+  }
+  adminOrderedCopy = data;
+  syncAdminOrderedCopySelection(data);
+  renderAdminOrderedCopyStart();
+  window.toast(`대기 중인 ${Number(data?.cancelled || 0)}명을 취소했습니다.${Number(data?.in_progress || 0) ? ' 이미 시작을 요청한 회원은 결과까지 확인합니다.' : ''}`, { kind: 'success' });
 }
 
 // 총 자산 = exchange balance without unrealised PnL; 현재 자산 = balance + unrealised PnL.
@@ -3109,6 +3219,8 @@ document.addEventListener('click', async (event) => {
   if (pauseConfirm) await setCopyPause(pauseConfirm.dataset.copyPauseConfirm);
   if (event.target.closest('[data-copy-resume-reclassify]')) await requestResumeReclassify();
   if (event.target.closest('#adminBulkResume')) await requestAdminBulkResume();
+  if (event.target.closest('#orderedCopyStart')) await startAdminOrderedCopy();
+  if (event.target.closest('#orderedCopyCancel')) await cancelAdminOrderedCopy();
   const releaseUidButton = event.target.closest('[data-member-release-uid]');
   if (releaseUidButton) await releaseMemberGateUid(releaseUidButton.dataset.memberReleaseUid, releaseUidButton.dataset.memberName, releaseUidButton);
   if (event.target.closest('#adminEmergencyHalt')) await emergencyHalt();
@@ -3182,6 +3294,18 @@ document.addEventListener('click', async (event) => {
 
 document.addEventListener('change', (event) => {
   if (event.target.id === 'analysisMonthSelect' && memberTradingAnalysisData) renderTradingAnalysis(memberTradingAnalysisData);
+  if (event.target.matches('[data-ordered-copy-select]')) {
+    if (event.target.checked) adminOrderedCopySelection.add(event.target.dataset.orderedCopySelect);
+    else adminOrderedCopySelection.delete(event.target.dataset.orderedCopySelect);
+    renderAdminOrderedCopyStart();
+  }
+  if (event.target.matches('[data-ordered-copy-all]')) {
+    for (const member of adminOrderedCopy?.ready_members || []) {
+      if (event.target.checked) adminOrderedCopySelection.add(member.user_id);
+      else adminOrderedCopySelection.delete(member.user_id);
+    }
+    renderAdminOrderedCopyStart();
+  }
   if (event.target.id === 'adminPositionOwner') {
     adminPositionOwner = event.target.value || 'MASTER';
     renderAdminMasterPositions();
