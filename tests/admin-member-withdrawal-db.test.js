@@ -85,7 +85,8 @@ test('restore: lifts the ban and returns the member to PENDING; approval cannot 
   await rejects("select public.set_user_approval($1,'APPROVED')", [ids.user], /MEMBER_WITHDRAWN/);
   await db.query('select public.admin_restore_withdrawn_member($1)', [ids.user]);
   const p = await one('select approval_status,withdrawn_at,copy_paused,member_halted from public.profiles where id=$1', [ids.user]);
-  assert.deepEqual([p.approval_status, p.withdrawn_at, p.copy_paused, p.member_halted], ['PENDING', null, true, true]);
+  // 2026-10-21 QA A7: the halt is lifted (still paused), so the member can resume after re-approval.
+  assert.deepEqual([p.approval_status, p.withdrawn_at, p.copy_paused, p.member_halted], ['PENDING', null, true, false]);
   assert.equal((await one('select banned_until from auth.users where id=$1', [ids.user])).banned_until, null);
   assert.equal(await n("select count(*) n from public.admin_audit_logs where action='MEMBER_RESTORED'"), 1);
   // Restored members still have no usable API key (must reconnect).

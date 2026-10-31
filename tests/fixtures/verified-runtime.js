@@ -38,11 +38,51 @@ export const migrationFiles = [
   '20261020020000_qa_fixes.sql',
   // 2026-10-21 administrator member withdrawal / restore.
   '20261021010000_admin_member_withdrawal.sql',
+  // 2026-10-21 Gate UID accounts (needs the production stand-ins below).
+  '20261021020000_uid_accounts.sql',
+  // 2026-10-21 QA sizing: FUTURE_ONLY anchors (consumed increases, reference/observed Master, held ratio).
+  '20261021030000_qa_sizing_anchor.sql',
+  // 2026-10-21 QA A/D: Master key rotation, admin status, UID release, restore reset, admin restrictions.
+  '20261021032000_qa_admin_lifecycle.sql',
+  // 2026-10-21 QA D: risk on the sizing equity basis, unified-member policy.
+  '20261021033000_qa_risk_basis.sql',
+  // 2026-10-21 review fixes: account policy (unified member) visible to the administrator.
+  '20261021034000_qa_review_fixes.sql',
 ];
+// Production objects the structural fixture lacks (test-only stand-ins, no data). Every statement is
+// "if not exists"/"or replace", so a test may still create its own (narrower) stand-in first.
+export const productionStandIns = `
+  create table if not exists private.gate_api_verification_jobs (
+    id bigint generated always as identity primary key, user_id uuid not null unique,
+    attempts integer not null default 0, run_after timestamptz not null default now(), claimed_at timestamptz,
+    created_at timestamptz not null default now(), updated_at timestamptz not null default now());
+  create table if not exists private.open_order_cancel_jobs (
+    id bigint generated always as identity primary key, trading_account_id uuid not null unique,
+    state text not null default 'PENDING', requested_by uuid, reason text, attempts integer not null default 0,
+    run_after timestamptz not null default now(), claimed_at timestamptz, cancelled_count integer,
+    remaining_count integer, last_error_code text, completed_at timestamptz,
+    created_at timestamptz not null default now(), updated_at timestamptz not null default now());
+  create table if not exists auth.users (id uuid primary key, email text, raw_user_meta_data jsonb,
+    email_confirmed_at timestamptz, banned_until timestamptz, updated_at timestamptz);
+  create table if not exists public.legal_acceptances (user_id uuid not null, document_type text not null,
+    document_version text not null, accepted_at timestamptz not null, unique (user_id, document_type, document_version));
+  create or replace function extensions.pgp_sym_encrypt(text,text,text) returns bytea language sql as $$ select convert_to('TEST_ONLY','UTF8') $$;
+  create or replace function extensions.gen_random_bytes(integer) returns bytea language sql as $$ select decode(repeat('00',$1),'hex') $$;
+  CREATE OR REPLACE FUNCTION public.auto_approve_confirmed_user()
+   RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path TO 'public', 'pg_temp'
+  AS $function$
+begin
+  if new.email_confirmed_at is null then
+    return new;
+  end if;
+  return new;
+end;
+$function$;`;
 export async function createVerifiedDatabase() {
   const db = new PGlite();
   await db.exec(readFileSync('tests/fixtures/copy-runtime-schema.sql', 'utf8'));
   await db.exec('insert into public.copy_system_control default values');
+  await db.exec(productionStandIns);
   for (const file of migrationFiles) {
     try { await db.exec(readFileSync(`supabase/migrations/${file}`, 'utf8')); }
     catch (error) { await db.close(); throw new Error(`${file}: ${error.message}`, { cause: error }); }

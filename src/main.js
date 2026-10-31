@@ -2,6 +2,7 @@ import { createClient } from '@supabase/supabase-js';
 import { getAccessDecision } from './access.js';
 import { createNewOperationPanel } from './new-operation.js';
 import { accountDisplayId, isValidGateUid, loginIdToEmail } from './account-id.js';
+import { adminApiLabel, adminCopyStatus, resumeBlockerGuidance } from './copy-status.js';
 import './prototype-theme.css';
 
 // The prototype stylesheet is the single visual source of truth.
@@ -111,6 +112,8 @@ let adminMemberSearch = '';
 let adminWithdrawnCache = [];
 let adminMemberTab = 'active';
 let adminWithdrawBusy = false;
+let adminBulkResumeBusy = false;
+let adminPausedByMaster = 0;
 let newOperationPanel = null;
 let copySettingsBaseline = null;
 let copySettingsBusy = false;
@@ -220,12 +223,17 @@ function enhancePauseModal() {
     actions.id = 'pauseModalActions';
     actions.innerHTML = `
     <button class="btn" type="button" data-copy-pause="HOLD">신규 카피만 중지 · 현재 포지션 유지</button>
-    <button class="btn red" type="button" data-copy-pause="CLOSE">카피 중지 + 현재 포지션 정리</button>
+    <button class="btn red" type="button" data-copy-pause="CLOSE">카피 중지 + 계정 전체 포지션 정리</button>
     <button class="btn green" type="button" data-copy-pause="RESUME">카피 재개</button>`;
+    actions.insertAdjacentHTML('beforebegin', `<div id="pauseResumeGuidance" class="pause-resume-guidance hidden" role="status">
+      <b id="pauseResumeGuidanceTitle">-</b>
+      <p id="pauseResumeGuidanceDetail">-</p>
+      <button class="btn" type="button" data-copy-resume-reclassify hidden>남은 카피 포지션을 내 포지션으로 전환하고 재개</button>
+    </div>`);
     actions.insertAdjacentHTML('afterend', `<div id="pauseCloseConfirm" class="pause-close-confirm hidden" role="alertdialog" aria-labelledby="pauseCloseConfirmTitle" aria-describedby="pauseCloseConfirmDetail">
       <b id="pauseCloseConfirmTitle">포지션 정리를 한 번 더 확인해 주세요</b>
       <p id="pauseCloseConfirmDetail">-</p>
-      <div class="actions"><button class="btn" type="button" data-copy-pause-cancel>취소</button><button class="btn red" type="button" data-copy-pause-confirm="CLOSE">카피 중지 및 포지션 정리 실행</button></div>
+      <div class="actions"><button class="btn" type="button" data-copy-pause-cancel>취소</button><button class="btn red" type="button" data-copy-pause-confirm="CLOSE">카피 중지 및 전체 포지션 정리 실행</button></div>
     </div>`);
   }
 }
@@ -303,6 +311,7 @@ function enhanceCopySettingsUi() {
     <section class="card section copy-control-card"><div class="section-head"><div><small class="copy-eyebrow">종목 상한</small><h3>종목당 최대 포지션 비중</h3><p>한 종목이 내 총자산에서 차지할 수 있는 상한입니다.</p></div><strong id="maxPositionRatioValue">30%</strong></div><input id="maxPositionRatioSelect" class="copy-range" type="range" min="20" max="50" step="10" value="30" aria-label="종목당 최대 포지션 비중" aria-describedby="maxPositionRatioValue"><div class="copy-range-labels"><span>20% 안전</span><span>30% 균형</span><span>40% 적극</span><span>50% 최대</span></div></section>
     <section class="card section copy-risk-card"><div class="section-head"><div><small class="copy-eyebrow">리스크 한도</small><h3>계정 리스크 한도</h3><p>한도 도달 시 Worker가 신규 주문을 자동 차단합니다. 운영자가 전체 계정에 동일하게 고정한 값으로, 회원이 변경할 수 없습니다.</p></div><span class="chip yellow">운영자 고정</span></div><div class="copy-risk-inputs"><label><span>일일 최대 손실</span><div class="is-locked"><input id="dailyLossLimitInput" type="number" value="15" disabled aria-disabled="true" title="운영자가 고정한 한도입니다"><b>%</b></div></label><label><span>최대 Drawdown</span><div class="is-locked"><input id="maxDrawdownInput" type="number" value="20" disabled aria-disabled="true" title="운영자가 고정한 한도입니다"><b>%</b></div></label><label><span>레버리지 정책</span><div><b>Master 자동 추종</b></div></label></div><div class="notice">LONG·SHORT 각 포지션은 Master가 사용한 레버리지와 증거금 모드로 진입합니다.</div></section>
     </div><div class="copy-settings-secondary"><section class="card section copy-existing-policy"><div><small class="copy-eyebrow">기존 포지션</small><h3>기존 포지션 처리</h3><p>API 연결 시점에 Master가 이미 보유한 포지션은 진입하지 않고, 이후 추가·감소 및 신규 진입부터 카피합니다.</p></div><span class="chip">연결 이후만 카피</span></section>
+    <section class="card section copy-fund-policy"><div><small class="copy-eyebrow">입출금 · 포지션 모드</small><h3>알아두세요</h3><p id="copyTransferNotice">선물 계정에서 출금하거나 현물로 옮기면 종목당 최대 비중 한도도 함께 줄어, 한도를 넘는 카피 수량은 Master 변화가 없어도 매도될 수 있습니다. 다시 입금하면 줄었던 수량이 Master 기준까지 다시 채워질 수 있습니다. 입출금 자체는 수익률·손실 한도 계산에서 제외됩니다.</p><p id="copyPositionModeNotice">Gate.io 선물 포지션 모드는 양방향(Hedge)이어야 합니다. 단방향이면 카피 재개가 거절되니 Gate 선물 설정에서 양방향으로 바꾼 뒤 재개를 요청해 주세요.</p></div></section>
     <aside class="card section copy-setting-summary"><small class="copy-eyebrow">설정 미리보기</small><h3>현재 설정 요약</h3><div class="metric"><span>카피 비율</span><b id="copyPreviewRatio">100%</b></div><div class="metric"><span>종목당 최대 비중</span><b id="copyPreviewCap">30%</b></div><div class="metric"><span>포지션 모드</span><b>롱·숏 양방향</b></div><div class="metric"><span>레버리지</span><b>Master 자동 추종</b></div><div class="metric"><span>리스크 차단</span><b id="copyPreviewRisk">-5% · -15%</b></div><div class="notice">설정 변경은 다음 Worker 주기부터 적용됩니다. 기존 포지션을 임의로 확대하지 않습니다.</div><button id="copySettingsSave" class="btn primary full" type="button">설정 저장</button></aside>
   </div></div>`;
 }
@@ -386,7 +395,7 @@ function enhanceAdminApiPage() {
 function enhanceAdminMembersPage() {
   const page = byId('admin-members');
   if (!page) return;
-  page.innerHTML = `<div class="admin-period-tabs admin-member-tabs" role="tablist" aria-label="회원 구분"><button type="button" role="tab" data-member-tab="active" class="active" aria-selected="true">회원</button><button type="button" role="tab" data-member-tab="withdrawn" aria-selected="false">탈퇴 회원 <span id="withdrawnCount">0</span></button></div><section class="card admin-pending-members"><div class="panel-title"><div><h3>가입 승인 대기</h3><p>승인 전 회원을 확인하고 접근 권한을 관리합니다.</p></div><span id="pendingCount" class="chip yellow">대기 0명</span></div><div class="table"><table><thead><tr><th>신청자</th><th>아이디(UID)</th><th>휴대폰</th><th>신청시간</th><th>관리</th></tr></thead><tbody id="pendingMembers"><tr><td colspan="5" class="empty-cell">승인 대기 회원을 불러오는 중입니다.</td></tr></tbody></table></div></section><section class="card admin-member-directory" data-member-tab-panel="active"><div class="panel-title"><div><h3>전체 회원</h3><p id="memberDirectorySummary">회원 상태와 실제 계좌 지표를 확인합니다.</p></div><input id="adminMemberSearch" class="admin-member-search" type="search" placeholder="회원 검색" aria-label="회원 검색"></div><div class="table"><table class="admin-members-table"><thead><tr><th>회원</th><th>카피 상태</th><th title="거래소 잔고 · 미실현 손익 제외">총 자산</th><th title="총 자산 + 미실현 손익">현재 자산</th><th>오늘 PNL</th><th>카피 비율</th><th>증거금 사용</th><th>API 상태</th><th>마지막 동기화</th><th>관리</th></tr></thead><tbody id="memberList"><tr><td colspan="10" class="empty-cell">회원 목록을 불러오는 중입니다.</td></tr></tbody></table></div></section><section class="card admin-withdrawn-members hidden" data-member-tab-panel="withdrawn"><div class="panel-title"><div><h3>탈퇴 회원</h3><p>탈퇴 처리된 회원입니다. 거래·수익 기록은 보존되며, 복구하면 승인 대기로 돌아갑니다.</p></div></div><div class="table"><table class="admin-withdrawn-table"><thead><tr><th>회원</th><th>휴대폰</th><th>가입일</th><th>탈퇴일시</th><th>사유</th><th>관리</th></tr></thead><tbody id="withdrawnMembers"><tr><td colspan="6" class="empty-cell">탈퇴 회원을 불러오는 중입니다.</td></tr></tbody></table></div></section>`;
+  page.innerHTML = `<div class="admin-period-tabs admin-member-tabs" role="tablist" aria-label="회원 구분"><button type="button" role="tab" data-member-tab="active" class="active" aria-selected="true">회원</button><button type="button" role="tab" data-member-tab="withdrawn" aria-selected="false">탈퇴 회원 <span id="withdrawnCount">0</span></button></div><section class="card admin-pending-members"><div class="panel-title"><div><h3>가입 승인 대기</h3><p>승인 전 회원을 확인하고 접근 권한을 관리합니다.</p></div><span id="pendingCount" class="chip yellow">대기 0명</span></div><div class="table"><table><thead><tr><th>신청자</th><th>아이디(UID)</th><th>휴대폰</th><th>신청시간</th><th>관리</th></tr></thead><tbody id="pendingMembers"><tr><td colspan="5" class="empty-cell">승인 대기 회원을 불러오는 중입니다.</td></tr></tbody></table></div></section><section class="card admin-member-directory" data-member-tab-panel="active"><div class="panel-title"><div><h3>전체 회원</h3><p id="memberDirectorySummary">회원 상태와 실제 계좌 지표를 확인합니다.</p></div><input id="adminMemberSearch" class="admin-member-search" type="search" placeholder="회원 검색" aria-label="회원 검색"></div><div id="adminMasterPauseNotice" class="notice admin-master-pause-notice hidden" role="status"><p id="adminMasterPauseText">-</p><button id="adminBulkResume" class="btn" type="button">전체 회원 카피 재개 요청</button></div><div class="table"><table class="admin-members-table"><thead><tr><th>회원</th><th>카피 상태</th><th title="거래소 잔고 · 미실현 손익 제외">총 자산</th><th title="총 자산 + 미실현 손익">현재 자산</th><th>오늘 PNL</th><th>카피 비율</th><th>증거금 사용</th><th>API 상태</th><th>마지막 동기화</th><th>관리</th></tr></thead><tbody id="memberList"><tr><td colspan="10" class="empty-cell">회원 목록을 불러오는 중입니다.</td></tr></tbody></table></div></section><section class="card admin-withdrawn-members hidden" data-member-tab-panel="withdrawn"><div class="panel-title"><div><h3>탈퇴 회원</h3><p>탈퇴 처리된 회원입니다. 거래·수익 기록은 보존되며, 복구하면 승인 대기로 돌아갑니다.</p></div></div><div class="table"><table class="admin-withdrawn-table"><thead><tr><th>회원</th><th>휴대폰</th><th>가입일</th><th>탈퇴일시</th><th>사유</th><th>관리</th></tr></thead><tbody id="withdrawnMembers"><tr><td colspan="6" class="empty-cell">탈퇴 회원을 불러오는 중입니다.</td></tr></tbody></table></div></section>`;
 }
 
 function enhanceMemberDetailModal() {
@@ -490,7 +499,7 @@ function enhanceLegalUi() {
         <article id="legalTerms" class="legal-document">
           <section><h3>1. 서비스와 투자 위험</h3><p>maetajak은 Master 실제 포지션을 기준으로 회원의 목표 포지션을 계산하고 차이만큼 주문하는 카피트레이딩 기능을 제공합니다. 가상자산 선물은 원금 전부를 잃을 수 있는 고위험 거래이며 수익을 보장하지 않습니다.</p></section>
           <section><h3>2. 성공보수</h3><p>성공보수는 매월 확정된 순실현수익의 10%입니다. 순실현수익은 실현손익에 펀딩비를 더하고 거래 수수료를 차감해 계산하며, 입출금·미실현손익은 제외합니다. 해당 월 순실현수익이 0 이하이면 성공보수는 없습니다.</p></section>
-          <section><h3>3. 직접 거래와 MANUAL_OVERRIDE</h3><p>카피 중인 종목의 주문, 포지션, 레버리지, 증거금, 익절·손절을 회원이 직접 변경하면 MANUAL_OVERRIDE로 판단해 해당 종목 카피를 중지하고 자동 재진입하지 않을 수 있습니다. 회원의 직접 변경으로 확대된 손실은 회원이 부담합니다.</p></section>
+          <section><h3>3. 직접 거래와 MANUAL_OVERRIDE</h3><p>회원이 카피 중인 종목을 직접 거래해도 카피는 계속됩니다. 회원이 직접 늘리거나 줄인 수량은 회원 본인 포지션으로 구분(MANUAL_OVERRIDE 기록)되어 카피가 사고팔지 않으며, 회원이 카피 수량을 직접 줄이면 줄인 수량을 다시 사지 않습니다. 레버리지·증거금 모드를 직접 바꿔도 다음 카피 진입 때 Master 레버리지가 다시 적용되며, Gate 양방향 모드에서는 같은 종목의 롱·숏에 함께 적용됩니다. 회원의 직접 변경으로 확대된 손실은 회원이 부담합니다.</p></section>
           <section><h3>4. 체결·시스템 위험</h3><p>급격한 가격 변동, 슬리피지, 유동성 부족, 부분 체결, 펀딩비, 거래소 장애, API 제한, 네트워크 지연, UNKNOWN 주문 조정 과정으로 Master와 다른 가격·수량이 체결되거나 손실이 발생할 수 있습니다.</p></section>
           <section><h3>5. 안전 제어</h3><p>서비스는 DRIFT, PAUSED, REDUCE_ONLY, ERROR, HALTED 등의 상태에서 주문을 제한할 수 있습니다. API 권한 이상, 미확인 주문 또는 비상 상황에는 사전 통지 없이 신규 주문을 중지할 수 있습니다.</p></section>
           <section><h3>6. 회원 의무</h3><p>회원은 본인 명의의 Gate.io 계정과 최소한의 Futures 권한만 사용하고, 출금 권한을 부여하지 않으며, API Key를 타인과 공유하지 않아야 합니다. 거래소 약관과 거주지 법령 준수 책임은 회원에게 있습니다.</p></section>
@@ -1019,6 +1028,7 @@ const HALT_REASON_LABELS = {
   ADMIN_HALT: '관리자 중단',
   WORKER_NOT_READY: 'Trading Worker 준비 중',
   WORKER_REPEATED_FAILURE: 'Trading Worker 연속 오류',
+  WORKER_HEARTBEAT_GAP: 'Trading Worker 3분 이상 중단 후 복귀 (관리자 재개 필요)',
   STALE_OR_INVALID_WORKER: 'Trading Worker 응답 지연',
   TRADING_WORKER_NOT_CONFIGURED: 'Trading Worker 미설정',
   MASTER_API_DISCONNECTED: 'Master API 연결 해제',
@@ -1110,11 +1120,66 @@ async function loadCopySystemStatus() {
     if (!resumeError && waiting) {
       const detail = byId('memberSystemDetail');
       if (detail) detail.textContent += ' · ' + (RESUME_STATE_LABELS[waiting.state] || '재개 확인 중');
-      if (waiting.reason === 'RESUME_UNRESOLVED_ORDERS' && detail) detail.textContent += ' · 이전 주문 결과 확인 대기';
+      // Per-blocker reason (QA D8): a generic "재개 확인 필요" gave the member nothing to act on.
+      if (waiting.reason && detail) detail.textContent += ' · ' + resumeBlockerGuidance(waiting.reason).title;
       if (!data?.emergency_halted && byId('memberSystemTitle')) byId('memberSystemTitle').textContent = RESUME_STATE_LABELS[waiting.state] || '재개 안전 확인 중';
       if (!data?.emergency_halted) setStatusTone(byId('memberSystemDot'), 'warn');
     }
     renderMemberCopyStatusChip();
+    renderMemberResumeGuidance();
+  }
+}
+
+// What stops the member's copy right now and what to do about it (QA D3/D8): admin restrictions first.
+function currentResumeGuidance() {
+  if (currentProfile?.role !== 'MEMBER') return null;
+  const withReason = (reason) => ({ reason, ...resumeBlockerGuidance(reason) });
+  if (currentProfile.admin_paused) return withReason(currentProfile.member_halted ? 'ADMIN_HALT' : 'ADMIN_PAUSE');
+  const waiting = memberResumeWaiting;
+  if (waiting && waiting.state !== 'CLOSING') {
+    if (!waiting.reason && ['REQUESTED', 'VALIDATED'].includes(waiting.state)) return null;
+    return withReason(waiting.reason);
+  }
+  if (currentProfile.admin_reduce_only) return withReason('ADMIN_REDUCE_ONLY');
+  return null;
+}
+
+function renderMemberResumeGuidance() {
+  const box = byId('pauseResumeGuidance');
+  if (!box) return;
+  const guidance = currentResumeGuidance();
+  box.classList.toggle('hidden', !guidance);
+  if (!guidance) return;
+  byId('pauseResumeGuidanceTitle').textContent = guidance.title;
+  byId('pauseResumeGuidanceDetail').textContent = guidance.detail;
+  const reclassify = box.querySelector('[data-copy-resume-reclassify]');
+  if (reclassify) reclassify.hidden = guidance.action !== 'RECLASSIFY';
+}
+
+const RESUME_REQUEST_ERRORS = {
+  ADMIN_PAUSED: '관리자가 일시중지한 계정입니다. 재개는 관리자에게 문의해 주세요.',
+  MEMBER_HALTED_OR_NOT_APPROVED: '카피가 중단된 계정입니다. 관리자에게 문의해 주세요.',
+  ACTIVE_MEMBER_ACCOUNT_REQUIRED: 'Gate API 연결과 검증이 끝난 뒤 재개할 수 있습니다.',
+  RECLASSIFY_NOT_AVAILABLE: '지금은 전환할 카피 포지션이 없습니다. 상태를 새로고침해 주세요.',
+};
+const resumeRequestError = (error) => RESUME_REQUEST_ERRORS[Object.keys(RESUME_REQUEST_ERRORS)
+  .find((code) => String(error?.message || '').includes(code))];
+
+// RESUME_COPY_SOURCE_MISSING: the member turns COPY the Master no longer holds into their own and resumes.
+async function requestResumeReclassify() {
+  if (!supabase || currentProfile?.role !== 'MEMBER' || copyPauseBusy) return;
+  if (!window.confirm('Master가 이미 정리한 종목에 남은 카피 포지션을 내 개인 포지션으로 전환하고 카피 재개를 요청할까요?\n\n• 전환한 수량은 이후 카피가 사고팔지 않습니다. 직접 관리해야 합니다.\n• Master가 아직 보유한 종목의 카피는 그대로 이어집니다.\n• 전환 내역은 기록되며 되돌릴 수 없습니다.')) return;
+  copyPauseBusy = true;
+  setPauseButtonsDisabled(true);
+  try {
+    const { error } = await supabase.rpc('request_my_copy_resume_reclassify', { p_confirmation: 'RECLASSIFY_UNMATCHED_COPY_AS_PERSONAL' });
+    if (error) return window.toast(resumeRequestError(error) || '재개를 요청하지 못했습니다.', { kind: 'error' });
+    window.closePause();
+    window.toast('남은 카피 포지션을 내 포지션으로 전환하고 재개 안전 확인을 요청했습니다.', { kind: 'success' });
+    await loadCopySystemStatus();
+  } finally {
+    copyPauseBusy = false;
+    setPauseButtonsDisabled(false);
   }
 }
 
@@ -1141,8 +1206,12 @@ function getMemberSelfCopyStatus() {
   if (memberSystemStatus?.emergency_halted) {
     return { label: '전체 카피 중단', className: 'chip red', title: `운영자가 전체 신규 주문을 중단했습니다 · ${haltReasonLabel(memberSystemStatus.halt_reason)}` };
   }
+  if (currentProfile.admin_paused) {
+    return { label: '관리자 일시중지', className: 'chip yellow', title: resumeBlockerGuidance('ADMIN_PAUSE').detail };
+  }
   if (memberResumeWaiting) {
-    return { label: RESUME_STATE_LABELS[memberResumeWaiting.state] || '재개 확인 중', className: 'chip yellow', title: '카피가 일시중지되었거나 재개 안전 확인이 진행 중입니다.' };
+    return { label: RESUME_STATE_LABELS[memberResumeWaiting.state] || '재개 확인 중', className: 'chip yellow',
+      title: memberResumeWaiting.reason ? resumeBlockerGuidance(memberResumeWaiting.reason).detail : '카피가 일시중지되었거나 재개 안전 확인이 진행 중입니다.' };
   }
   if (!memberGateConnectionLoaded) return { label: '상태 확인 중', className: 'chip yellow', title: '카피 상태를 확인하고 있습니다.' };
   const positions = Array.isArray(memberLiveSnapshot?.positions) ? memberLiveSnapshot.positions : [];
@@ -1177,6 +1246,7 @@ function renderPauseModalStatus() {
     statusNode.className = status.className;
     statusNode.title = status.title || '';
   }
+  renderMemberResumeGuidance();
   const summary = openPositionSummary();
   const positionsNode = byId('pauseModalPositions');
   if (positionsNode) positionsNode.textContent = summary
@@ -1190,16 +1260,19 @@ function setPauseCloseConfirm(show) {
   if (!show) return;
   const summary = openPositionSummary();
   const detail = byId('pauseCloseConfirmDetail');
+  // The worker closes every futures position of the account, including ones the member opened personally
+  // (QA 2026-10-21 D9: worker/qa-20261021-d-member-risk.test.js "CLOSE closes a personal position").
+  const scope = '직접 연 개인 포지션을 포함해 Gate 선물 계정의 모든 포지션을 시장가로 정리합니다.';
   if (detail) detail.textContent = summary
     ? summary.count
-      ? `신규 카피를 중지하고 보유 중인 포지션 ${summary.count}개(총 규모 ${formatAmount(summary.notional)})의 정리 주문을 요청합니다. 정리된 포지션은 되돌릴 수 없습니다.`
-      : '현재 확인된 보유 포지션은 없습니다. 신규 카피를 중지하고, 이후 남은 카피 포지션이 확인되면 정리합니다.'
-    : '보유 포지션 정보를 확인하지 못했습니다. 신규 카피를 중지하고 남아 있는 카피 포지션의 정리 주문을 요청합니다. 정리된 포지션은 되돌릴 수 없습니다.';
+      ? `신규 카피를 중지하고 ${scope} 대상: 보유 포지션 ${summary.count}개(총 규모 ${formatAmount(summary.notional)}). 정리된 포지션은 되돌릴 수 없습니다.`
+      : `현재 확인된 보유 포지션은 없습니다. 신규 카피를 중지하고, 이후 포지션이 확인되면 ${scope}`
+    : `보유 포지션 정보를 확인하지 못했습니다. 신규 카피를 중지하고 ${scope} 정리된 포지션은 되돌릴 수 없습니다.`;
   window.requestAnimationFrame(() => byId('pauseCloseConfirm')?.querySelector('[data-copy-pause-cancel]')?.focus());
 }
 
 function setPauseButtonsDisabled(disabled) {
-  document.querySelectorAll('#pauseModal [data-copy-pause], #pauseModal [data-copy-pause-confirm], #pauseModal [data-copy-pause-cancel]').forEach((button) => { button.disabled = disabled; });
+  document.querySelectorAll('#pauseModal [data-copy-pause], #pauseModal [data-copy-pause-confirm], #pauseModal [data-copy-pause-cancel], #pauseModal [data-copy-resume-reclassify]').forEach((button) => { button.disabled = disabled; });
 }
 
 async function setCopyPause(mode) {
@@ -1208,7 +1281,7 @@ async function setCopyPause(mode) {
   setPauseButtonsDisabled(true);
   try {
     const { error } = await supabase.rpc('set_my_copy_pause', { p_mode: mode });
-    if (error) return window.toast('카피 상태 변경에 실패했습니다.', { kind: 'error' });
+    if (error) return window.toast(resumeRequestError(error) || '카피 상태 변경에 실패했습니다.', { kind: 'error' });
     window.closePause();
     window.toast(mode === 'RESUME' ? '기존 보유 포지션을 유지하며 재개 안전 확인을 요청했습니다.' : mode === 'CLOSE' ? '신규 카피 중지와 포지션 정리를 요청했습니다.' : '신규 카피를 중지했습니다.', { kind: 'success' });
     await loadCopySystemStatus();
@@ -1231,7 +1304,7 @@ async function emergencyHalt() {
 const POSITION_STATE_META = {
   SYNCED: ['동기화됨', 'chip', 'Master 목표 수량과 실제 수량이 일치합니다.'],
   DRIFT: ['맞추는 중', 'chip yellow', '목표 수량과 차이가 있어 다음 주기에 맞춥니다.'],
-  MANUAL_OVERRIDE: ['직접 거래 감지', 'chip yellow', '회원이 직접 포지션을 변경해 이 종목의 자동 카피를 멈췄습니다.'],
+  MANUAL_OVERRIDE: ['직접 거래 감지', 'chip yellow', '회원이 직접 변경한 수량을 확인하고 있습니다. 확인되면 개인 포지션으로 구분되고 카피는 계속됩니다.'],
   PAUSED: ['일시중지', 'chip yellow', '이 종목의 카피가 일시중지되었습니다.'],
   REDUCE_ONLY: ['축소만 허용', 'chip yellow', '신규 진입은 막고 포지션 축소 주문만 허용합니다.'],
   HALTED: ['중단', 'chip red', '안전장치가 작동해 이 종목의 신규 주문이 차단되었습니다.'],
@@ -1719,7 +1792,7 @@ function renderAdminOperationsMetrics(data) {
   }
   if (byId('adminSyncedCount')) byId('adminSyncedCount').textContent = String(copying);
   renderAdminAttentionKpi();
-  if (byId('adminPausedCount')) byId('adminPausedCount').textContent = String(members.filter((member) => member.copy_status === 'PAUSED').length);
+  if (byId('adminPausedCount')) byId('adminPausedCount').textContent = String(members.filter((member) => ['PAUSED', 'RESUME_REQUIRED', 'CLOSING'].includes(member.copy_status)).length);
   if (byId('adminLiveOverrideCount')) byId('adminLiveOverrideCount').textContent = String(members.filter((member) => member.copy_status === 'HALTED').length);
   if (byId('adminLiveUnknownCount')) byId('adminLiveUnknownCount').textContent = String(members.filter((member) => ['API_ERROR', 'ERROR'].includes(member.copy_status)).length);
   renderOperationsChart('adminPnlChart', daily, 'pnl', { cumulative: true });
@@ -1876,6 +1949,17 @@ function auditActionLabel(action) {
     MASTER_GATE_API_CREDENTIALS_SAVED: 'Master API 정보 저장',
     MASTER_GATE_API_DISCONNECTED: 'Master API 연결 해제',
     MEMBER_PASSWORD_RESET_REQUESTED: '회원 비밀번호 재설정 요청',
+    MEMBERS_PAUSED_BY_MASTER: 'Master 변경으로 회원 카피 일시중지',
+    ADMIN_BULK_COPY_RESUME_REQUESTED: '전체 회원 카피 재개 요청',
+    MASTER_GATE_API_KEY_ROTATION_REQUESTED: 'Master API Key 교체 요청',
+    MASTER_GATE_API_KEY_ROTATED: 'Master API Key 교체 완료',
+    MASTER_GATE_API_KEY_ROTATION_FAILED: 'Master API Key 교체 실패(기존 Key 유지)',
+    MASTER_GATE_API_REVERIFICATION_REQUESTED: 'Master API 재검증 요청',
+    GATE_ACCOUNT_CHANGE_REQUESTED: 'Gate 계정 변경 요청',
+    GATE_ACCOUNT_REBOUND: 'Gate 계정 변경 반영',
+    MEMBER_GATE_UID_RELEASED: '회원 가입 UID 해제',
+    MEMBER_COPY_RECLASSIFY_REQUESTED: '회원 카피 포지션 개인 전환 요청',
+    MEMBER_COPY_RECLASSIFIED_AS_PERSONAL: '카피 포지션 개인 포지션으로 전환',
   };
   return labels[action] || String(action || '알 수 없는 작업').replaceAll('_', ' ').toLowerCase();
 }
@@ -1941,7 +2025,10 @@ async function saveAdminMemberWeights() {
 async function setAdminMemberControl(mode) {
   if (!selectedMemberId || currentProfile?.role !== 'ADMIN' || adminControlBusy || adminWeightBusy) return;
   const labels = { PAUSE: '일시중지', REDUCE_ONLY: '축소 전용', HALT: '중단', RESUME: '재개' };
-  if (!window.confirm(`이 회원의 카피 상태를 ${labels[mode]}로 변경할까요?`)) return;
+  const note = mode === 'RESUME'
+    ? '\n관리자가 건 일시중지·축소 전용·중단을 모두 해제하고 재개 안전 확인을 요청합니다.'
+    : '\n관리자가 건 제한은 회원이 직접 풀 수 없고, 관리자 재개로만 해제됩니다.';
+  if (!window.confirm(`이 회원의 카피 상태를 ${labels[mode]}로 변경할까요?${note}`)) return;
   adminControlBusy = true;
   setMemberDetailActionsDisabled(true);
   let error = null;
@@ -2115,16 +2202,19 @@ function renderAdminMasterGateConnection(connection) {
     setState('adminGateWithdrawal', 'DISABLED 확인 필요');
     byId('adminGateVerificationDetail').textContent = 'UID와 API Key, Secret Key를 입력해 주세요.';
     byId('adminGateApiForm').dataset.hasStoredCredential = 'false';
+    byId('adminGateApiForm').dataset.storedGateUid = '';
     byId('adminGateApiKey').required = true;
     byId('adminGateSecretKey').required = true;
     if (!adminGateApiBusy) byId('adminGateApiConnect').textContent = '암호화 저장 및 검증 요청';
     byId('adminGateCredentialHelp').textContent = 'Secret Key는 브라우저에 저장하지 않습니다.';
+    renderAdminMasterPendingKey(null, {});
     return;
   }
   setInputIfIdle(byId('adminGateUid'), connection.gate_uid || '');
   byId('adminGateApiKey').placeholder = connection.api_key_last4 ? `저장됨 ····${connection.api_key_last4}` : 'API Key 입력';
   const hasStoredCredential = Boolean(connection.api_key_last4);
   byId('adminGateApiForm').dataset.hasStoredCredential = String(hasStoredCredential);
+  byId('adminGateApiForm').dataset.storedGateUid = connection.status === 'DISABLED' ? '' : String(connection.gate_uid || '');
   byId('adminGateApiKey').required = !hasStoredCredential;
   byId('adminGateSecretKey').required = !hasStoredCredential;
   if (!adminGateApiBusy) byId('adminGateApiConnect').textContent = hasStoredCredential ? '저장된 Master API 재검증' : '암호화 저장 및 검증 요청';
@@ -2158,6 +2248,39 @@ function renderAdminMasterGateConnection(connection) {
       : workerPublicIp
         ? '암호화 저장 완료 · Trading Worker 검증을 기다리고 있습니다.'
         : '암호화 저장 완료 · Worker 고정 IP 연결 전까지 주문 실행은 중지됩니다.';
+  renderAdminMasterPendingKey(connection, errorMessages);
+}
+
+// Same-UID Master key replacement (QA 2026-10-21 A1): the current key keeps copying until the new key verifies.
+function adminMasterPendingKeyMessage(connection, errorMessages = {}) {
+  const status = connection?.pending_status;
+  if (!status) return null;
+  const key = connection.pending_api_key_last4 ? `새 Key(····${connection.pending_api_key_last4})` : '새 Key';
+  if (status === 'PENDING_VERIFICATION' || status === 'VERIFYING') {
+    return { text: `${key} 검증 중 · 검증이 끝날 때까지 기존 Key로 카피를 계속합니다.`, className: 'warn' };
+  }
+  if (status === 'ERROR') {
+    return { text: `${key} 검증 실패: ${errorMessages[connection.pending_error_code] || '권한과 IP 설정을 확인해 주세요.'} 기존 Key로 카피를 계속합니다. 설정을 고친 뒤 새 Key를 다시 입력해 주세요.`, className: 'neg' };
+  }
+  const checkedAt = Date.parse(connection.pending_checked_at || '');
+  if (status === 'VERIFIED' && Number.isFinite(checkedAt) && Date.now() - checkedAt < 86_400_000) {
+    return { text: `${key} 검증 완료 · ${new Date(checkedAt).toLocaleString('ko-KR')} 교체했습니다. 회원 카피는 멈추지 않았습니다.`, className: 'pos' };
+  }
+  return null;
+}
+
+function renderAdminMasterPendingKey(connection, errorMessages) {
+  const anchor = byId('adminGateVerificationDetail');
+  if (!anchor) return;
+  let node = byId('adminGatePendingDetail');
+  if (!node) {
+    anchor.insertAdjacentHTML('afterend', '<p id="adminGatePendingDetail" class="admin-master-pending hidden" role="status"></p>');
+    node = byId('adminGatePendingDetail');
+  }
+  const message = adminMasterPendingKeyMessage(connection, errorMessages);
+  node.classList.toggle('hidden', !message);
+  node.textContent = message?.text || '';
+  node.className = `admin-master-pending ${message?.className || ''}${message ? '' : ' hidden'}`;
 }
 
 async function loadAdminMasterGateConnection(showError = true) {
@@ -2185,6 +2308,8 @@ async function saveAdminGateApiCredentials() {
   if ((apiKey && !secretKey) || (!apiKey && secretKey)) {
     return window.toast('API Key를 교체하려면 API Key와 Secret Key를 모두 입력해 주세요.');
   }
+  const storedUid = byId('adminGateApiForm').dataset.storedGateUid || '';
+  if (!isReverification && storedUid && storedUid !== gateUid && !window.confirm(`Master UID를 ${storedUid}에서 ${gateUid}(으)로 바꿀까요?\n\n• 모든 회원의 카피가 즉시 일시중지됩니다.\n• 새 Master 검증 후 회원의 기존 포지션은 모두 개인 포지션으로 보호되고, 재개 요청이 필요합니다.\n같은 UID의 Key 교체라면 UID를 바꾸지 마세요(기존 Key로 카피가 계속됩니다).`)) return;
   adminGateApiBusy = true;
   const button = byId('adminGateApiConnect');
   button.disabled = true;
@@ -2204,11 +2329,17 @@ async function saveAdminGateApiCredentials() {
   button.disabled = false;
   button.textContent = isReverification ? '저장된 Master API 재검증' : '암호화 저장 및 검증 요청';
   adminGateApiBusy = false;
+  if (error && String(error.message || '').includes('MASTER_KEY_VERIFICATION_IN_PROGRESS')) {
+    return window.toast('이전에 요청한 새 Key를 Worker가 검증하고 있습니다. 1~2분 뒤 다시 시도해 주세요.');
+  }
   if (error) return window.toast(isReverification
     ? '저장된 Master API의 재검증을 요청하지 못했습니다.'
     : 'Master API 정보를 저장하지 못했습니다. 입력값과 관리자 권한을 확인해 주세요.');
   delete byId('adminGateUid').dataset.dirty;
   renderAdminMasterGateConnection(data);
+  if (data?.pending_status === 'PENDING_VERIFICATION') {
+    return window.toast(`${isReverification ? '저장된 Master Key' : '새 Master Key'} 검증을 요청했습니다. 검증이 끝날 때까지 기존 Key로 카피를 계속하며 회원 카피는 멈추지 않습니다.`);
+  }
   window.toast(workerPublicIp
     ? `${isReverification ? '저장된 Master API' : '암호화 저장'} · Worker 검증을 요청했습니다.`
     : '암호화 저장 완료 · Worker 연결 전까지 안전 중지 상태입니다.');
@@ -2582,14 +2713,22 @@ async function openMemberDetail(userId) {
   byId('memberDetailEmail').textContent = accountDisplayId(member.gate_uid, member.email) || '-';
   byId('memberDetailStatus').textContent = APPROVAL_STATUS_LABELS[member.approval_status] || (member.approval_status ? '확인 필요' : '-');
   byId('memberDetailStatus').className = member.approval_status === 'APPROVED' ? 'chip' : member.approval_status === 'REJECTED' ? 'chip red' : 'chip yellow';
+  const cached = adminMembersCache.find((row) => row.id === userId) || {};
+  const copyStatus = cached.copy_status ? adminCopyStatus(cached) : null;
+  const adminRestriction = cached.admin_paused ? (cached.member_halted ? '중단' : '일시중지') : cached.admin_reduce_only ? '축소 전용' : '없음';
+  const releaseUid = member.role === 'MEMBER' && cached.gate_uid && cached.approval_status && cached.approval_status !== 'APPROVED'
+    ? `<div class="member-control-actions member-withdraw-actions"><small>가입 UID</small><div class="actions"><button class="btn" type="button" data-member-release-uid="${escapeHtml(userId)}" data-member-name="${escapeHtml(member.full_name || '회원')}">UID 해제</button></div><p class="muted">거절·정지된 계정이 다른 사람의 Gate UID를 계속 점유하지 않도록 해제합니다. 실제 소유자가 새로 가입할 수 있게 됩니다.</p></div>` : '';
   byId('memberDetailSummary').innerHTML = `
+    ${copyStatus ? `<div><small>카피 상태</small><b title="${escapeHtml(copyStatus[2] || '')}">${escapeHtml(copyStatus[0])}</b></div>` : ''}
+    ${member.role === 'MEMBER' ? `<div><small>관리자 제한</small><b title="관리자 재개로만 풀립니다.">${escapeHtml(adminRestriction)}</b></div>` : ''}
     <div><small>권한</small><b>${escapeHtml(ROLE_LABELS[member.role] || member.role || '-')}</b></div>
     <div><small>카피 비율</small><b>${Number(member.copy_ratio ?? 100)}%</b></div>
     <div><small>최대 포지션 비중</small><b>${Number(member.max_position_ratio ?? 30)}%</b></div>
     <div><small>가입일</small><b>${member.created_at ? new Date(member.created_at).toLocaleDateString('ko-KR') : '-'}</b></div>
     ${member.role === 'MEMBER' ? renderAdminMemberWeightSettings(member) : ''}
     ${member.role === 'MEMBER' ? '<div class="member-control-actions"><small>관리자 카피 제어</small><div class="actions"><button class="btn" type="button" data-member-control="PAUSE">일시중지</button><button class="btn" type="button" data-member-control="REDUCE_ONLY">축소 전용</button><button class="btn red" type="button" data-member-control="HALT">중단</button><button class="btn green" type="button" data-member-control="RESUME">재개</button><button class="btn" type="button" data-new-operation-open>새 운용 시작</button></div></div>' : ''}
-    ${member.role === 'MEMBER' && !member.withdrawn_at ? '<div class="member-control-actions member-withdraw-actions"><small>회원 탈퇴</small><div class="actions"><button class="btn red" type="button" data-member-withdraw>회원 탈퇴 처리</button></div><p class="muted">카피 중단·로그인 차단·API 키 폐기. 기록은 보존되고 탈퇴 회원 탭에서 복구할 수 있습니다.</p></div>' : ''}`;
+    ${member.role === 'MEMBER' && !member.withdrawn_at ? '<div class="member-control-actions member-withdraw-actions"><small>회원 탈퇴</small><div class="actions"><button class="btn red" type="button" data-member-withdraw>회원 탈퇴 처리</button></div><p class="muted">카피 중단·로그인 차단·API 키 폐기. 기록은 보존되고 탈퇴 회원 탭에서 복구할 수 있습니다.</p></div>' : ''}
+    ${releaseUid}`;
   byId('memberPasswordResetActions')?.classList.toggle('hidden', member.role !== 'MEMBER');
   byId('memberMonthlyPerformance').innerHTML = months.length ? months.map((month) => {
     const netPnl = Number(month.net_pnl || 0);
@@ -2631,14 +2770,19 @@ function renderAdminWithdrawnRows() {
   const body = byId('withdrawnMembers');
   if (!body) return;
   body.innerHTML = adminWithdrawnCache.length ? adminWithdrawnCache.map((member) => {
-    const accountId = accountDisplayId(member.gate_uid, member.email);
+    const accountId = member.gate_uid ? accountDisplayId(member.gate_uid, member.email)
+      : member.released_gate_uid ? `UID ${member.released_gate_uid}` : accountDisplayId(null, member.email);
     const name = member.full_name || accountId || '회원';
-    return `<tr><td><div class="admin-member-identity"><span>${escapeHtml(String(name).slice(0, 1))}</span><div><b>${escapeHtml(member.full_name || '-')}</b><small>${escapeHtml(accountId || '-')}</small></div></div></td>`
+    const released = member.released_gate_uid && !member.gate_uid
+      ? '<small class="released-uid">UID 해제됨 · 다른 사람이 이 UID로 가입할 수 있습니다</small>' : '';
+    const releaseButton = member.gate_uid
+      ? ` <button class="btn" type="button" data-member-release-uid="${escapeHtml(member.id)}" data-member-name="${escapeHtml(name)}">UID 해제</button>` : '';
+    return `<tr><td><div class="admin-member-identity"><span>${escapeHtml(String(name).slice(0, 1))}</span><div><b>${escapeHtml(member.full_name || '-')}</b><small>${escapeHtml(accountId || '-')}</small>${released}</div></div></td>`
       + `<td>${escapeHtml(member.phone || '-')}</td>`
       + `<td>${member.created_at ? escapeHtml(new Date(member.created_at).toLocaleDateString('ko-KR')) : '-'}</td>`
       + `<td>${member.withdrawn_at ? escapeHtml(new Date(member.withdrawn_at).toLocaleString('ko-KR')) : '-'}</td>`
       + `<td class="withdrawal-reason">${escapeHtml(member.withdrawal_reason || '-')}</td>`
-      + `<td class="table-actions"><button class="btn" type="button" data-member-restore="${escapeHtml(member.id)}" data-member-name="${escapeHtml(name)}">복구</button></td></tr>`;
+      + `<td class="table-actions"><button class="btn" type="button" data-member-restore="${escapeHtml(member.id)}" data-member-name="${escapeHtml(name)}">복구</button>${releaseButton}</td></tr>`;
   }).join('') : '<tr><td colspan="6" class="empty-cell">탈퇴 회원이 없습니다.</td></tr>';
 }
 
@@ -2665,7 +2809,7 @@ const WITHDRAW_ERRORS = {
 async function withdrawAdminMember() {
   if (!selectedMemberId || currentProfile?.role !== 'ADMIN' || adminWithdrawBusy || adminControlBusy || adminWeightBusy) return;
   const name = byId('memberDetailTitle')?.textContent?.trim() || '회원';
-  if (!window.confirm(`${name} 회원을 탈퇴 처리할까요?\n\n• 카피가 즉시 중단되고 로그인할 수 없게 됩니다.\n• 저장된 Gate API 키가 폐기됩니다.\n• Gate에 남은 포지션은 시스템이 더 이상 관리하지 않습니다(회원이 직접 정리).\n• 거래·수익·감사 기록은 보존되며 '탈퇴 회원' 탭에서 복구할 수 있습니다.`)) return;
+  if (!window.confirm(`${name} 회원을 탈퇴 처리할까요?\n\n• 카피가 즉시 중단되고 로그인할 수 없게 됩니다.\n• 저장된 Gate API 키가 폐기됩니다.\n• Gate에 남은 포지션은 시스템이 더 이상 관리하지 않습니다(회원이 직접 정리).\n• 회원은 탈퇴 후 로그인할 수 없어 이 서비스에서 남은 포지션을 확인할 수 없습니다. Gate.io에서 직접 확인·정리하도록 미리 안내해 주세요.\n• Gate API를 한 번도 검증하지 않은 계정은 가입 UID가 해제되어, 실제 UID 소유자가 새로 가입할 수 있습니다.\n• 거래·수익·감사 기록은 보존되며 '탈퇴 회원' 탭에서 복구할 수 있습니다.`)) return;
   const typed = window.prompt(`확인을 위해 회원 이름 "${name}"을(를) 입력해 주세요.`);
   if (typed == null) return;
   if (typed.trim() !== name) return window.toast('이름이 일치하지 않아 취소했습니다.', { kind: 'error' });
@@ -2686,9 +2830,10 @@ async function withdrawAdminMember() {
     return window.toast(code ? WITHDRAW_ERRORS[code] : '탈퇴 처리하지 못했습니다.', { kind: 'error' });
   }
   const openPositions = Number(data?.open_positions || 0);
-  window.toast(openPositions > 0
+  const releasedNote = data?.released_gate_uid ? ` 가입 UID ${data.released_gate_uid}를 해제했습니다.` : '';
+  window.toast((openPositions > 0
     ? `탈퇴 처리했습니다. Gate에 남은 포지션 ${openPositions}개는 회원이 직접 정리해야 합니다.`
-    : '탈퇴 처리했습니다.', { kind: 'success' });
+    : '탈퇴 처리했습니다.') + releasedNote, { kind: 'success' });
   invalidateSharedRpc('get_admin_operations_metrics', 'get_admin_live_trading_data', 'get_admin_gate_api_connections');
   closeMemberDetail();
   await loadAdminMembers();
@@ -2696,20 +2841,81 @@ async function withdrawAdminMember() {
 
 async function restoreAdminMember(userId, name, button) {
   if (!userId || currentProfile?.role !== 'ADMIN' || adminWithdrawBusy) return;
-  if (!window.confirm(`${name || '회원'} 회원을 복구할까요?\n\n로그인이 다시 가능해지고 '가입 승인 대기'로 돌아갑니다. 승인 후 회원이 Gate API를 다시 연결하고 카피를 재개해야 합니다.`)) return;
+  if (!window.confirm(`${name || '회원'} 회원을 복구할까요?\n\n로그인이 다시 가능해지고 '가입 승인 대기'로 돌아갑니다. 승인 후 회원이 Gate API를 다시 연결하고 카피를 재개해야 합니다.\n이전 카피 기록(카피·개인 수량 구분, 목표 수량)은 보관 후 초기화되어, 재개 시 보유 포지션은 모두 회원 개인 포지션으로 보호됩니다.`)) return;
   adminWithdrawBusy = true;
   if (button) button.disabled = true;
-  let error = null;
+  let data = null; let error = null;
   try {
-    ({ error } = await supabase.rpc('admin_restore_withdrawn_member', { p_user_id: userId }));
+    ({ data, error } = await supabase.rpc('admin_restore_withdrawn_member', { p_user_id: userId }));
   } finally {
     adminWithdrawBusy = false;
     if (button) button.disabled = false;
   }
   if (error) return window.toast('회원을 복구하지 못했습니다.', { kind: 'error' });
-  window.toast('복구했습니다. 가입 승인 대기에서 승인해 주세요.', { kind: 'success' });
+  window.toast(data?.released_gate_uid && !data?.gate_uid
+    ? `복구했습니다. 해제된 UID ${data.released_gate_uid}가 이미 다른 계정에서 사용 중이라 이 회원은 UID로 로그인할 수 없습니다.`
+    : '복구했습니다. 가입 승인 대기에서 승인해 주세요.', { kind: data?.released_gate_uid && !data?.gate_uid ? 'error' : 'success' });
   await loadAdminMembers();
   setAdminMemberTab('active');
+}
+
+const RELEASE_UID_ERRORS = {
+  MEMBER_ACTIVE: '승인된 회원의 UID는 해제할 수 없습니다. 탈퇴 또는 거절 후 해제해 주세요.',
+  MEMBER_GATE_API_CONNECTED: 'Gate API가 연결된 계정입니다. API 연결을 먼저 해지해 주세요.',
+  GATE_UID_NOT_SET: '이미 UID가 해제된 계정입니다.',
+};
+
+// QA 2026-10-21 A4: a withdrawn/rejected account must not reserve someone else's Gate UID for ever.
+async function releaseMemberGateUid(userId, name, button = null) {
+  if (!userId || currentProfile?.role !== 'ADMIN' || adminWithdrawBusy) return;
+  if (!window.confirm(`${name || '회원'} 계정의 가입 UID를 해제할까요?\n\n• 해제하면 실제 UID 소유자가 이 UID로 새로 가입할 수 있습니다.\n• 이 계정은 더 이상 이 UID로 로그인할 수 없습니다.\n• 해제 내역은 감사 로그에 남고, 다른 사람이 가입하기 전에 복구하면 UID가 돌아옵니다.`)) return;
+  adminWithdrawBusy = true;
+  if (button) button.disabled = true;
+  let data = null; let error = null;
+  try {
+    ({ data, error } = await supabase.rpc('release_member_gate_uid', { p_user_id: userId, p_confirmation: 'RELEASE_MEMBER_GATE_UID' }));
+  } finally {
+    adminWithdrawBusy = false;
+    if (button && document.contains(button)) button.disabled = false;
+  }
+  if (error) {
+    const code = Object.keys(RELEASE_UID_ERRORS).find((key) => String(error.message || '').includes(key));
+    return window.toast(code ? RELEASE_UID_ERRORS[code] : 'UID를 해제하지 못했습니다.', { kind: 'error' });
+  }
+  window.toast(`UID ${data?.released_gate_uid || ''}를 해제했습니다.`, { kind: 'success' });
+  if (selectedMemberId === userId) closeMemberDetail();
+  await loadAdminMembers();
+}
+
+// QA 2026-10-21 A1: members paused because of a Master change get a validated resume request in one step.
+async function requestAdminBulkResume() {
+  if (!supabase || currentProfile?.role !== 'ADMIN' || adminBulkResumeBusy) return;
+  if (!window.confirm(`Master 변경으로 카피가 멈춘 회원 ${adminPausedByMaster}명에게 카피 재개를 요청할까요?\n\n• 회원별로 평소와 같은 재개 안전 확인을 거친 뒤 다시 시작합니다(기존 보유 포지션 유지).\n• 회원이 직접 일시중지했거나 관리자가 일시중지·중단한 회원은 제외됩니다.`)) return;
+  adminBulkResumeBusy = true;
+  const button = byId('adminBulkResume');
+  if (button) button.disabled = true;
+  let data = null; let error = null;
+  try {
+    ({ data, error } = await supabase.rpc('admin_request_all_member_copy_resume', { p_confirmation: 'ADMIN_RESUME_MEMBERS_PAUSED_BY_MASTER' }));
+  } finally {
+    adminBulkResumeBusy = false;
+    if (button) button.disabled = false;
+  }
+  if (error) {
+    return window.toast(String(error.message || '').includes('MASTER_NOT_ACTIVE')
+      ? 'Master API가 검증·활성 상태가 된 뒤 다시 요청해 주세요.' : '전체 재개를 요청하지 못했습니다.', { kind: 'error' });
+  }
+  const skipped = Array.isArray(data?.skipped) ? data.skipped.length : 0;
+  window.toast(`${Number(data?.requested || 0)}명의 재개 안전 확인을 요청했습니다.${skipped ? ` ${skipped}명은 요청하지 못했습니다(감사 로그 참고).` : ''}`, { kind: skipped ? 'error' : 'success' });
+  invalidateSharedRpc('get_admin_operations_metrics', 'get_admin_live_trading_data');
+  await loadAdminMembers();
+}
+
+function renderAdminMasterPauseNotice() {
+  const notice = byId('adminMasterPauseNotice');
+  if (!notice) return;
+  notice.classList.toggle('hidden', adminPausedByMaster === 0);
+  if (byId('adminMasterPauseText')) byId('adminMasterPauseText').textContent = `Master 계정·API 변경으로 회원 ${adminPausedByMaster}명의 카피가 일시중지되어 있습니다. 자동으로 재개되지 않습니다.`;
 }
 
 async function loadAdminMembers() {
@@ -2717,7 +2923,7 @@ async function loadAdminMembers() {
   const ticket = ++adminMembersRequestSeq;
   const today = kstDate();
   const [profilesResult, connectionsResult, liveResult, metricsResult] = await Promise.all([
-    supabase.from('profiles').select('id,email,gate_uid,full_name,phone,approval_status,role,copy_ratio,max_position_ratio,copy_paused,member_halted,reduce_only,created_at,withdrawn_at,withdrawal_reason').order('created_at', { ascending: false }),
+    supabase.from('profiles').select('id,email,gate_uid,full_name,phone,approval_status,role,copy_ratio,max_position_ratio,copy_paused,member_halted,reduce_only,admin_paused,admin_reduce_only,released_gate_uid,created_at,withdrawn_at,withdrawal_reason').order('created_at', { ascending: false }),
     sharedRpc('get_admin_gate_api_connections'),
     sharedRpc('get_admin_live_trading_data'),
     sharedRpc('get_admin_operations_metrics', { p_start_date: today, p_end_date: today }),
@@ -2748,6 +2954,8 @@ async function loadAdminMembers() {
   `).join('') : '<tr><td colspan="5" class="empty-cell">승인 대기 회원이 없습니다.</td></tr>';
   const metricRows = new Map((Array.isArray(metricsResult.data?.members) ? metricsResult.data.members : []).map((member) => [member.id, member]));
   adminMasterAccount = metricsResult.data?.master || null;
+  adminPausedByMaster = Number(metricsResult.data?.totals?.paused_by_master || 0);
+  renderAdminMasterPauseNotice();
   adminMembersCache = data.filter((profile) => profile.role === 'MEMBER' && profile.approval_status !== 'PENDING' && !profile.withdrawn_at).map((profile) => {
     const metric = metricRows.get(profile.id) || {};
     const progress = getMemberCopyProgress(profile, connectionByUserId.get(profile.id), statesByEmail.get(String(profile.email || '').toLowerCase()) || []);
@@ -2778,18 +2986,12 @@ function renderAdminMemberRows() {
   if (!tableBody) return;
   const query = adminMemberSearch.trim().toLowerCase();
   const rows = adminMembersCache.filter((member) => !query || `${member.full_name || ''} ${member.gate_uid || ''} ${accountDisplayId(member.gate_uid, member.email)}`.toLowerCase().includes(query));
-  const statusMeta = {
-    COPYING: ['카피 중', 'chip'], PAUSED: ['일시 정지', 'chip yellow'], HALTED: ['중단', 'chip red'],
-    REDUCE_ONLY: ['축소 전용', 'chip yellow'], API_ERROR: ['API 오류', 'chip red'], ERROR: ['주문 오류', 'chip red'],
-    ATTENTION: ['확인 필요', 'chip yellow'],
-  };
+  // copy_status reflects the resume session and Gate read errors (QA 2026-10-21 A2): src/copy-status.js.
   tableBody.innerHTML = rows.length ? rows.map((member) => {
-    const fallback = member.fallback_progress || { label: '상태 확인', className: 'chip yellow' };
-    const status = statusMeta[member.copy_status] || [fallback.label, fallback.className];
+    const status = adminCopyStatus(member, member.fallback_progress || undefined);
     const pnl = member.today_pnl == null ? null : Number(member.today_pnl);
-    const apiStatus = member.api_status || member.connection?.status || 'NOT_CONNECTED';
-    const apiLabel = apiStatus === 'VERIFIED' ? '정상' : apiStatus === 'ERROR' ? '권한 오류' : apiStatus === 'DISABLED' ? '연결 해제' : '확인 필요';
-    return `<tr><td><div class="admin-member-identity"><span>${escapeHtml(String(member.full_name || accountDisplayId(member.gate_uid, member.email) || '?').slice(0, 1))}</span><div><b>${escapeHtml(member.full_name || '-')}</b><small>${escapeHtml(accountDisplayId(member.gate_uid, member.email) || '-')}</small></div></div></td><td><span class="${status[1]}">${escapeHtml(status[0])}</span></td>${renderAdminEquityCells(member)}<td class="${pnl == null ? '' : signClass(pnl)}"><b>${pnl == null ? '-' : formatUsd(pnl)}</b></td><td>${Number(member.copy_ratio ?? 100)}%</td><td><div class="member-margin-cell"><b>${Number(member.margin_usage_pct || 0).toFixed(1)}%</b><div><i style="width:${Math.min(100, Math.max(0, Number(member.margin_usage_pct || 0)))}%"></i></div></div></td><td class="${apiStatus === 'VERIFIED' ? 'pos' : 'neg'}">${escapeHtml(apiLabel)}</td><td>${member.last_observed_at ? new Date(member.last_observed_at).toLocaleString('ko-KR') : '-'}</td><td class="table-actions"><button class="btn" type="button" data-member-detail="${escapeHtml(member.id)}" aria-label="${escapeHtml(`${member.full_name || accountDisplayId(member.gate_uid, member.email) || '회원'} 상세 보기`)}">상세</button></td></tr>`;
+    const api = adminApiLabel(member);
+    return `<tr><td><div class="admin-member-identity"><span>${escapeHtml(String(member.full_name || accountDisplayId(member.gate_uid, member.email) || '?').slice(0, 1))}</span><div><b>${escapeHtml(member.full_name || '-')}</b><small>${escapeHtml(accountDisplayId(member.gate_uid, member.email) || '-')}</small></div></div></td><td><span class="${status[1]}" title="${escapeHtml(status[2] || '')}">${escapeHtml(status[0])}</span></td>${renderAdminEquityCells(member)}<td class="${pnl == null ? '' : signClass(pnl)}"><b>${pnl == null ? '-' : formatUsd(pnl)}</b></td><td>${Number(member.copy_ratio ?? 100)}%</td><td><div class="member-margin-cell"><b>${Number(member.margin_usage_pct || 0).toFixed(1)}%</b><div><i style="width:${Math.min(100, Math.max(0, Number(member.margin_usage_pct || 0)))}%"></i></div></div></td><td class="${api.ok ? 'pos' : 'neg'}">${escapeHtml(api.label)}</td><td>${member.last_observed_at ? new Date(member.last_observed_at).toLocaleString('ko-KR') : '-'}</td><td class="table-actions"><button class="btn" type="button" data-member-detail="${escapeHtml(member.id)}" aria-label="${escapeHtml(`${member.full_name || accountDisplayId(member.gate_uid, member.email) || '회원'} 상세 보기`)}">상세</button></td></tr>`;
   }).join('') : '<tr><td colspan="10" class="empty-cell">조건에 맞는 회원이 없습니다.</td></tr>';
   if (adminMasterAccount && !query) tableBody.insertAdjacentHTML('afterbegin', renderAdminMasterRow(adminMasterAccount));
   if (byId('memberDirectorySummary')) byId('memberDirectorySummary').textContent = `${adminMembersCache.length}명 · 카피 중 ${adminMembersCache.filter((member) => member.copy_status === 'COPYING').length}명 · 확인 필요 ${adminMembersCache.filter((member) => member.copy_status !== 'COPYING').length}명`;
@@ -2905,6 +3107,10 @@ document.addEventListener('click', async (event) => {
   }
   const pauseConfirm = event.target.closest('[data-copy-pause-confirm]');
   if (pauseConfirm) await setCopyPause(pauseConfirm.dataset.copyPauseConfirm);
+  if (event.target.closest('[data-copy-resume-reclassify]')) await requestResumeReclassify();
+  if (event.target.closest('#adminBulkResume')) await requestAdminBulkResume();
+  const releaseUidButton = event.target.closest('[data-member-release-uid]');
+  if (releaseUidButton) await releaseMemberGateUid(releaseUidButton.dataset.memberReleaseUid, releaseUidButton.dataset.memberName, releaseUidButton);
   if (event.target.closest('#adminEmergencyHalt')) await emergencyHalt();
   if (event.target.closest('#gateApiDisconnect')) await disconnectMemberGateApi();
   if (event.target.closest('#adminGateApiDisconnect')) await disconnectAdminMasterGateApi();

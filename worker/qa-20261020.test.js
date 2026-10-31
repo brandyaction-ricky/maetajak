@@ -417,13 +417,16 @@ test('12: a member read failing with a credential error alerts after 5 minutes, 
   await flush();
   assert.deepEqual(alerts.map((a) => a.event), ['MEMBER_API_CREDENTIAL_FAILING', 'MEMBER_API_CREDENTIAL_FAILING',
     'MEMBER_API_CREDENTIAL_RECOVERED']);
-  // A short credential blip that never alerted clears silently; a non-credential failure never starts a streak.
+  // A short credential blip that never alerted clears silently; a non-credential failure never starts a credential
+  // streak (since 2026-10-21 it has its own MEMBER_ACCOUNT_READ_FAILING streak, see qa-infra-20261021.test.js).
   runner.trackMemberCredentialRead(account, invalid, t0);
   runner.trackMemberCredentialRead(account, null, t0 + 1_000);
   runner.trackMemberCredentialRead({ trading_account_id: 'a2' }, new GateApiError('x', { code: 'GATE_TIMEOUT' }), t0);
   runner.trackMemberCredentialRead({ trading_account_id: 'a2' }, new GateApiError('x', { code: 'GATE_TIMEOUT' }), t0 + CREDENTIAL_ALERT_REPEAT_MS);
   await flush();
-  assert.equal(alerts.length, 3);
+  assert.equal(alerts.length, 4);
+  assert.equal(alerts[3].event, 'MEMBER_ACCOUNT_READ_FAILING');
+  assert.equal(runner.credentialFailures.has('a2'), false);
 });
 
 test('12: an undelivered credential alert is retried after 5 minutes, not after 6 hours', async () => {

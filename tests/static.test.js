@@ -44,7 +44,10 @@ test('admin member list shows live copy trading progress', () => {
   assert.match(script, /function getMemberCopyProgress/);
   assert.match(script, /get_admin_gate_api_connections/);
   assert.match(script, /get_admin_live_trading_data/);
-  for (const status of ['카피 중', '연결 완료', '미시작', '일시 정지', '확인 필요', 'API 오류', '중단']) assert.match(script, new RegExp(status));
+  // Since 2026-10-21 the admin copy-status labels live in src/copy-status.js (imported by main.js).
+  const copyStatus = readFileSync(new URL('../src/copy-status.js', import.meta.url), 'utf8');
+  assert.match(script, /from '\.\/copy-status\.js'/);
+  for (const status of ['카피 중', '연결 완료', '미시작', '일시 정지', '확인 필요', 'API 오류', '중단']) assert.match(script + copyStatus, new RegExp(status));
   assert.match(script, /admin-members-table/);
   assert.match(script, /오늘 PNL/);
   assert.match(script, /총 자산/);

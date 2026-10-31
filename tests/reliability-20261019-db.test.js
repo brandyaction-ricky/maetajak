@@ -315,7 +315,8 @@ test('a Master registered by a different admin resets members as a Master change
 
 test("a member's RESUME does not lift an administrator's REDUCE_ONLY", async () => {
   await record(db, cyclePayload({ masterSize: 0, member: { total: 3000, available: 3000 } }));
-  await db.query("update public.profiles set reduce_only=true,copy_paused=false where id=$1", [ids.user]);
+  // 2026-10-21 (QA D3): the administrator restriction is profiles.admin_reduce_only.
+  await db.query("update public.profiles set reduce_only=true,admin_reduce_only=true,copy_paused=false where id=$1", [ids.user]);
   await db.query("update private.copy_resume_sessions set state='ACTIVE',blocker_reason='ADMIN_REDUCE_ONLY' where trading_account_id=$1", [ids.member]);
   await db.query("select set_config('request.jwt.claim.sub',$1,false)", [ids.user]);
   await db.query('select private.request_member_copy_resume($1)', [ids.user]);

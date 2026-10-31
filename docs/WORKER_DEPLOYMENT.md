@@ -15,8 +15,9 @@
 ## Gate 계정과 Broker 귀속
 
 - 추천인 계정 UID: `45997867` - 신규 회원은 이 계정의 추천 링크로 가입합니다.
-- API Broker 커미션 수령 UID: `49084031` - Channel ID `maetajak`에 귀속된 20%를 수령합니다.
-- 관리자 대시보드의 Broker 거래량과 커미션은 Gate `rebate/broker/commission_history` 실정산 API를 시간 단위로 동기화합니다. Broker UID가 Master UID와 같으면 기존 Master 읽기 키를 사용하고, 다르면 `/etc/maetajak/worker.env`의 `GATE_BROKER_API_KEY`와 `GATE_BROKER_SECRET_KEY`에 별도 읽기 키를 설정합니다.
+- API Broker 커미션 수령 UID: Channel ID `maetajak`에 귀속된 20%를 수령하는 계정입니다. 기본값이 없으므로 `/etc/maetajak/worker.env`의 `GATE_BROKER_UID`에 반드시 직접 설정합니다(2026-10-21부터 예전 UID로 자동 대체하지 않음).
+- 관리자 대시보드의 Broker 거래량과 커미션은 Gate `rebate/broker/commission_history` 실정산 API를 시간 단위로 동기화합니다. `GATE_BROKER_API_KEY`와 `GATE_BROKER_SECRET_KEY`에 Broker 계정 읽기 키를 설정합니다. 설정한 `GATE_BROKER_UID`가 현재 Master UID와 같을 때만 키를 비워 두고 Master 읽기 키를 사용할 수 있습니다.
+- 설정이 없으면 Broker 동기화 상태가 `NOT_CONFIGURED`로 기록됩니다: `GATE_BROKER_UID_REQUIRED`(UID 미설정) 또는 `BROKER_API_KEY_REQUIRED`(키 미설정, UID가 Master와 다름).
 - API Broker Channel ID: `maetajak` - Worker가 모든 회원 Futures 주문 헤더에 `X-Gate-Channel-Id: maetajak`를 자동 주입합니다.
 - Futures decimal size: 최신 Gate API 규격에 맞춰 인증된 Futures 요청에 `X-Gate-Size-Decimal: 1`을 자동 주입합니다.
 - Master UID: 실제 신호 원본으로 사용할 Gate 계정 UID를 관리자 화면에 연결합니다. 추천인 UID나 Broker 수령 UID와 반드시 같을 필요는 없습니다.
@@ -136,6 +137,12 @@ DB 마이그레이션이 포함된 커밋은 자동 배포가 차단됩니다. �
 프런트엔드 Vercel 재시작은 Lightsail 주문 워커를 재시작하거나 주문을 재전송하지 않습니다. 장애 검수의 주문 프로세스 종료 대상은 독립 Node 워커입니다.
 
 상세 검수 증거와 운영 환경에서 남은 항목은 [COPY_QA_20260910.md](COPY_QA_20260910.md)를 참고합니다.
+
+### 워커 공백 자동 중단과 DB 감시 (2026-10-21)
+
+- 워커가 3분(180초) 넘게 DB에 연결되지 않다가 돌아오면(서버 중지, 네트워크 단절, Supabase 장애) `copy_worker_heartbeat`가 전체 카피를 중단합니다: `halt_reason=WORKER_HEARTBEAT_GAP`, `SYSTEM_HALTED` 이벤트, 텔레그램 `워커 공백 후 자동 중단`. 관리자가 확인 후 실거래를 다시 켜야 합니다. 일반 재배포(정지 → 40초 → 기동, 리스 대기 30초 이내)는 기준보다 짧아 중단되지 않습니다.
+- DB 감시(pg_cron `maetajak-worker-deadman`, 매분): 마지막 모드가 LIVE/DRY_RUN인 워커의 heartbeat가 90초 넘게 끊기면 텔레그램 CRITICAL을 보내고, 끊긴 동안 30분마다 반복하며, 복구 시 1회 알립니다. 발송은 pg_net으로 Telegram Bot API를 직접 호출합니다. Vault 비밀 `worker_deadman_bot_token`/`worker_deadman_chat_id`가 있으면 그것을, 없으면 `master_alert_bot_token`/`master_alert_chat_id`를 사용합니다. 비밀이나 pg_net이 없으면 발송하지 않고 `private.worker_deadman_state.last_result`에 사유를 남깁니다.
+- 의도적으로 워커를 오래 멈출 때: `update private.worker_deadman_state set enabled=false where singleton;` (재가동 후 `enabled=true`로 되돌립니다).
 
 ### 중단 명령
 

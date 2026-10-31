@@ -275,12 +275,12 @@ tbody tr:hover { background: #141416; }
 .copy-settings-layout { --copy-top-card-height: 176px; display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(300px, .8fr); gap: 12px; align-items: stretch; }
 .copy-settings-primary, .copy-settings-secondary { display: grid; gap: 12px; min-width: 0; }
 .copy-settings-primary { grid-template-rows: var(--copy-top-card-height) var(--copy-top-card-height) minmax(0, 1fr); }
-.copy-settings-secondary { grid-template-rows: var(--copy-top-card-height) minmax(0, 1fr); }
-.copy-control-card, .copy-risk-card, .copy-existing-policy, .copy-setting-summary { min-width: 0; padding: 18px; }
+.copy-settings-secondary { grid-template-rows: var(--copy-top-card-height) auto minmax(0, 1fr); }
+.copy-control-card, .copy-risk-card, .copy-existing-policy, .copy-fund-policy, .copy-setting-summary { min-width: 0; padding: 18px; }
 .copy-settings-primary > .copy-control-card:first-child,
 .copy-settings-secondary > .copy-existing-policy { height: var(--copy-top-card-height); }
-.copy-control-card h3, .copy-risk-card h3, .copy-existing-policy h3, .copy-setting-summary h3 { margin: 0; font-size: 13px; }
-.copy-control-card p, .copy-risk-card p, .copy-existing-policy p, .copy-setting-summary p { margin: 4px 0 0; color: var(--muted); font-size: 11px; line-height: 1.6; }
+.copy-control-card h3, .copy-risk-card h3, .copy-existing-policy h3, .copy-fund-policy h3, .copy-setting-summary h3 { margin: 0; font-size: 13px; }
+.copy-control-card p, .copy-risk-card p, .copy-existing-policy p, .copy-fund-policy p, .copy-setting-summary p { margin: 4px 0 0; color: var(--muted); font-size: 11px; line-height: 1.6; }
 .copy-range { width: 100%; accent-color: #d4d4d8; }
 .copy-range-labels { display: flex; justify-content: space-between; color: #66666f; font-size: 11px; }
 .copy-risk-inputs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin: 4px 0 14px; }
@@ -597,6 +597,11 @@ tbody tr:hover { background: #141416; }
 .pause-close-confirm p { margin: 0; color: #e7d3d5; font-size: 12px; line-height: 1.6; }
 .pause-close-confirm .actions { justify-content: flex-end; }
 .pause-close-confirm .btn { min-height: 40px; }
+/* QA 2026-10-21 D3/D8: why resume is blocked and what the member can do. */
+.pause-resume-guidance { display: grid; gap: 8px; padding: 14px; border: 1px solid var(--line-strong); border-radius: 10px; background: var(--panel); }
+.pause-resume-guidance b { font-size: 13px; }
+.pause-resume-guidance p { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.6; word-break: keep-all; }
+.pause-resume-guidance .btn { justify-self: start; min-height: 40px; }
 
 /* Admin member weight editor, matching the admin select style. */
 .member-detail-summary .member-weight-settings { flex-wrap: wrap; align-items: flex-start; }
@@ -667,6 +672,10 @@ tbody tr:hover { background: #141416; }
 .admin-member-tabs button.active span { color: inherit; }
 .admin-withdrawn-table .withdrawal-reason { max-width: 280px; word-break: keep-all; white-space: normal; color: var(--muted); }
 .member-withdraw-actions .muted { margin-top: 6px; font-size: 11px; color: var(--muted); word-break: keep-all; }
+.admin-master-pause-notice { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 12px; }
+.admin-master-pause-notice p { margin: 0; color: var(--text); font-size: 12px; word-break: keep-all; }
+.admin-withdrawn-table .released-uid { display: block; margin-top: 2px; color: var(--muted); font-size: 11px; }
+.admin-master-pending { margin-top: 6px; font-size: 12px; line-height: 1.6; word-break: keep-all; }
 .admin-withdrawn-members { padding: 16px; }
 .admin-withdrawn-table { min-width: 760px; }
 .admin-withdrawn-table th:last-child, .admin-withdrawn-table td.table-actions { position: sticky; right: 0; z-index: 1; background: var(--panel); box-shadow: -10px 0 12px -10px rgba(0, 0, 0, .8); }

@@ -95,6 +95,9 @@ Deno.serve(async (request) => {
     auth: { persistSession: false, autoRefreshToken: false },
   });
 
+  // A withdrawn/rejected account that released its UID (release_member_gate_uid, 2026-10-21) has
+  // profiles.gate_uid = null and its auth email moved to released+<id>@uid.maetajak.trading, so both this
+  // check and createUser's unique email accept the real owner.
   const uidTaken = async () => {
     const { data, error } = await admin.from('profiles').select('id').eq('gate_uid', input.uid).limit(1);
     if (error) throw new Error(`profile lookup failed: ${error.code || 'unknown'}`);

@@ -20,6 +20,35 @@ export function previousKstDayRange(now = new Date()) {
 
 function typeOf(entry) { return String(entry.type || '').trim().toLowerCase(); }
 
+const finite = (value) => value != null && value !== '' && Number.isFinite(Number(value));
+
+// Raw Gate equity at the start of the KST day. The risk day-start (get_copy_worker_context day_start_equity)
+// is transfer-adjusted: total - net transfers recorded since tracking began. Adding back the transfers that
+// happened before today gives the raw opening. net after this sync's transfer recording includes today's
+// transfers; the cycle's net (fund_flow_net) only reliably does when there were none today. Otherwise the
+// opening is rebuilt from the ledger (null here).
+export function openingEquityFor(member, netFlowToday) {
+  if (finite(member?.opening_equity)) return Number(member.opening_equity);
+  const dayStart = number(member?.day_start_equity);
+  if (!(dayStart > 0)) return null;
+  if (finite(member?.fund_flow_net_after_sync)) return dayStart + Number(member.fund_flow_net_after_sync) - netFlowToday;
+  if (netFlowToday === 0) return dayStart + number(member?.fund_flow_net);
+  return null;
+}
+
+// Closing equity on the basis of the risk day-start (review R1). get_copy_worker_context keeps day_start_equity on the
+// risk basis the DB reports per row (stored_risk_basis, worker/trading-runner.js withRiskContext): MTM_V1 (or not
+// reported) = classic wallet + unrealised PnL (unified equity already includes it); a wallet-basis row, or a worker
+// without get_copy_risk_context (risk_context_unavailable), = the wallet total.
+export function closingEquityFor(member) {
+  const total = number(member?.total);
+  const basis = member?.stored_risk_basis;
+  const walletBasis = member?.risk_context_unavailable === true || (basis != null && basis !== 'MTM_V1');
+  if (walletBasis || member?.equityIncludesUnrealised !== false) return total;
+  const unrealised = Number(member?.unrealisedPnl ?? 0);
+  return Number.isFinite(unrealised) ? total + unrealised : total;
+}
+
 export function aggregateMemberPerformance({ member, ledger = [], trades = [], contracts = new Map(), observedAt }) {
   const bySymbol = new Map();
   const symbol = (contract) => {
@@ -44,10 +73,23 @@ export function aggregateMemberPerformance({ member, ledger = [], trades = [], c
   }
   const wins = [...bySymbol.values()].reduce((sum, row) => sum + row.wins, 0);
   const losses = [...bySymbol.values()].reduce((sum, row) => sum + row.losses, 0);
-  const openingEquity = Math.max(0, number(member.day_start_equity) || number(member.total) - realisedPnl + fees - fundingPnl - deposits + withdrawals);
-  const dailyReturnPct = openingEquity > 0 ? ((realisedPnl - fees + fundingPnl) / openingEquity) * 100 : null;
+  const netFlow = deposits - withdrawals;
+  // Review R1: opening and closing are on ONE basis. An opening from the risk day-start is on the stored risk basis
+  // (MTM_V1 after 20261021033000: classic wallet + unrealised PnL), so the closing is the same equity
+  // (closingEquityFor). An opening rebuilt from the ledger (wallet movements only) is closed with the wallet total.
+  // A resync of an earlier day passes both values it recorded (opening_equity / closing_equity).
+  const dayStartOpening = openingEquityFor(member, netFlow);
+  const ledgerOpening = number(member.total) - realisedPnl + fees - fundingPnl - netFlow;
+  const closingEquity = Math.max(0, finite(member?.closing_equity) ? Number(member.closing_equity)
+    : dayStartOpening != null && !finite(member?.opening_equity) ? closingEquityFor(member) : number(member.total));
+  const openingEquity = Math.max(0, dayStartOpening ?? ledgerOpening);
+  // Opening and closing are both raw (not transfer-adjusted) equity, so today's deposits/withdrawals are taken out of the change
+  // (2026-10-21 QA D11). Money deposited today is capital at risk today, so it joins the base. The table
+  // requires daily_return_pct >= -100.
+  const returnBase = openingEquity + deposits;
+  const dailyReturnPct = returnBase > 0 ? Math.max(-100, ((closingEquity - openingEquity - netFlow) / returnBase) * 100) : null;
   const daily = {
-    openingEquity, closingEquity: Math.max(0, number(member.total)), deposits, withdrawals,
+    openingEquity, closingEquity, deposits, withdrawals,
     realisedPnl, unrealisedPnl: number(member.unrealisedPnl), fees, fundingPnl, tradingVolume,
     tradeCount: trades.length, wins, losses, dailyReturnPct, observedAt,
   };

@@ -178,7 +178,11 @@ export function normalizeGatePermissions(keyInfo) {
   }).filter((permission) => permission.name);
 }
 
-export async function verifyGateAccount({ gateUid, apiKey, secretKey, expectedPublicIp, requiresTradingPermission = true, fetchImpl = fetch, baseUrl = GATE_API_BASE_URL }) {
+export const UNIFIED_ACCOUNT_UNSUPPORTED = 'UNIFIED_ACCOUNT_UNSUPPORTED';
+export const UNIFIED_ACCOUNT_UNSUPPORTED_MESSAGE = '통합계정(Unified Account) 모드는 회원 카피를 지원하지 않습니다. Gate.io에서 클래식 계정으로 전환한 뒤 다시 연결해 주세요.';
+
+export async function verifyGateAccount({ gateUid, apiKey, secretKey, expectedPublicIp, requiresTradingPermission = true,
+  rejectUnifiedAccount = requiresTradingPermission, fetchImpl = fetch, baseUrl = GATE_API_BASE_URL }) {
   if (!expectedPublicIp) {
     return { success: false, errorCode: 'WORKER_IP_NOT_CONFIGURED', errorMessage: '고정 Worker IP가 아직 설정되지 않았습니다.' };
   }
@@ -243,6 +247,12 @@ export async function verifyGateAccount({ gateUid, apiKey, secretKey, expectedPu
     if (unsafePermission) {
       return { success: false, gateUserId, errorCode: 'EXCESS_API_PERMISSIONS', errorMessage: `${unsafePermission.name} 쓰기 권한을 비활성화하고 Futures 권한만 사용해 주세요.` };
     }
+    // A unified account's equity includes spot and other assets while deposits/withdrawals are only tracked from the
+    // futures ledger, so its risk limits and sizing would be wrong (QA D6). Members are refused unless the operator
+    // opted in (copy_system_control.allow_unified_members); the Master is never refused (equity used for ratios only).
+    if (rejectUnifiedAccount && Number(futuresResponse.payload?.margin_mode || 0) > 0) {
+      return { success: false, gateUserId, errorCode: UNIFIED_ACCOUNT_UNSUPPORTED, errorMessage: UNIFIED_ACCOUNT_UNSUPPORTED_MESSAGE };
+    }
     return { success: true, gateUserId, futuresRead: true, futuresTrade, ipWhitelisted: true, withdrawalDisabled: true };
   } catch (error) {
     return {
@@ -268,10 +278,12 @@ export async function getFuturesAccount(options) {
   // Unified equity already includes unrealised PnL; the classic futures `total` is the wallet
   // balance without it. Sizing must compare both accounts on the same basis.
   let equityIncludesUnrealised = false;
+  let accountMode = 'classic';
   if (marginMode > 0 || (!(classicTotal > 0) && !(crossMarginBalance > 0))) {
     const unified = await gateRequest({ ...options, path: UNIFIED_ACCOUNT_PATH });
     total = Number(unified.payload?.unified_account_total_equity || 0);
     equityIncludesUnrealised = true;
+    accountMode = 'unified';
   } else {
     total = classicTotal > 0 ? classicTotal : crossMarginBalance;
     // `cross_margin_balance` is a margin balance (unrealised PnL included); adding the PnL again
@@ -289,6 +301,8 @@ export async function getFuturesAccount(options) {
     available,
     unrealisedPnl: Number(payload?.unrealised_pnl ?? payload?.unrealized_pnl ?? payload?.cross_unrealised_pnl ?? 0),
     equityIncludesUnrealised,
+    // 'unified': equity came from the unified-account endpoint (spot and other assets included).
+    accountMode,
     positionMode: String(payload?.position_mode || (payload?.in_dual_mode ? 'dual' : 'single')),
   };
 }
@@ -365,7 +379,13 @@ export async function getFuturesPositions({ expectedContracts = [], expectedLegs
   for (const contract of candidates) {
     try {
       const single = await gateRequest({ ...options, path: `${FUTURES_POSITIONS_PATH}/${encodeURIComponent(contract)}` });
-      const payload = Array.isArray(single.payload) ? single.payload : single.payload ? [single.payload] : [];
+      // C1: a 2xx without a position object or list (empty/null body, a scalar) proves nothing: it is an
+      // unconfirmed contract (or a failed read), never a flat one. Only 404/POSITION_NOT_FOUND, a position
+      // with size 0 or an empty list confirm flat.
+      if (single.payload == null || typeof single.payload !== 'object') {
+        throw new GateApiError('개별 포지션 조회 결과가 비어 있습니다.', { code: 'INVALID_POSITIONS_RESPONSE' });
+      }
+      const payload = Array.isArray(single.payload) ? single.payload : [single.payload];
       normalizeGatePositions(payload);
       confirmed.set(contract, payload.map((row) => ({ row, leg: normalizeGatePositions([row])[0] || null })));
     } catch (error) {
@@ -393,6 +413,11 @@ export async function getFuturesPositions({ expectedContracts = [], expectedLegs
   }
   const result = normalizeGatePositions([...rows.filter((row) => !unconfirmed.has(String(row.contract || ''))), ...additions]);
   if (unconfirmed.size) Object.defineProperty(result, 'unconfirmedContracts', { value: [...unconfirmed].sort(), enumerable: false });
+  // C1: contracts whose state rests only on the single-contract read because the whole list came back empty
+  // (the documented unified-account glitch). The Master cycle confirms an anchored leg that vanished this way
+  // on a second cycle before closing it (TradingRunner.confirmFallbackFlatLegs).
+  const fallbackOnly = rows.length ? [] : [...confirmed.keys()].filter((contract) => !unconfirmed.has(contract));
+  if (fallbackOnly.length) Object.defineProperty(result, 'listEmptyFallbackContracts', { value: fallbackOnly.sort(), enumerable: false });
   return result;
 }
 
@@ -419,26 +444,20 @@ export async function setFuturesLeverage({ contract, leverage, marginMode = 'cro
     throw new GateApiError('마스터 증거금 모드를 확인할 수 없습니다.', { code: 'INVALID_MARGIN_MODE' });
   }
   const isDual = positionSide === 'LONG' || positionSide === 'SHORT';
-  // Gate classic hedge mode exposes one contract-level leverage setting for
-  // both legs. Its legacy dual endpoint remains the compatible write path;
-  // cross margin is expressed as leverage=0 plus cross_leverage_limit.
-  if (isDual) {
-    const { payload } = await gateRequest({
-      ...options,
-      method: 'POST',
-      path: `${FUTURES_DUAL_POSITIONS_PATH}/${encodeURIComponent(contract)}/leverage`,
-      query: marginMode === 'cross'
-        ? { leverage: 0, cross_leverage_limit: normalizedLeverage }
-        : { leverage: normalizedLeverage },
-      expiresAtMs: Date.now() + 5_000,
-    });
-    return payload;
-  }
+  // Gate API v4 (FuturesApi update_position_leverage / update_dual_mode_position_leverage): both take query
+  // `leverage` and optional `cross_leverage_limit`, which is valid only when leverage=0 (cross margin); a positive
+  // leverage means isolated margin. Classic hedge mode exposes one contract-level leverage setting for both legs
+  // (the dual endpoint returns both legs). The single-mode path used `/set_leverage?margin_mode=`, the Hedge Split
+  // (dual_plus) endpoint of 2026-04, whose parameter placement was never verified; it now uses the documented
+  // `/positions/{contract}/leverage` with the same parameters as the dual path that runs in production.
+  const query = marginMode === 'cross'
+    ? { leverage: 0, cross_leverage_limit: normalizedLeverage }
+    : { leverage: normalizedLeverage };
   const { payload } = await gateRequest({
     ...options,
     method: 'POST',
-    path: `${FUTURES_POSITIONS_PATH}/${encodeURIComponent(contract)}/set_leverage`,
-    query: { leverage: normalizedLeverage, margin_mode: marginMode },
+    path: `${isDual ? FUTURES_DUAL_POSITIONS_PATH : FUTURES_POSITIONS_PATH}/${encodeURIComponent(contract)}/leverage`,
+    query,
     expiresAtMs: Date.now() + 5_000,
   });
   return payload;
@@ -572,6 +591,35 @@ export async function getFuturesAccountBook({ from, to, limit = 1000, offset = 0
 export async function getMyFuturesTradesInRange({ from, to, limit = 1000, offset = 0, maxPages = 20, ...options }) {
   return getPagedHistory({ ...options, path: FUTURES_TRADES_TIME_RANGE_PATH, query: { from, to },
     limit, offset, maxPages, code: 'TRADES_PAGINATION_LIMIT' });
+}
+
+export const FUTURES_LIQUIDATES_PATH = '/api/v4/futures/usdt/liquidates';
+export const FUTURES_AUTO_DELEVERAGES_PATH = '/api/v4/futures/usdt/auto_deleverages';
+
+// C-6: the account's own forced closes on one contract since `fromSeconds`: Gate liquidation history
+// (GET /futures/usdt/liquidates: time, contract, size, ...) and auto-deleveraging history
+// (GET /futures/usdt/auto_deleverages: time, contract, position_size, trade_size, ...). Both are read-only and
+// return the newest rows first. Only `contract` and `limit` are sent; the time window is applied here. One
+// endpoint failing still returns the other's rows; both failing throws (the caller keeps its default alert).
+export async function getFuturesForcedCloses({ contract, fromSeconds = 0, ...options }) {
+  const query = { contract, limit: 100 };
+  const reads = await Promise.allSettled([
+    gateRequest({ ...options, path: FUTURES_LIQUIDATES_PATH, query }),
+    gateRequest({ ...options, path: FUTURES_AUTO_DELEVERAGES_PATH, query }),
+  ]);
+  if (reads.every((read) => read.status === 'rejected')) throw reads[0].reason;
+  const rows = [];
+  for (const [index, type] of [[0, 'LIQUIDATION'], [1, 'AUTO_DELEVERAGE']]) {
+    const payload = reads[index].status === 'fulfilled' ? reads[index].value.payload : null;
+    for (const row of Array.isArray(payload) ? payload : []) {
+      const raw = Number(row?.time);
+      const time = raw > 100_000_000_000 ? raw / 1_000 : raw; // seconds (a millisecond value is converted)
+      if (row?.contract !== contract || !Number.isFinite(time) || time < fromSeconds) continue;
+      const size = Number(type === 'LIQUIDATION' ? row.size : row.position_size);
+      rows.push({ type, contract, time, size: Number.isFinite(size) ? size : null });
+    }
+  }
+  return rows.sort((a, b) => b.time - a.time);
 }
 
 // Sizes derived by arithmetic on Gate's decimal strings (size - left) carry binary residue: 0.3 - 0.1 =

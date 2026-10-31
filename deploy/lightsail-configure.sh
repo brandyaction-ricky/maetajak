@@ -22,8 +22,12 @@ read -r -s -p "Alert webhook URL (hidden, required before LIVE): " alert_webhook
 echo
 read -r -s -p "Alert webhook bearer token (hidden, optional): " alert_webhook_bearer
 echo
-read -r -p "Gate Broker commission UID [49084031]: " gate_broker_uid
-gate_broker_uid="${gate_broker_uid:-49084031}"
+# No default UID (A5, 2026-10-21). Empty = Broker metrics stay NOT_CONFIGURED (GATE_BROKER_UID_REQUIRED).
+read -r -p "Gate Broker commission UID (empty to skip Broker metrics): " gate_broker_uid
+if [[ -n "${gate_broker_uid}" && ! "${gate_broker_uid}" =~ ^[0-9]+$ ]]; then
+  echo "Invalid Gate Broker UID." >&2
+  exit 1
+fi
 read -r -s -p "Gate Broker read API key (hidden, optional when Master UID matches): " gate_broker_api_key
 echo
 read -r -s -p "Gate Broker secret key (hidden, optional when Master UID matches): " gate_broker_secret_key

@@ -26,8 +26,9 @@ for (const sign of [1,-1]) {
     assert.equal(done.intent, undefined);
   });
   test(`${side}: missed or partial entry followed by Master reduction never creates a replacement entry`, () => {
+    // The halved decision (10 -> 5) bounds the 6 held: the reduction sells first what was never bought (QA B2).
     const partial = anchored(sign * 20, sign * 6, sign * 40, sign * 10);
-    assert.equal(partial.target_size, sign * 3); assert.equal(partial.intent.delta_size, -sign * 3);
+    assert.equal(partial.target_size, sign * 5); assert.equal(partial.intent.delta_size, -sign * 1);
     assert.equal(partial.intent.reduce_only, true);
     const missed = anchored(sign * 20, 0, sign * 40, sign * 10);
     assert.equal(missed.target_size, 0); assert.equal(missed.intent, undefined);
