@@ -131,6 +131,11 @@ let memberGateConnection = null;
 let memberGateConnectionLoaded = false;
 let memberSystemStatus = null;
 let memberResumeWaiting = null;
+// P2-5: no copy session was ever requested or activated (the modal says "카피 시작" instead of "카피 재개").
+let memberCopyNeverStarted = false;
+// P2-5 (2026-11-03): the FUTURE_ONLY rule is anchored to the moment copying starts or resumes (not the API connection),
+// the same wording as the administrator's ordered start. A member's start/resume now asks for confirmation first.
+const COPY_START_POLICY = '카피를 시작(재개)하는 시점에 Master가 이미 보유한 포지션은 사지 않고, 이후 Master의 변화만 현재 자산 비율로 따라갑니다.';
 let memberLiveLoadFailed = false;
 let adminLiveActions = null;
 let adminControlBusy = false;
@@ -233,7 +238,7 @@ function enhancePauseModal() {
     actions.innerHTML = `
     <button class="btn" type="button" data-copy-pause="HOLD">신규 카피만 중지 · 현재 포지션 유지</button>
     <button class="btn red" type="button" data-copy-pause="CLOSE">카피 중지 + 계정 전체 포지션 정리</button>
-    <button class="btn green" type="button" data-copy-pause="RESUME">카피 재개</button>`;
+    <button class="btn green" type="button" data-copy-pause="RESUME">${copyResumeLabel()}</button>`;
     actions.insertAdjacentHTML('beforebegin', `<div id="pauseResumeGuidance" class="pause-resume-guidance hidden" role="status">
       <b id="pauseResumeGuidanceTitle">-</b>
       <p id="pauseResumeGuidanceDetail">-</p>
@@ -319,7 +324,7 @@ function enhanceCopySettingsUi() {
     <section class="card section copy-control-card"><div class="section-head"><div><small class="copy-eyebrow">노출 비율</small><h3>카피 비율</h3><p>Master의 포지션 변화를 내 자산 기준으로 복제할 비율입니다.</p></div><strong id="copyRatioValue">100%</strong></div><input id="copyRatioSelect" class="copy-range" type="range" min="50" max="200" step="10" value="100" aria-label="카피 비율" aria-describedby="copyRatioValue"><div class="copy-range-labels"><span>50%</span><span>100%</span><span>150%</span><span>200%</span></div></section>
     <section class="card section copy-control-card"><div class="section-head"><div><small class="copy-eyebrow">종목 상한</small><h3>종목당 최대 포지션 비중</h3><p>한 종목이 내 총자산에서 차지할 수 있는 상한입니다.</p></div><strong id="maxPositionRatioValue">30%</strong></div><input id="maxPositionRatioSelect" class="copy-range" type="range" min="20" max="50" step="10" value="30" aria-label="종목당 최대 포지션 비중" aria-describedby="maxPositionRatioValue"><div class="copy-range-labels"><span>20% 안전</span><span>30% 균형</span><span>40% 적극</span><span>50% 최대</span></div></section>
     <section class="card section copy-risk-card"><div class="section-head"><div><small class="copy-eyebrow">리스크 한도</small><h3>계정 리스크 한도</h3><p>한도 도달 시 Worker가 신규 주문을 자동 차단합니다. 운영자가 전체 계정에 동일하게 고정한 값으로, 회원이 변경할 수 없습니다.</p></div><span class="chip yellow">운영자 고정</span></div><div class="copy-risk-inputs"><label><span>일일 최대 손실</span><div class="is-locked"><input id="dailyLossLimitInput" type="number" value="15" disabled aria-disabled="true" title="운영자가 고정한 한도입니다"><b>%</b></div></label><label><span>최대 Drawdown</span><div class="is-locked"><input id="maxDrawdownInput" type="number" value="20" disabled aria-disabled="true" title="운영자가 고정한 한도입니다"><b>%</b></div></label><label><span>레버리지 정책</span><div><b>Master 자동 추종</b></div></label></div><div class="notice">LONG·SHORT 각 포지션은 Master가 사용한 레버리지와 증거금 모드로 진입합니다.</div></section>
-    </div><div class="copy-settings-secondary"><section class="card section copy-existing-policy"><div><small class="copy-eyebrow">기존 포지션</small><h3>기존 포지션 처리</h3><p>API 연결 시점에 Master가 이미 보유한 포지션은 진입하지 않고, 이후 추가·감소 및 신규 진입부터 카피합니다.</p></div><span class="chip">연결 이후만 카피</span></section>
+    </div><div class="copy-settings-secondary"><section class="card section copy-existing-policy"><div><small class="copy-eyebrow">기존 포지션</small><h3>기존 포지션 처리</h3><p>${COPY_START_POLICY}</p></div><span class="chip">시작 이후만 카피</span></section>
     <section class="card section copy-fund-policy"><div><small class="copy-eyebrow">입출금 · 포지션 모드</small><h3>알아두세요</h3><p id="copyTransferNotice">선물 계정에서 출금하거나 현물로 옮기면 종목당 최대 비중 한도도 함께 줄어, 한도를 넘는 카피 수량은 Master 변화가 없어도 매도될 수 있습니다. 다시 입금하면 줄었던 수량이 Master 기준까지 다시 채워질 수 있습니다. 입출금 자체는 수익률·손실 한도 계산에서 제외됩니다.</p><p id="copyPositionModeNotice">Gate.io 선물 포지션 모드는 양방향(Hedge)이어야 합니다. 단방향이면 카피 재개가 거절되니 Gate 선물 설정에서 양방향으로 바꾼 뒤 재개를 요청해 주세요.</p></div></section>
     <aside class="card section copy-setting-summary"><small class="copy-eyebrow">설정 미리보기</small><h3>현재 설정 요약</h3><div class="metric"><span>카피 비율</span><b id="copyPreviewRatio">100%</b></div><div class="metric"><span>종목당 최대 비중</span><b id="copyPreviewCap">30%</b></div><div class="metric"><span>포지션 모드</span><b>롱·숏 양방향</b></div><div class="metric"><span>레버리지</span><b>Master 자동 추종</b></div><div class="metric"><span>리스크 차단</span><b id="copyPreviewRisk">-5% · -15%</b></div><div class="notice">설정 변경은 다음 Worker 주기부터 적용됩니다. 기존 포지션을 임의로 확대하지 않습니다.</div><button id="copySettingsSave" class="btn primary full" type="button">설정 저장</button></aside>
   </div></div>`;
@@ -1125,6 +1130,7 @@ async function loadCopySystemStatus() {
   if (currentProfile.role === 'MEMBER') {
     const { data: resumes, error: resumeError } = await supabase.rpc('get_member_copy_resume_status', { p_user_id: currentProfile.id });
     if (!resumeError) memberResumeWaiting = (resumes || []).find((row) => row.state !== 'ACTIVE') || null;
+    if (!resumeError) memberCopyNeverStarted = isCopyNeverStarted(resumes, currentProfile);
     const waiting = memberResumeWaiting;
     if (!resumeError && waiting) {
       const detail = byId('memberSystemDetail');
@@ -1250,7 +1256,19 @@ function openPositionSummary() {
   return { count: positions.length, notional };
 }
 
+function isCopyNeverStarted(resumeRows, profile) {
+  const rows = Array.isArray(resumeRows) ? resumeRows : [];
+  return !profile?.copy_started_at && rows.every((row) => !row?.requested_at && !row?.activated_at);
+}
+function copyResumeLabel() { return memberCopyNeverStarted ? '카피 시작' : '카피 재개'; }
+function confirmMemberCopyStart() {
+  const label = copyResumeLabel();
+  return window.confirm(`${label} 요청을 보낼까요?\n\n• ${COPY_START_POLICY}\n• 지금 내 계정에 있는 포지션은 그대로 유지됩니다.\n• 거래소 안전 확인을 마친 뒤 시작되며, 확인 결과는 카피 관리에서 볼 수 있습니다.`);
+}
+
 function renderPauseModalStatus() {
+  const resumeButton = document.querySelector('#pauseModal [data-copy-pause="RESUME"]');
+  if (resumeButton) resumeButton.textContent = copyResumeLabel();
   const status = getMemberSelfCopyStatus();
   const statusNode = byId('pauseModalStatus');
   if (statusNode) {
@@ -2741,7 +2759,7 @@ async function openMemberDetail(userId) {
     <div><small>최대 포지션 비중</small><b>${Number(member.max_position_ratio ?? 30)}%</b></div>
     <div><small>가입일</small><b>${member.created_at ? new Date(member.created_at).toLocaleDateString('ko-KR') : '-'}</b></div>
     ${member.role === 'MEMBER' ? renderAdminMemberWeightSettings(member) : ''}
-    ${member.role === 'MEMBER' ? '<div class="member-control-actions"><small>관리자 카피 제어</small><div class="actions"><button class="btn" type="button" data-member-control="PAUSE">일시중지</button><button class="btn" type="button" data-member-control="REDUCE_ONLY">축소 전용</button><button class="btn red" type="button" data-member-control="HALT">중단</button><button class="btn green" type="button" data-member-control="RESUME">재개</button><button class="btn" type="button" data-new-operation-open>새 운용 시작</button></div></div>' : ''}
+    ${member.role === 'MEMBER' ? '<div class="member-control-actions"><small>관리자 카피 제어</small><div class="actions"><button class="btn" type="button" data-member-control="PAUSE">일시중지</button><button class="btn" type="button" data-member-control="REDUCE_ONLY">축소 전용</button><button class="btn red" type="button" data-member-control="HALT">중단</button><button class="btn green" type="button" data-member-control="RESUME">재개</button></div></div><details class="member-control-actions member-danger-zone"><summary>고급 · 위험</summary><div class="member-danger-body"><p class="muted">일반 재개가 아닙니다. 마스터가 지금 보유한 포지션 전부를 이 회원 계좌에 매수하고, 현재 자산을 새 위험 기준으로 삼습니다. 확인 단계에서 회원 이름을 입력해야 합니다.</p><div class="actions"><button class="btn red" type="button" data-new-operation-open>새 운용 시작 (마스터 현재 포지션 전부 매수)</button></div></div></details>' : ''}
     ${member.role === 'MEMBER' && !member.withdrawn_at ? '<div class="member-control-actions member-withdraw-actions"><small>회원 탈퇴</small><div class="actions"><button class="btn red" type="button" data-member-withdraw>회원 탈퇴 처리</button></div><p class="muted">카피 중단·로그인 차단·API 키 폐기. 기록은 보존되고 탈퇴 회원 탭에서 복구할 수 있습니다.</p></div>' : ''}
     ${releaseUid}`;
   byId('memberPasswordResetActions')?.classList.toggle('hidden', member.role !== 'MEMBER');
@@ -3209,6 +3227,7 @@ document.addEventListener('click', async (event) => {
   const pauseButton = event.target.closest('[data-copy-pause]');
   if (pauseButton && !copyPauseBusy) {
     if (pauseButton.dataset.copyPause === 'CLOSE') setPauseCloseConfirm(true);
+    else if (pauseButton.dataset.copyPause === 'RESUME') { if (confirmMemberCopyStart()) await setCopyPause('RESUME'); }
     else await setCopyPause(pauseButton.dataset.copyPause);
   }
   if (event.target.closest('[data-copy-pause-cancel]') && !copyPauseBusy) {

@@ -36,7 +36,8 @@ test('open positions use a four-column desktop grid with symbol logos', () => {
 });
 
 test('copy settings expose only worker-backed risk controls and future-only onboarding policy', () => {
-  assert.match(main, /연결 이후만 카피/);
+  // P2-5 (2026-11-03): the future-only rule is anchored to the copy start/resume moment, not the API connection.
+  assert.match(main, /시작 이후만 카피/);
   assert.match(main, /dailyLossLimitInput/);
   assert.match(main, /maxDrawdownInput/);
   assert.match(main, /copyRatioSelect" class="copy-range" type="range" min="50" max="200" step="10"/);

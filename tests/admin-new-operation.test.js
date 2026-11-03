@@ -238,6 +238,8 @@ test('explicit current-Master operation validates twice and remains bound to its
       ? JSON.stringify({ user:123,total:'1500',available:'1500',unrealised_pnl:'0',in_dual_mode:false }) : '[]');
   } });
   const read = runner.readAccount.bind(runner);
+  // Q1: this process has already observed the Master in a cycle (resume requires it).
+  runner.masterObservedAt = Date.now(); runner.persistedMasterLoaded = true;
   runner.readAccount = async (a) => a.trading_account_id===ids.master
     ? observedAccount({ ...a,total:10000,positionMode:'single',positions:[{...position(40),mode:'single'}] }) : read(a);
   runner.rpc = async (name, params) => {

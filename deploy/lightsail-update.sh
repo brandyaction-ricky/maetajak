@@ -37,6 +37,11 @@ previous_sha="$(git rev-parse HEAD)"
 git fetch origin main
 git merge --ff-only origin/main
 
+# Q4: the restarted worker reports this checkout's build (package.json version + git short SHA).
+# shellcheck source=deploy/worker-version.sh
+source "${APP_DIR}/deploy/worker-version.sh"
+maetajak_write_worker_version "${ENV_FILE}" "${APP_DIR}"
+
 export MAETAJAK_ENV_FILE="${ENV_FILE}"
 docker compose -f docker-compose.worker.yml build --pull copy-worker
 docker compose -f docker-compose.worker.yml run --rm copy-worker npm run worker:preflight

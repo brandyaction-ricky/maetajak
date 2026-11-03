@@ -50,6 +50,12 @@ export const migrationFiles = [
   '20261021034000_qa_review_fixes.sql',
   // 2026-10-30 administrator ordered copy start (signup order, one member at a time, FUTURE_ONLY).
   '20261030010000_admin_ordered_copy_start.sql',
+  // 2026-11-03 pre-go-live Q2: email confirmation no longer approves a member.
+  '20261103010000_disable_email_auto_approve.sql',
+  // 2026-11-03 pre-go-live Q4: order gates accept the "<version>+<git sha>" worker build.
+  '20261103020000_worker_build_version_gate.sql',
+  // 2026-11-03 review F2/F3: service_role Master last legs RPC; ordered start requeues RESUME_MASTER_SNAPSHOT_UNCONFIRMED.
+  '20261103030000_master_last_legs_and_requeue.sql',
 ];
 // Production objects the structural fixture lacks (test-only stand-ins, no data). Every statement is
 // "if not exists"/"or replace", so a test may still create its own (narrower) stand-in first.
@@ -79,7 +85,8 @@ begin
   end if;
   return new;
 end;
-$function$;`;
+$function$;
+`;
 export async function createVerifiedDatabase() {
   const db = new PGlite();
   await db.exec(readFileSync('tests/fixtures/copy-runtime-schema.sql', 'utf8'));

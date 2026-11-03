@@ -90,6 +90,7 @@ function fallbackRunner(masterRead) {
       case 'get_copy_fund_flow_totals': return [];
       case 'confirm_copy_order_observation': return null;
       case 'record_verified_copy_worker_cycle': recorded.push(params.p_payload); return params.p_payload.cycle_id;
+      case 'get_copy_last_master_legs': return { observed_at: null, legs: [] };
       default: throw new Error(`unexpected rpc ${name}`);
     }
   };
@@ -164,6 +165,7 @@ for (const code of ['GATE_TIMEOUT', 'GATE_API_ERROR', 'SPLIT_POSITION_UNSUPPORTE
         case 'get_copy_target_anchors': return [];
         case 'get_copy_fund_flow_totals': return [];
         case 'record_verified_copy_worker_cycle': recorded.push(params.p_payload); return params.p_payload.cycle_id;
+        case 'get_copy_last_master_legs': return { observed_at: null, legs: [] };
         default: throw new Error(`unexpected rpc ${name}`);
       }
     };

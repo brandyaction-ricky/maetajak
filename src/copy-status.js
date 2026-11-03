@@ -63,6 +63,7 @@ export const RESUME_BLOCKER_GUIDANCE = {
   RESUME_SNAPSHOT_STALE: { title: '계좌 조회 지연', detail: '거래소 조회가 늦어 확인을 마치지 못했습니다. 잠시 후 자동으로 다시 시도합니다.' },
   RESUME_SNAPSHOT_SKEW: { title: '계좌 조회 지연', detail: '거래소 조회가 늦어 확인을 마치지 못했습니다. 잠시 후 자동으로 다시 시도합니다.' },
   RESUME_SNAPSHOT_CHANGED: { title: '확인 중 포지션 변경', detail: '확인하는 동안 포지션이 바뀌었습니다. 자동으로 다시 확인합니다.' },
+  RESUME_MASTER_SNAPSHOT_UNCONFIRMED: { title: 'Master 포지션 확인 중', detail: 'Master가 이미 보유한 포지션을 정확히 확인한 뒤 시작합니다. 잠시 후 자동으로 다시 확인합니다.' },
   RESUME_INVALID_EQUITY: { title: '자산 확인 필요', detail: 'Gate 선물 계정 자산이 0이거나 조회되지 않습니다. 선물 계정에 USDT가 있는지 확인해 주세요.' },
   MASTER_TRADING_ACCOUNT_CHANGED: { title: 'Master 계정 변경으로 일시중지', detail: '운영자의 Master 계정 설정이 바뀌어 카피가 멈췄습니다. 재개를 요청하면 현재 보유 포지션을 유지한 채 다시 시작합니다.' },
   MASTER_CREDENTIAL_CHANGED: { title: 'Master 계정 변경으로 일시중지', detail: '운영자의 Master API 설정이 바뀌어 카피가 멈췄습니다. 재개를 요청하면 현재 보유 포지션을 유지한 채 다시 시작합니다.' },

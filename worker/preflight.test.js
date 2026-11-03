@@ -54,3 +54,53 @@ test('worker preflight rejects webhook-only LIVE because critical alerts require
   assert.equal(result.ok, false);
   assert.ok(result.errors.some((message) => message.includes('Telegram')));
 });
+
+// 2026-11-03 review F4: a 0.6.x worker refuses to start on a database without the 2026-11-03 migrations.
+import { runPreflight, checkDatabaseCompatibility, preflightWorkerVersion } from '../scripts/worker-preflight.js';
+const dbFetch = ({ version = { worker_build_version_gate: 1 }, legs = { legs: [] }, status = 200, fail = null } = {}) => {
+  const urls = [];
+  const impl = async (url, request) => {
+    urls.push([new URL(url).pathname, request.method, request.headers.Authorization]);
+    if (fail) throw new Error(fail);
+    const name = new URL(url).pathname.split('/').at(-1);
+    const body = name === 'get_copy_safety_version' ? version : legs;
+    return new Response(JSON.stringify(body), { status: name === 'get_copy_last_master_legs' ? status : 200 });
+  };
+  return { impl, urls };
+};
+
+test('F4 preflight: 0.6.x worker passes only with worker_build_version_gate >= 1 and get_copy_last_master_legs', async () => {
+  const env = { ...base, WORKER_VERSION: '0.6.0+7026ad2ce098' };
+  const ok = dbFetch();
+  const passed = await runPreflight(env, { fetchImpl: ok.impl });
+  assert.equal(passed.ok, true, passed.errors.join());
+  assert.equal(passed.database_checked, true);
+  assert.deepEqual(ok.urls.map(([p, m, a]) => [p, m, a]), [
+    ['/rest/v1/rpc/get_copy_safety_version', 'POST', 'Bearer sb_secret_example'],
+    ['/rest/v1/rpc/get_copy_last_master_legs', 'POST', 'Bearer sb_secret_example']]);
+  for (const [label, options, pattern] of [
+    ['gate missing', { version: { schema_version: 3, worker_version: '0.5.0' } }, /20261103020000/],
+    ['gate 0', { version: { worker_build_version_gate: 0 } }, /20261103020000/],
+    ['legs RPC missing', { status: 404 }, /20261103030000/],
+    ['legs shape', { legs: { positions: [] } }, /20261103030000/],
+    ['network', { fail: 'ECONNREFUSED' }, /could not be read/],
+  ]) {
+    const result = await runPreflight(env, { fetchImpl: dbFetch(options).impl });
+    assert.equal(result.ok, false, label);
+    assert.ok(result.errors.some((e) => pattern.test(e)), `${label}: ${result.errors.join(' | ')}`);
+  }
+});
+
+test('F4 preflight: 0.5.0 / dev builds are not DB-checked; an invalid environment makes no request', async () => {
+  for (const version of ['0.5.0', 'dev']) {
+    const probe = dbFetch({ fail: 'SHOULD_NOT_BE_CALLED' });
+    assert.deepEqual(await checkDatabaseCompatibility({ env: base, workerVersion: version, fetchImpl: probe.impl }), { checked: false, errors: [] });
+    assert.equal(probe.urls.length, 0);
+  }
+  const probe = dbFetch({ fail: 'SHOULD_NOT_BE_CALLED' });
+  const result = await runPreflight({ ...base, WORKER_VERSION: '0.6.0+abc1234', SUPABASE_URL: 'http://localhost' }, { fetchImpl: probe.impl });
+  assert.equal(result.ok, false);
+  assert.equal(probe.urls.length, 0);
+  assert.equal(preflightWorkerVersion({ WORKER_VERSION: '0.6.0+x' }), '0.6.0+x');
+  assert.equal(preflightWorkerVersion({}), '0.6.0', 'package.json fallback, as worker/index.js');
+});

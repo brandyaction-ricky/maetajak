@@ -8,6 +8,7 @@ import { createVerifiedDatabase, seedVerifiedAccount, ids } from './fixtures/ver
 const migration = readFileSync('supabase/migrations/20261021020000_uid_accounts.sql', 'utf8');
 const KEY = 'K'.repeat(20);
 let db;
+let uidPatchedApprove;
 const one = async (sql, args = []) => (await db.query(sql, args)).rows[0];
 async function rejects(sql, args, pattern) {
   await db.exec('savepoint u_expect');
@@ -76,6 +77,9 @@ $function$;`);
   await db.exec(migration);
   // Applying it again is a no-op (idempotent patches).
   await db.exec(migration);
+  uidPatchedApprove = (await one("select pg_get_functiondef('public.auto_approve_confirmed_user()'::regprocedure) d")).d;
+  // 2026-11-03 Q2: the later migration replaces the email auto-approval (members stay PENDING).
+  await db.exec(readFileSync('supabase/migrations/20261103010000_disable_email_auto_approve.sql', 'utf8'));
   await db.exec(`create trigger on_auth_user_created after insert on auth.users
       for each row execute function public.handle_new_user();
     create trigger zz_auto_approve_confirmed_user after insert or update of email_confirmed_at on auth.users
@@ -97,13 +101,13 @@ test('uid signup: gate_uid comes from metadata, account stays PENDING, terms rec
   assert.equal((await one('select approval_status from public.profiles where id=$1', [id])).approval_status, 'PENDING');
 });
 
-test('uid signup: invalid or mismatched metadata UID is ignored; legacy email auto-approval unchanged', async () => {
+test('uid signup: invalid or mismatched metadata UID is ignored; email accounts stay PENDING too (Q2 2026-11-03)', async () => {
   const bad = await addAuthUser('12ab@uid.maetajak.trading', signupMeta('12ab'));
   assert.equal((await one('select gate_uid from public.profiles where id=$1', [bad])).gate_uid, null);
   // An ordinary email signup cannot claim a UID through metadata.
   const legacy = await addAuthUser('legacy@example.invalid', signupMeta('87654321'));
   const p = await one('select gate_uid,approval_status from public.profiles where id=$1', [legacy]);
-  assert.deepEqual(p, { gate_uid: null, approval_status: 'APPROVED' });
+  assert.deepEqual(p, { gate_uid: null, approval_status: 'PENDING' });
 });
 
 test('uid signup: gate_uid is unique and digits-only', async () => {
@@ -139,8 +143,7 @@ test('patched definitions: guard inserted once, before the copy lock; reset emai
   assert.equal(save.split('GATE_UID_MUST_MATCH_ACCOUNT').length - 1, 1);
   assert.ok(save.indexOf('GATE_UID_MUST_MATCH_ACCOUNT') < save.indexOf('pg_advisory_xact_lock'));
   assert.ok(save.includes("perform private.guard_gate_account_change(auth.uid(), 'MEMBER', p_gate_uid);"));
-  const approve = (await one("select pg_get_functiondef('public.auto_approve_confirmed_user()'::regprocedure) d")).d;
-  assert.equal(approve.split("like '%@uid.maetajak.trading'").length - 1, 1);
+  assert.equal(uidPatchedApprove.split("like '%@uid.maetajak.trading'").length - 1, 1);
   const acl = await one(`select has_function_privilege('authenticated','public.request_member_password_reset(uuid)','EXECUTE') auth,
     has_function_privilege('anon','public.request_member_password_reset(uuid)','EXECUTE') anon`);
   assert.deepEqual(acl, { auth: false, anon: false });
