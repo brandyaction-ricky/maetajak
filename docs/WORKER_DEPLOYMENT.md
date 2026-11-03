@@ -124,9 +124,15 @@ DB는 최근 Worker heartbeat, 운영 Gate URL, 고정 IP, 최근 준비 테스�
 
 DB 마이그레이션이 포함된 커밋은 운영 DB가 필요한 RPC와 `get_copy_safety_version()` 표식(2026-11-03부터 `worker_build_version_gate>=1` 포함)을 이미 갖춘 경우에만 자동 배포되고, 아니면 `auto_deploy=blocked_database_migration`으로 차단됩니다. 운영 SQL을 먼저 적용하고 검증한 뒤 배포합니다. 기존 운영 DB의 `supabase_migrations.schema_migrations`에는 이미 적용된 버전을 등록해 이력을 일관되게 유지합니다.
 
-### Worker 버전 표기 (2026-11-03, 0.6.0)
+### Worker 버전 표기와 0.6.0 배포 순서 (2026-11-03)
 
-배포 스크립트(`set-worker-mode.sh`, `lightsail-configure.sh`, `lightsail-update.sh`)는 `WORKER_VERSION`을 `<package.json version>+<git short SHA>`(예: `0.6.0+1a2b3c4d5e6f`, git이 없으면 `+nogit`)로 기록합니다(`deploy/worker-version.sh`). `copy_worker_runtime.worker_version`으로 구·신 워커를 구분합니다. 주문 게이트는 `private.copy_worker_version_supported()`가 허용한 빌드(0.5.0, 0.6.0[+build])만 받으므로 `20261103020000_worker_build_version_gate.sql`을 **0.6.0 워커보다 먼저** 적용합니다(순서가 바뀌면 주문을 가져가지 못할 뿐 잘못 주문하지는 않습니다).
+배포 스크립트(`set-worker-mode.sh`, `lightsail-configure.sh`, `lightsail-update.sh`)는 `WORKER_VERSION`을 `<package.json version>+<git short SHA>`(예: `0.6.0+1a2b3c4d5e6f`, git이 없으면 `+nogit`)로 기록합니다(`deploy/worker-version.sh`). `copy_worker_runtime.worker_version`으로 구·신 워커를 구분합니다.
+
+**`main`에 병합하기 전에** 운영 DB에 `20261103010000_disable_email_auto_approve.sql`, `20261103020000_worker_build_version_gate.sql`, `20261103030000_master_last_legs_and_requeue.sql`을 순서대로 적용합니다(`20261103030000`은 `20261030010000` 이후). 타이머 자동 배포가 병합 직후 서버를 갱신하기 때문입니다.
+
+- 주문 게이트는 `private.copy_worker_version_supported()`가 허용한 빌드(0.5.0, 0.6.0[+build])만 받습니다.
+- 0.6.0 워커는 재시작 후 `get_copy_last_master_legs`(service_role 전용)로 DB의 마지막 Master 포지션을 한 번 읽기 전에는 사이클을 기록하지 않고(`PERSISTED_MASTER_LEGS_UNAVAILABLE`), 5분 넘게 실패하면 `MASTER_LAST_LEGS_UNAVAILABLE` CRITICAL 알림을 보냅니다.
+- 안전장치: `npm run worker:preflight`는 0.6.x 워커에 대해 `get_copy_safety_version().worker_build_version_gate>=1`과 `get_copy_last_master_legs`를 확인하고, 없으면 실패합니다. `lightsail-deploy-dry-run.sh`, `lightsail-update.sh`, `lightsail-enable-live.sh`, systemd `ExecStartPre`가 모두 Preflight를 실행하므로 마이그레이션 없는 DB에서는 워커가 시작되지 않습니다. 자동 배포도 `worker_build_version_gate` 표식이 없으면 차단됩니다.
 
 ## 긴급 중단
 

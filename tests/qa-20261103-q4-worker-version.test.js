@@ -81,3 +81,19 @@ test('Q4: every deploy path computes the version; nothing pins 0.5.0; the worker
   assert.doesNotMatch(read('docker-compose.worker.yml'), /WORKER_VERSION/);
   assert.doesNotMatch(read('Dockerfile.worker'), /WORKER_VERSION/);
 });
+
+test('Q4 review F4: every start path runs the preflight, after WORKER_VERSION is written; docs require the migrations first', () => {
+  for (const [file, versionStep] of [['deploy/lightsail-deploy-dry-run.sh', 'set-worker-mode.sh" DRY_RUN'],
+    ['deploy/lightsail-update.sh', 'maetajak_write_worker_version'], ['deploy/lightsail-enable-live.sh', null]]) {
+    const script = read(file);
+    const preflight = script.indexOf('npm run worker:preflight');
+    assert.ok(preflight > 0, file);
+    if (versionStep) assert.ok(script.indexOf(versionStep) < preflight, `${file}: version written before preflight`);
+    // The main start (enable-live also starts the restored DRY_RUN worker inside its failure trap, earlier in the file).
+    const starts = [...script.matchAll(/^systemctl (re)?start maetajak-worker\.service$/gm)].map((m) => m.index);
+    assert.ok(starts.length && preflight < starts.at(-1), `${file}: preflight before start`);
+  }
+  assert.match(read('deploy/maetajak-worker.service'), /ExecStartPre=.*worker:preflight/);
+  const doc = read('docs/WORKER_DEPLOYMENT.md');
+  assert.match(doc, /\*\*`main`에 병합하기 전에\*\* 운영 DB에 `20261103010000_disable_email_auto_approve\.sql`, `20261103020000_worker_build_version_gate\.sql`, `20261103030000_master_last_legs_and_requeue\.sql`/);
+});

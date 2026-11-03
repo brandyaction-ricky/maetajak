@@ -295,7 +295,7 @@ test('DRY_RUN records target, actual, and delta without an intent key', async ()
       return 'cycle-1';
     }
     if (name === 'get_or_initialize_member_copy_baselines') return { positions: [], member_positions: [] };
-    if (name === 'get_public_master_positions') return { observed_at: null, positions: [] };
+    if (name === 'get_copy_last_master_legs') return { observed_at: null, legs: [] };
     throw new Error(`unexpected rpc: ${name}`);
   };
   runner.loadContracts = async () => contracts;
@@ -353,6 +353,7 @@ test('worker snapshots a verified Master before any member API is connected', as
       recordedPayload = parameters.p_payload;
       return 'cycle-1';
     }
+    if (name === 'get_copy_last_master_legs') return { observed_at: null, legs: [] };
     throw new Error(`unexpected rpc: ${name}`);
   };
   runner.loadContracts = async () => { throw new Error('contracts should not load without members'); };
@@ -392,6 +393,7 @@ test('worker refreshes cached contract metadata when Master opens an unknown con
     if (name === 'confirm_copy_order_observation') return 0;
     if (name === 'record_verified_copy_worker_cycle') return {};
     if (name === 'get_or_initialize_member_copy_baselines') return { positions: [], member_positions: [] };
+    if (name === 'get_copy_last_master_legs') return { observed_at: null, legs: [] };
     throw new Error(`unexpected rpc ${name}`);
   };
   runner.loadContracts = async () => {
@@ -436,6 +438,7 @@ test('member failures expose a safe stage without leaking upstream messages', as
       recordedPayload = parameters.p_payload;
       return 'cycle-1';
     }
+    if (name === 'get_copy_last_master_legs') return { observed_at: null, legs: [] };
     throw new Error(`unexpected rpc: ${name}`);
   };
   runner.loadContracts = async () => contracts;
@@ -491,6 +494,7 @@ test('LIVE applies Master leverage to the correct hedge leg before submitting an
       completions.push(parameters);
       return null;
     }
+    if (name === 'get_copy_last_master_legs') return { observed_at: null, legs: [] };
     throw new Error(`unexpected rpc: ${name}`);
   };
 
@@ -520,6 +524,7 @@ test('entry alert delivery reports the durable job result without affecting orde
       result_status: 'FILLED', quanto_multiplier: 0.001, api_key: 'test', secret_key: 'test',
       details: { member: '테스트 회원', contract: 'BTC_USDT', position_side: 'LONG', filled_size: 2 } }];
     if (name === 'complete_copy_entry_alert') { completions.push(parameters); return null; }
+    if (name === 'get_copy_last_master_legs') return { observed_at: null, legs: [] };
     throw new Error(`unexpected rpc: ${name}`);
   };
   assert.equal(await runner.deliverEntryAlerts(), 1);
@@ -590,6 +595,7 @@ test('order observability contains safe intent correlation without credentials',
       trading_account_id: 'member', actual_size_at_plan: 0, target_size: 1, master_size_at_plan: 40, quanto_multiplier: 0.001, risk_leverage: 10,
     }];
     if (name === 'complete_copy_order_attempt') return null;
+    if (name === 'get_copy_last_master_legs') return { observed_at: null, legs: [] };
     throw new Error(`unexpected rpc: ${name}`);
   };
 

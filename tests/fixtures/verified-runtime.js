@@ -54,6 +54,8 @@ export const migrationFiles = [
   '20261103010000_disable_email_auto_approve.sql',
   // 2026-11-03 pre-go-live Q4: order gates accept the "<version>+<git sha>" worker build.
   '20261103020000_worker_build_version_gate.sql',
+  // 2026-11-03 review F2/F3: service_role Master last legs RPC; ordered start requeues RESUME_MASTER_SNAPSHOT_UNCONFIRMED.
+  '20261103030000_master_last_legs_and_requeue.sql',
 ];
 // Production objects the structural fixture lacks (test-only stand-ins, no data). Every statement is
 // "if not exists"/"or replace", so a test may still create its own (narrower) stand-in first.
@@ -85,35 +87,6 @@ begin
 end;
 $function$;
 `;
-// Created after the migrations (its SQL body needs private.copy_current_positions).
-export const postMigrationStandIns = `
-  -- Reduced stand-in of the production definition (202609040002_current_state_read_cutover.sql, checked against
-  -- pg_get_functiondef 2026-11-03): same tables, same master selection and the output keys the worker reads. The
-  -- worker reads the Master legs the DB last recorded through it once per process (Q1).
-  CREATE OR REPLACE FUNCTION public.get_public_master_positions()
-   RETURNS jsonb LANGUAGE sql STABLE SECURITY DEFINER SET search_path TO 'public', 'pg_temp'
-  AS $function$
-  with settings as (
-    select date '2026-07-01' as start_date, 10000::numeric as start_equity, 0::numeric as net_deposits
-  ), master_account as (
-    select account.id from private.trading_accounts account
-    where account.account_role = 'MASTER' and account.status = 'ACTIVE' order by account.updated_at desc limit 1
-  ), current_account as (
-    select account.* from private.copy_current_accounts account join master_account master on master.id = account.trading_account_id
-  ), open_positions as (
-    select position.*, abs(position.size * position.mark_price * position.quanto_multiplier) as notional
-    from private.copy_current_positions position join master_account master on master.id = position.trading_account_id
-    where position.size <> 0
-  )
-  select jsonb_build_object(
-    'observed_at', (select observed_at from current_account),
-    'account', (select jsonb_build_object('total_equity', account.total_equity, 'available_equity', account.available_equity)
-      from current_account account cross join settings),
-    'positions', coalesce((select jsonb_agg(jsonb_build_object('contract', position.contract, 'side', position.position_side,
-      'size', position.size, 'entry_price', position.entry_price, 'mark_price', position.mark_price, 'leverage', position.leverage,
-      'notional', position.notional, 'observed_at', position.observed_at) order by position.notional desc)
-      from open_positions position), '[]'::jsonb));
-  $function$;`;
 export async function createVerifiedDatabase() {
   const db = new PGlite();
   await db.exec(readFileSync('tests/fixtures/copy-runtime-schema.sql', 'utf8'));
@@ -123,7 +96,6 @@ export async function createVerifiedDatabase() {
     try { await db.exec(readFileSync(`supabase/migrations/${file}`, 'utf8')); }
     catch (error) { await db.close(); throw new Error(`${file}: ${error.message}`, { cause: error }); }
   }
-  await db.exec(postMigrationStandIns);
   return db;
 }
 export async function seedVerifiedAccount(db) {

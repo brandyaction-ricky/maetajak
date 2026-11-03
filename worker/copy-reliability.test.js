@@ -181,6 +181,7 @@ function fakeRunner({ masterReads, baseline = [{ contract: 'BTC_USDT', position_
         }).filter((b) => b.size !== 0);
         return null;
       case 'record_verified_copy_worker_cycle': calls.recorded.push(params.p_payload); return params.p_payload.cycle_id;
+      case 'get_copy_last_master_legs': return { observed_at: null, legs: [] };
       default: throw new Error(`unexpected rpc ${name}`);
     }
   };

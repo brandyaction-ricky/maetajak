@@ -339,6 +339,7 @@ test('10: the verified cycle payload carries no decrypted credentials', async ()
     if (['get_copy_order_observation_guards', 'get_copy_target_anchors'].includes(name)) return [];
     if (name === 'record_verified_copy_worker_cycle') { recorded = parameters.p_payload; return 'cycle-1'; }
     if (name === 'confirm_copy_order_observation') return 0;
+    if (name === 'get_copy_last_master_legs') return { observed_at: null, legs: [] };
     throw new Error(`unexpected rpc: ${name}`);
   };
   runner.loadContracts = async () => new Map([['BTC_USDT', { quantoMultiplier: 0.001, sizeStep: 1, orderSizeMin: 1 }]]);

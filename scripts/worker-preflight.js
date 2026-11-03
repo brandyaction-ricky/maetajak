@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { isIP } from 'node:net';
 import { pathToFileURL } from 'node:url';
 import { validateGateChannelId } from '../worker/gate.js';
@@ -65,8 +66,57 @@ export function validatePreflightEnvironment(env) {
   };
 }
 
+// 2026-11-03 Q4 review F4: the build this container reports (worker/index.js uses the same order).
+export function preflightWorkerVersion(env) {
+  if (env.WORKER_VERSION) return String(env.WORKER_VERSION);
+  if (env.npm_package_version) return String(env.npm_package_version);
+  try { return JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version || 'dev'; }
+  catch { return 'dev'; }
+}
+
+// A 0.6.x worker needs the DB of the 2026-11-03 release: the order gates that accept its "<version>+<sha>" build
+// (20261103020000, get_copy_safety_version().worker_build_version_gate >= 1) and the service_role Master last legs
+// read (20261103030000, get_copy_last_master_legs). Fails closed: any missing piece or failed read is an error.
+export async function checkDatabaseCompatibility({ env, workerVersion, fetchImpl = fetch }) {
+  if (!/^0\.6\./.test(workerVersion)) return { checked: false, errors: [] };
+  const errors = [];
+  const call = async (name) => {
+    const response = await fetchImpl(`${String(env.SUPABASE_URL).replace(/\/$/, '')}/rest/v1/rpc/${name}`, {
+      method: 'POST', body: '{}', signal: AbortSignal.timeout(10_000),
+      headers: { apikey: env.SUPABASE_SERVICE_ROLE_KEY, Authorization: `Bearer ${env.SUPABASE_SERVICE_ROLE_KEY}`,
+        'Content-Type': 'application/json' },
+    });
+    if (!response.ok) throw new Error(`HTTP_${response.status}`);
+    return response.json();
+  };
+  try {
+    const version = await call('get_copy_safety_version');
+    if (!(Number(version?.worker_build_version_gate) >= 1)) {
+      errors.push(`worker ${workerVersion} requires migration 20261103020000 (get_copy_safety_version().worker_build_version_gate >= 1)`);
+    }
+  } catch (error) {
+    errors.push(`get_copy_safety_version could not be read (${String(error?.message || 'ERROR').slice(0, 40)})`);
+  }
+  try {
+    const legs = await call('get_copy_last_master_legs');
+    if (!legs || !Array.isArray(legs.legs)) errors.push(`worker ${workerVersion} requires migration 20261103030000 (get_copy_last_master_legs)`);
+  } catch (error) {
+    errors.push(`get_copy_last_master_legs could not be read: migration 20261103030000 required (${String(error?.message || 'ERROR').slice(0, 40)})`);
+  }
+  return { checked: true, errors };
+}
+
+export async function runPreflight(env, { fetchImpl = fetch } = {}) {
+  const result = validatePreflightEnvironment(env);
+  const workerVersion = preflightWorkerVersion(env);
+  // The database is checked only with a valid production URL and service-role key (no request otherwise).
+  const database = result.ok ? await checkDatabaseCompatibility({ env, workerVersion, fetchImpl }) : { checked: false, errors: [] };
+  const errors = [...result.errors, ...database.errors];
+  return { ...result, ok: errors.length === 0, errors, worker_version: workerVersion, database_checked: database.checked };
+}
+
 async function main() {
-  const result = validatePreflightEnvironment(process.env);
+  const result = await runPreflight(process.env);
   console.log(JSON.stringify(result, null, 2));
   if (!result.ok) process.exitCode = 1;
 }

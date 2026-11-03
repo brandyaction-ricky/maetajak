@@ -29,7 +29,7 @@ export function cycleFailureCode(error) {
 // still commit afterwards: every timeout must be as safe as a lost response. RPCs the worker calls:
 // - Reads (no state change; abort is harmless): get_copy_worker_context, get_copy_order_observation_guards,
 //   get_copy_resume_context, get_copy_target_anchors, get_copy_fund_flow_totals, get_copy_reversal_entry_context,
-//   get_member_copy_resume_ownership, get_copy_stale_fill_observations, get_public_master_positions (Q1, once per process).
+//   get_member_copy_resume_ownership, get_copy_stale_fill_observations, get_copy_last_master_legs (Q1, until it succeeded once per process).
 // - Idempotent writes / reports (a commit after the abort is repeated or superseded next cycle): copy_worker_heartbeat,
 //   report_copy_worker_cycle, record_verified_copy_worker_cycle (also refused by the DB once its observation is
 //   >15 s old), upsert_copy_current_state, confirm_copy_order_observation, advance_member_copy_resume_baseline_legs,

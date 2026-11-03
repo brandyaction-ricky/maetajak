@@ -497,8 +497,8 @@ test('qa-1 (g) Q1 fixed: an empty Master list right after a restart no longer be
   assert.deepEqual(fresh.calls.map(([n, p]) => [n, p.p_reason]), [['report_member_copy_resume_blocker', 'RESUME_MASTER_SNAPSHOT_UNCONFIRMED']]);
   // The DB says the Master held ETH (last record of the previous process); the empty list leaves it unconfirmed.
   const { runner, calls } = resumeRunner('LIVE', { masterPositions: [], masterObserved: false });
-  runner.rpc = ((rpc) => async (name, params) => (name === 'get_public_master_positions'
-    ? { observed_at: new Date(Date.now() - 30_000).toISOString(), positions: [{ contract: 'ETH_USDT', side: 'LONG', size: 1_000 }] }
+  runner.rpc = ((rpc) => async (name, params) => (name === 'get_copy_last_master_legs'
+    ? { observed_at: new Date(Date.now() - 30_000).toISOString(), legs: [{ contract: 'ETH_USDT', position_side: 'LONG', size: 1_000 }] }
     : rpc(name, params)))(runner.rpc);
   await runner.loadPersistedMasterLegs();
   assert.deepEqual(runner.masterExpectations(), { contracts: ['ETH_USDT'], legs: ['ETH_USDT:LONG'] }, 'the Master read now asks Gate for ETH');
@@ -557,8 +557,8 @@ test('Q1: a non-empty list missing a leg the last cycle saw, or an unconfirmed c
 
 test('Q1: a genuinely flat Master (nothing in the DB, nothing in memory) resumes with an empty baseline', async () => {
   const { runner, calls } = resumeRunner('LIVE', { masterPositions: [], masterObserved: false });
-  runner.rpc = ((rpc) => async (name, params) => (name === 'get_public_master_positions'
-    ? { observed_at: new Date().toISOString(), positions: [] } : rpc(name, params)))(runner.rpc);
+  runner.rpc = ((rpc) => async (name, params) => (name === 'get_copy_last_master_legs'
+    ? { observed_at: new Date().toISOString(), legs: [] } : rpc(name, params)))(runner.rpc);
   await runner.loadPersistedMasterLegs();
   runner.cycleSeq = 1;
   runner.trackMasterLegConfirmation({ list_empty: true, positions: [] }, new Map(), new Map(), new Set());
@@ -569,8 +569,8 @@ test('Q1: a genuinely flat Master (nothing in the DB, nothing in memory) resumes
 
 test('Q1: the Master closed while the worker was down: two consecutive empty-list cycles confirm it, then resume proceeds', async () => {
   const { runner, calls } = resumeRunner('LIVE', { masterPositions: [], masterObserved: false });
-  runner.rpc = ((rpc) => async (name, params) => (name === 'get_public_master_positions'
-    ? { observed_at: new Date(Date.now() - 600_000).toISOString(), positions: [{ contract: 'ETH_USDT', side: 'LONG', size: 1_000 }] }
+  runner.rpc = ((rpc) => async (name, params) => (name === 'get_copy_last_master_legs'
+    ? { observed_at: new Date(Date.now() - 600_000).toISOString(), legs: [{ contract: 'ETH_USDT', position_side: 'LONG', size: 1_000 }] }
     : rpc(name, params)))(runner.rpc);
   await runner.loadPersistedMasterLegs();
   const cycle = (master) => { runner.cycleSeq += 1; runner.trackMasterLegConfirmation(master, runner.lastMasterSizes, new Map(), new Set()); };
@@ -611,7 +611,7 @@ test('Q1: mid-process glitch: a leg the last cycle saw vanishes from an empty li
 
 test('Q1: the DB observation is ignored when older than 24 h; a failed DB read keeps resume waiting and is retried', async () => {
   const runner = new TradingRunner({ supabase: null, mode: 'LIVE' });
-  let reply = { observed_at: new Date(Date.now() - 25 * 3_600_000).toISOString(), positions: [{ contract: 'ETH_USDT', side: 'LONG', size: 1_000 }] };
+  let reply = { observed_at: new Date(Date.now() - 25 * 3_600_000).toISOString(), legs: [{ contract: 'ETH_USDT', position_side: 'LONG', size: 1_000 }] };
   let fail = true;
   runner.rpc = async () => { if (fail) throw new Error('DB_TIMEOUT'); return reply; };
   await runner.loadPersistedMasterLegs();
@@ -642,8 +642,8 @@ test('Q1 syncOnce: restart + empty list -> resume blocked; next cycle list back 
         max_position_ratio: 30, previous_states: [] }] };
     if (name === 'get_copy_resume_context') return [{ trading_account_id: 'acc', state: 'REQUESTED', version, ownership_status: 'CONFIRMED',
       resume_authorized: true, unresolved_orders: 0, expires_at: new Date(Date.now() + 60_000).toISOString() }];
-    if (name === 'get_public_master_positions') return { observed_at: new Date(Date.now() - 20_000).toISOString(),
-      positions: [{ contract: 'ETH_USDT', side: 'LONG', size: 1_000 }] };
+    if (name === 'get_copy_last_master_legs') return { observed_at: new Date(Date.now() - 20_000).toISOString(),
+      legs: [{ contract: 'ETH_USDT', position_side: 'LONG', size: 1_000 }] };
     if (name === 'get_member_copy_resume_ownership') return { master_positions: params.p_master_positions,
       member_positions: params.p_member_positions, copy_positions: [], target_anchors: [] };
     if (name === 'activate_member_copy_resume') return { state: 'ACTIVE' };
@@ -661,7 +661,7 @@ test('Q1 syncOnce: restart + empty list -> resume blocked; next cycle list back 
   };
   await runner.syncOnce();
   assert.deepEqual(masterReads[0], ['ETH_USDT'], 'the restarted cycle asks Gate for the leg the DB recorded');
-  assert.ok(calls.findIndex(([n]) => n === 'get_public_master_positions') < calls.findIndex(([n]) => n === 'record_verified_copy_worker_cycle'));
+  assert.ok(calls.findIndex(([n]) => n === 'get_copy_last_master_legs') < calls.findIndex(([n]) => n === 'record_verified_copy_worker_cycle'));
   await runner.processPendingResumes(1);
   assert.deepEqual(reasons(calls), ['RESUME_MASTER_SNAPSHOT_UNCONFIRMED']);
   assert.equal(activation(calls), undefined);
@@ -669,7 +669,7 @@ test('Q1 syncOnce: restart + empty list -> resume blocked; next cycle list back 
   await runner.syncOnce();
   await runner.processPendingResumes(1);
   assert.deepEqual(activation(calls).master_positions, [{ contract: 'ETH_USDT', position_side: 'LONG', size: 1_000 }]);
-  assert.equal(calls.filter(([n]) => n === 'get_public_master_positions').length, 1, 'read once per process');
+  assert.equal(calls.filter(([n]) => n === 'get_copy_last_master_legs').length, 1, 'read once per process');
 });
 
 // ---------------------------------------------------------------- extra: hedge interactions
