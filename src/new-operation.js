@@ -16,7 +16,16 @@ const errors = {
   CONFIRMATION_REQUIRED: '새 위험 기준 적용에 동의해 주세요.',
   REASON_REQUIRED: '새 운용을 시작하는 사유를 입력해 주세요.',
   REQUEST_ID_REUSED: '이미 다른 작업에 사용된 요청입니다. 다시 조회해 주세요.',
+  NAME_CONFIRMATION_MISMATCH: '회원 이름이 일치하지 않습니다. 확인란에 회원 이름을 그대로 입력해 주세요.',
 };
+// 2026-11-03 Q3: this action buys the Master's whole current portfolio for the member (CURRENT_MASTER), so the
+// administrator types the member's name, as for a withdrawal. The name shown in the panel is the one to type.
+export function newOperationConfirmationName(preview) {
+  return String(preview?.member_name || '').trim() || accountDisplayId(preview?.member_gate_uid, preview?.member_email) || '회원';
+}
+export function newOperationNameMatches(typed, preview) {
+  return String(typed ?? '').trim() === newOperationConfirmationName(preview);
+}
 export function newOperationError(error) {
   const message = String(error?.message || error || '');
   return Object.entries(errors).find(([code]) => message.includes(code))?.[1]
@@ -46,8 +55,10 @@ export function createNewOperationPanel({ root, rpc, onRequested }) {
     }
     preview = result.data; requestId = crypto.randomUUID();
     const reasons = preview.blockers || [];
-    root.innerHTML = `<form class="new-operation-form">
-      <div class="new-operation-heading"><h4>새 운용 시작</h4><button class="btn" type="button" data-new-operation-close>닫기</button></div>
+    const confirmName = newOperationConfirmationName(preview);
+    root.innerHTML = `<form class="new-operation-form new-operation-danger">
+      <div class="new-operation-heading"><h4>새 운용 시작 (마스터 현재 포지션 전부 매수)</h4><button class="btn" type="button" data-new-operation-close>닫기</button></div>
+      <p class="new-operation-warning" role="note"><strong>위험:</strong> 일반 재개와 다릅니다. 검증을 통과하면 마스터가 지금 보유한 포지션 전부를 이 회원 계좌에 시장가로 매수합니다. 일반적인 카피 재개는 위의 '재개' 버튼을 사용하세요.</p>
       <p><strong>${escape(preview.member_name)}</strong> · ${escape(accountDisplayId(preview.member_gate_uid, preview.member_email))}</p>
       <dl class="new-operation-values">
         <div><dt>새 시작 자산</dt><dd>${escape(money(preview.equity))}</dd></div>
@@ -61,9 +72,10 @@ export function createNewOperationPanel({ root, rpc, onRequested }) {
       <p>확인 후 거래소 미체결·포지션 검증을 통과하면, 마스터의 현재 전체 포지션을 새 시작 자산 비율과 카피 비율로 계산해 카피 주문을 시작합니다.</p>
       ${reasons.length ? `<p role="alert">${reasons.map((r) => escape(newOperationError(r))).join('<br>')}</p>` : ''}
       <label class="new-operation-field">시작 사유<textarea name="reason" rows="2" maxlength="200" required placeholder="예: 카피 중단 후 재입금, 새 운용 시작"></textarea></label>
-      <label class="new-operation-consent"><input type="checkbox" name="confirmed" required>위 자산을 새 위험 기준으로 적용하고 카피 재개를 요청합니다.</label>
+      <label class="new-operation-consent"><input type="checkbox" name="confirmed" required>위 자산을 새 위험 기준으로 적용하고, 마스터의 현재 포지션 전부를 이 회원 계좌에 매수하는 데 동의합니다.</label>
+      <label class="new-operation-field">확인을 위해 회원 이름 "${escape(confirmName)}"을(를) 입력해 주세요.<input name="confirm_name" type="text" autocomplete="off" required></label>
       <p class="new-operation-message" role="status" aria-live="polite"></p>
-      <div class="actions"><button type="button" class="btn" data-new-operation-refresh>현재 자산 다시 확인</button><button type="submit" class="btn green" ${!preview.eligible ? 'disabled' : ''}>새 기준으로 재개 요청</button></div>
+      <div class="actions"><button type="button" class="btn" data-new-operation-refresh>현재 자산 다시 확인</button><button type="submit" class="btn red" ${!preview.eligible ? 'disabled' : ''}>마스터 현재 포지션 전부 매수로 새 운용 시작</button></div>
     </form>`;
   }
   root.addEventListener('click', (event) => {
@@ -80,6 +92,10 @@ export function createNewOperationPanel({ root, rpc, onRequested }) {
     const consent = form.elements.confirmed.checked;
     const message = root.querySelector('.new-operation-message');
     if (!reason || !consent) { message.textContent = newOperationError(!reason ? 'REASON_REQUIRED' : 'CONFIRMATION_REQUIRED'); return; }
+    if (!newOperationNameMatches(form.elements.confirm_name?.value, preview)) {
+      message.textContent = newOperationError('NAME_CONFIRMATION_MISMATCH');
+      return;
+    }
     const ticket = generation;
     const requestedUser = userId;
     busy = true;
