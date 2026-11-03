@@ -71,6 +71,7 @@ const VALUE_LABELS = {
   GATE_TIMEOUT: 'Gate.io 응답 시간 초과', ORDER_QUANTITY_MISMATCH: '계획 수량과 거래소 주문 수량 불일치',
   RESUME_UNRESOLVED_ORDERS: '확인되지 않은 이전 주문이 남아 있음', RESUME_OPEN_EXCHANGE_ORDERS: '거래소에 미체결 주문이 남아 있음',
   RESUME_SNAPSHOT_STALE: '포지션 조회 시간이 오래됨', RESUME_SNAPSHOT_CHANGED: '재확인 중 포지션 수량이 변경됨',
+  RESUME_MASTER_SNAPSHOT_UNCONFIRMED: 'Master 포지션 조회 미확정 (다음 주기에 자동 재확인)',
   OPEN_FUTURES_ORDERS_REMAIN: '취소 후에도 거래소에 미체결 주문이 남아 있음',
   ORDER_NOT_FOUND_POSITION_CHANGED: '거래소 주문 미발견 · 포지션이 계획 시점과 다름',
   NOT_FOUND_AFTER_EXPIRY: '유효시간 경과 후 두 차례 조회에도 거래소 기록 없음·포지션 변화 없음 → 미실행 처리',

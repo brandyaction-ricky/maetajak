@@ -215,6 +215,8 @@ test('D6 a unified MEMBER read is held reduce-only (no risk evaluation) unless t
 
 test('D6 resume of a unified member stops with RESUME_UNIFIED_ACCOUNT_UNSUPPORTED', async () => {
   const runner = new TradingRunner({ supabase: {}, baseUrl: 'https://api.gateio.ws', mode: 'LIVE', fetchImpl: accountFetch(true) });
+  // Q1: this process has already observed the Master in a cycle (resume requires it).
+  runner.masterObservedAt = Date.now(); runner.persistedMasterLoaded = true;
   const blockers = [];
   runner.rpc = async (name, params) => { if (name === 'report_member_copy_resume_blocker') blockers.push(params.p_reason); return null; };
   await runner.processMemberResume({ session: { state: 'REQUESTED', version: 'v', expires_at: new Date(Date.now() + 60_000).toISOString(),

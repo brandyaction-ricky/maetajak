@@ -295,6 +295,7 @@ test('DRY_RUN records target, actual, and delta without an intent key', async ()
       return 'cycle-1';
     }
     if (name === 'get_or_initialize_member_copy_baselines') return { positions: [], member_positions: [] };
+    if (name === 'get_public_master_positions') return { observed_at: null, positions: [] };
     throw new Error(`unexpected rpc: ${name}`);
   };
   runner.loadContracts = async () => contracts;
@@ -319,7 +320,7 @@ test('DRY_RUN records target, actual, and delta without an intent key', async ()
   assert.equal(JSON.stringify(recordedPayload).includes('gate_order_text'), false);
   assert.equal(JSON.stringify(recordedPayload).includes('idempotency_key'), false);
   assert.equal(recordedPayload.master.positions[0].quanto_multiplier, 0.001);
-  assert.deepEqual(dryRunLogs, [{
+  assert.deepEqual(dryRunLogs.filter(({ event }) => event.startsWith('dry_run_')), [{
     event: 'dry_run_master_snapshot',
     details: { total_equity: 10_000, available_equity: 9_000, positions: [{ contract: 'BTC_USDT', position_side: 'LONG', size: 100, mark_price: 50_000, leverage: null, margin_mode: null }] },
   }, {

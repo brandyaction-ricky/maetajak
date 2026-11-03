@@ -29,6 +29,8 @@ test('incident regression: unreceipted current-seed session cannot reach activat
   const s = await request(); s.sync_current_master = true;
   const calls = [];
   const runner = new TradingRunner({ supabase: {}, mode: 'LIVE', fetchImpl: () => { throw new Error('EXCHANGE_DISABLED'); } });
+  // Q1: this process has already observed the Master in a cycle (resume requires it).
+  runner.masterObservedAt = Date.now(); runner.persistedMasterLoaded = true;
   runner.readResumeSnapshot = async () => {
     const now = Date.now();
     return { startedAt: now, openOrders: [], master: { total: 20000, positionMode: 'dual', positions: [position(40)], observed_at: new Date(now).toISOString() },
@@ -98,6 +100,8 @@ test('an explicit new-operation receipt never permits adopting non-flat or hedge
   const s = await request(); s.sync_current_master = true; s.current_master_operation_id = ids.version;
   const calls = [];
   const runner = new TradingRunner({ supabase: {}, mode: 'LIVE', fetchImpl: () => { throw new Error('EXCHANGE_DISABLED'); } });
+  // Q1: this process has already observed the Master in a cycle (resume requires it).
+  runner.masterObservedAt = Date.now(); runner.persistedMasterLoaded = true;
   runner.readResumeSnapshot = async () => {
     const now = Date.now();
     return { startedAt: now, openOrders: [], master: { total: 20000, positionMode: 'dual', positions: [position(40)], observed_at: new Date(now).toISOString() },

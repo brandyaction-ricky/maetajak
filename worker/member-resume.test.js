@@ -10,6 +10,8 @@ const positions = (size) => [{ contract: 'BTC_USDT', positionSide: 'LONG', size,
 function fixture(mode = 'LIVE') {
   const calls = [];
   const runner = new TradingRunner({ supabase: {}, mode, fetchImpl: () => { throw new Error('No exchange writes allowed during resume'); } });
+  // Q1: this process has already observed the Master in a cycle (resume requires it).
+  runner.masterObservedAt = Date.now(); runner.persistedMasterLoaded = true;
   runner.readResumeSnapshot = async () => {
     const now = Date.now();
     return { startedAt: now, openOrders: [], master: { positions: positions(100), total: 10_000, positionMode: 'single', observed_at: new Date(now).toISOString() },

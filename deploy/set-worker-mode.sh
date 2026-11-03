@@ -26,10 +26,15 @@ install -m 644 -o root -g root \
   /etc/systemd/system/maetajak-worker.service
 systemctl daemon-reload
 
+# The build identity (package.json version + git short SHA of this checkout), e.g. 0.6.0+1a2b3c4d5e6f.
+# shellcheck source=deploy/worker-version.sh
+source "${APP_DIR}/deploy/worker-version.sh"
+worker_version="$(maetajak_worker_version "${APP_DIR}")"
+
 temp_env="$(mktemp "${ENV_FILE}.XXXXXX")"
 trap 'rm -f "${temp_env}"' EXIT
 awk '!/^TRADING_MODE=/ && !/^RUN_READINESS_CHECK=/ && !/^WORKER_VERSION=/' "${ENV_FILE}" > "${temp_env}"
-printf 'WORKER_VERSION=0.5.0\n' >> "${temp_env}"
+printf 'WORKER_VERSION=%s\n' "${worker_version}" >> "${temp_env}"
 printf 'TRADING_MODE=%s\n' "${MODE}" >> "${temp_env}"
 if [[ "${MODE}" == "DRY_RUN" ]]; then
   printf 'RUN_READINESS_CHECK=true\n' >> "${temp_env}"
@@ -40,3 +45,4 @@ chown root:root "${temp_env}"
 chmod 600 "${temp_env}"
 mv -f "${temp_env}" "${ENV_FILE}"
 trap - EXIT
+echo "worker_version=${worker_version}"

@@ -38,6 +38,10 @@ export const RISK_HALT_CONFIRM_MAX_CYCLES = 3;
 // Target leverage when a cross-margin Master leg reports neither leverage nor cross_leverage_limit (Gate: 0 = the
 // maximum under the risk limit) and no earlier value is known. Capped at the contract maximum.
 export const DEFAULT_CROSS_LEVERAGE = 10;
+// Q1 (2026-11-03): retryable resume blocker while the Master read cannot be trusted as complete, and the age up to
+// which the DB's last recorded Master legs count as "the Master held these" after a worker (re)start.
+export const RESUME_MASTER_SNAPSHOT_UNCONFIRMED = 'RESUME_MASTER_SNAPSHOT_UNCONFIRMED';
+export const PERSISTED_MASTER_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
 // Intents the database cancelled before any Gate request; they are not order failures (2026-10: 520 of 539
 // COPY_ORDER_FAILED alerts were SUPERSEDED_BY_FRESH_PLAN plans that never reached Gate).
@@ -907,6 +911,15 @@ export class TradingRunner {
     this.lastMasterSizes = new Map();
     this.recentMasterContracts = new Map();
     this.pendingBaselineClears = new Map();
+    // Q1 (2026-11-03): resume must not take a Master baseline from an empty or partial read.
+    // masterObservedAt: last successful Master cycle read of this process (0 = none yet).
+    // persistedMasterLoaded: the Master legs the DB last recorded (previous process included) were read once,
+    // before this process's first cycle overwrote them. unresolvedMasterLegs: legs that the DB or the previous
+    // cycle says the Master held and no reliable read has confirmed (present, or flat on a non-empty list, or
+    // flat on two consecutive empty-list reads) yet: key -> { size, source: 'DB' | 'CYCLE', flatSeq }.
+    this.masterObservedAt = 0;
+    this.persistedMasterLoaded = false;
+    this.unresolvedMasterLegs = new Map();
     // C1: contract -> { first, last } cycles in which an anchored Master leg was seen flat only through the fallback.
     this.pendingFallbackFlats = new Map();
     // P1-8: resume validation runs after the order phase, one member per cycle.
@@ -1006,6 +1019,11 @@ export class TradingRunner {
   masterExpectations(resumeContext = [], targetAnchors = []) {
     const contracts = new Set(this.recentMasterContracts.keys());
     const legs = new Set([...this.lastMasterSizes].filter(([, size]) => size !== 0).map(([key]) => key));
+    // Q1: legs the DB (last recorded observation) or the previous cycle still vouch for are re-read on their own.
+    for (const key of this.unresolvedMasterLegs.keys()) {
+      contracts.add(parsePositionKey(key).contract);
+      legs.add(key);
+    }
     const activeAccounts = new Set();
     for (const session of resumeContext || []) {
       if (session?.state !== 'ACTIVE') continue;
@@ -1022,6 +1040,68 @@ export class TradingRunner {
       legs.add(positionKey({ ...anchor, size: anchor.master_copyable_size }));
     }
     return { contracts: [...contracts].sort(), legs: [...legs].sort() };
+  }
+  // Q1: the Master legs the DB last recorded (copy_current_positions through get_public_master_positions, written by
+  // the previous cycle - of this or of the previous worker process). Read once per process, before this process's
+  // first cycle record overwrites them. Never throws: a failed read is retried next cycle and, until it succeeds,
+  // resume validation waits (RESUME_MASTER_SNAPSHOT_UNCONFIRMED). An observation older than
+  // PERSISTED_MASTER_MAX_AGE_MS is not used (the worker was down for that long).
+  async loadPersistedMasterLegs() {
+    if (this.persistedMasterLoaded) return;
+    try {
+      const data = await this.rpc('get_public_master_positions');
+      const observedAt = Date.parse(data?.observed_at);
+      const positions = Array.isArray(data?.positions) ? data.positions : [];
+      const recent = Number.isFinite(observedAt) && Date.now() - observedAt <= PERSISTED_MASTER_MAX_AGE_MS;
+      let legs = 0;
+      if (recent) for (const position of positions) {
+        const size = Number(position?.size);
+        if (!position?.contract || !Number.isFinite(size) || size === 0) continue;
+        const key = positionKey({ contract: String(position.contract), position_side: position.side ?? position.position_side, size });
+        if (!this.unresolvedMasterLegs.has(key)) this.unresolvedMasterLegs.set(key, { size, source: 'DB', flatSeq: null });
+        legs++;
+      }
+      this.persistedMasterLoaded = true;
+      if (this.logger) this.logger('persisted_master_positions_loaded', { legs, observed_at: data?.observed_at || null, used: recent });
+    } catch (error) {
+      if (this.logger) this.logger('persisted_master_positions_failed', { error_code: safeError(error, 'PERSISTED_MASTER') });
+    }
+  }
+  // Q1: after each Master cycle read. A leg the previous cycle saw that vanished from an EMPTY list (the documented
+  // glitch; the single-contract read may then also say flat) is not trusted as closed by resume yet. A pending leg is
+  // resolved when present, when flat on a non-empty list (the single-contract read was authoritative), or when flat
+  // on two consecutive empty-list cycles (the C1 rule). A leg on an unconfirmed contract stays pending.
+  trackMasterLegConfirmation(master, previousSizes, currentSizes, unconfirmedContracts) {
+    const listEmpty = master?.list_empty === true;
+    if (listEmpty) for (const [key, size] of previousSizes) {
+      if (!size || currentSizes.has(key) || unconfirmedContracts.has(parsePositionKey(key).contract)) continue;
+      if (!this.unresolvedMasterLegs.has(key)) this.unresolvedMasterLegs.set(key, { size, source: 'CYCLE', flatSeq: null });
+    }
+    for (const [key, leg] of this.unresolvedMasterLegs) {
+      if (unconfirmedContracts.has(parsePositionKey(key).contract)) { leg.flatSeq = null; continue; }
+      if (currentSizes.has(key) || !listEmpty) { this.unresolvedMasterLegs.delete(key); continue; }
+      if (leg.flatSeq === this.cycleSeq - 1) this.unresolvedMasterLegs.delete(key);
+      else leg.flatSeq = this.cycleSeq;
+    }
+    this.masterObservedAt = Date.now();
+  }
+  // Q1: a resume stores the Master read as the FUTURE_ONLY baseline (what the member never buys). It is refused,
+  // retryably, while that read cannot be trusted to be complete: no Master cycle observed by this process yet, the
+  // DB's last Master legs not loaded or not confirmed yet, a Master contract unconfirmed, or the read came back as an
+  // empty list / without a leg the last cycle saw while the Master is known to hold legs.
+  resumeMasterStateBlocker() {
+    return !this.masterObservedAt || !this.persistedMasterLoaded || this.unresolvedMasterLegs.size
+      ? RESUME_MASTER_SNAPSHOT_UNCONFIRMED : null;
+  }
+  resumeMasterSnapshotBlocker(master) {
+    const state = this.resumeMasterStateBlocker();
+    if (state) return state;
+    if ((master?.unconfirmed_contracts || []).length) return RESUME_MASTER_SNAPSHOT_UNCONFIRMED;
+    const expected = [...this.lastMasterSizes].filter(([, size]) => Number(size) !== 0).map(([key]) => key);
+    if (!expected.length) return null;
+    const present = new Set((master?.positions || []).map(positionKey));
+    if (master?.list_empty === true || expected.some((key) => !present.has(key))) return RESUME_MASTER_SNAPSHOT_UNCONFIRMED;
+    return null;
   }
   async rpc(name, parameters = {}) {
     const { data, error } = await this.supabase.rpc(name, parameters);
@@ -1081,6 +1161,7 @@ export class TradingRunner {
     return { ...account, ...summary, positions, open_orders: openOrders,
       unconfirmed_contracts: positions.unconfirmedContracts || [],
       list_empty_fallback_contracts: positions.listEmptyFallbackContracts || [],
+      list_empty: positions.listEmpty === true,
       observed_started_at: startedAt, observed_at: new Date().toISOString(),
       halted: Boolean(account.halted), profile_reduce_only: Boolean(account.reduce_only),
       reduce_only: Boolean(account.reduce_only) || Boolean(risk.risk_halt_reason) || Boolean(policyBlock),
@@ -1228,9 +1309,12 @@ export class TradingRunner {
       if (Date.parse(session.expires_at) <= Date.now()) throw new Error('RESUME_REQUEST_EXPIRED');
       if (Number(session.unresolved_orders) !== 0) throw new Error('RESUME_UNRESOLVED_ORDERS');
       if (session.state === 'VALIDATED' && (this.mode !== 'LIVE' || system?.emergency_halted || !system?.execution_enabled)) return { validated: true };
+      // Q1: never take a FUTURE_ONLY baseline before this process has observed the Master once (retryable).
+      const masterState = this.resumeMasterStateBlocker();
+      if (masterState) throw new Error(masterState);
       let first = await this.readResumeSnapshot(masterContext, memberContext);
       if (first.member.account_policy_block) throw new Error(`RESUME_${first.member.account_policy_block}`);
-      reason = validateResumeSnapshot({ ...first, contracts });
+      reason = this.resumeMasterSnapshotBlocker(first.master) || validateResumeSnapshot({ ...first, contracts });
       // A newly connected Gate account starts in single mode. The cycle switches a member to dual mode
       // only while ACTIVE, and resume could never become ACTIVE while the modes differ: switch a flat
       // member with no resting orders here (Gate refuses the switch otherwise), then read again.
@@ -1240,7 +1324,7 @@ export class TradingRunner {
         await setFuturesPositionMode({ ...credentials(memberContext), channelId: this.channelId, baseUrl: this.baseUrl,
           fetchImpl: this.fetchImpl, positionMode: 'dual' });
         first = await this.readResumeSnapshot(masterContext, memberContext);
-        reason = validateResumeSnapshot({ ...first, contracts });
+        reason = this.resumeMasterSnapshotBlocker(first.master) || validateResumeSnapshot({ ...first, contracts });
       }
       if (reason) throw new Error(reason);
       const observedMemberPositions = resumePositions(first.member.positions);
@@ -1292,7 +1376,7 @@ export class TradingRunner {
       // DRY_RUN validates and stores the protected quantities; it never enables a member.
       if (this.mode !== 'LIVE' || system?.emergency_halted || !system?.execution_enabled) return { validated: true };
       const second = await this.readResumeSnapshot(masterContext, memberContext);
-      reason = validateResumeSnapshot({ ...second, contracts });
+      reason = this.resumeMasterSnapshotBlocker(second.master) || validateResumeSnapshot({ ...second, contracts });
       if (reason || Date.now() - first.startedAt > RESUME_MAX_AGE_MS
         || !sameResumePositions(first.master.positions, second.master.positions)
         || !sameResumePositions(first.member.positions, second.member.positions)
@@ -1417,6 +1501,8 @@ export class TradingRunner {
       this.rpc('get_copy_target_anchors'),
       this.loadFundFlowTotals(),
       this.loadRiskContext(),
+      // Q1: before this cycle's record overwrites the DB's last Master legs (first cycle of the process only).
+      this.loadPersistedMasterLegs(),
     ]);
     const context = withRiskContext(withFundFlowNet(applyOrderObservationGuards(rawContext, observationGuards), fundFlowTotals),
       riskContext);
@@ -1466,6 +1552,7 @@ export class TradingRunner {
     for (const [key, size] of this.lastMasterSizes) {
       if (unconfirmedMasterContracts.has(parsePositionKey(key).contract)) currentMasterSizes.set(key, size);
     }
+    this.trackMasterLegConfirmation(master, this.lastMasterSizes, currentMasterSizes, unconfirmedMasterContracts);
     this.lastMasterSizes = currentMasterSizes;
     for (const position of master.positions) this.recentMasterContracts.set(position.contract, this.cycleSeq);
     for (const contract of unconfirmedMasterContracts) this.recentMasterContracts.set(contract, this.cycleSeq);

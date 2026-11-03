@@ -418,6 +418,10 @@ export async function getFuturesPositions({ expectedContracts = [], expectedLegs
   // on a second cycle before closing it (TradingRunner.confirmFallbackFlatLegs).
   const fallbackOnly = rows.length ? [] : [...confirmed.keys()].filter((contract) => !unconfirmed.has(contract));
   if (fallbackOnly.length) Object.defineProperty(result, 'listEmptyFallbackContracts', { value: fallbackOnly.sort(), enumerable: false });
+  // Q1 (2026-11-03): the whole list came back empty, whatever the single-contract reads found. An empty list is
+  // what a flat account returns, and also what the glitch returns: a resume baseline built from it is only
+  // trusted when nothing says the Master held legs (TradingRunner.resumeMasterSnapshotBlocker).
+  if (!rows.length) Object.defineProperty(result, 'listEmpty', { value: true, enumerable: false });
   return result;
 }
 

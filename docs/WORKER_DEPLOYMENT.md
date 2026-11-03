@@ -53,7 +53,7 @@ Broker UID가 Master UID와 달라 별도 `Commission Details` 읽기 키를 사
 sudo /opt/maetajak/deploy/lightsail-configure-broker.sh
 ```
 
-서버 업데이트는 자동 배포하지 않습니다. 화면 코드 배포와 달리 Worker 업데이트는 주문 실행에 영향을 줄 수 있으므로 Preflight 통과 후 명시적으로 재시작합니다.
+`lightsail-update.sh`는 수동 업데이트입니다. 자동 배포 타이머를 설치한 서버에서는 아래 [자동 운영 배포](#자동-운영-배포)가 Worker 변경을 DRY_RUN으로 배포합니다(LIVE 중에는 배포하지 않고 알림만 보냅니다). Worker 업데이트는 주문 실행에 영향을 주므로 어느 경로든 Preflight 통과 후에만 시작합니다.
 
 ### 일반 Docker 서버
 
@@ -101,20 +101,20 @@ sudo /opt/maetajak/deploy/lightsail-enable-live.sh
 
 스크립트에서 `ENABLE_LIVE_COPY_TRADING`을 직접 입력해야 합니다. Telegram/Webhook 테스트 알림, LIVE Preflight, Worker 재시작, 40초 임대 교체, DB 실행 활성화를 순서대로 수행합니다. 활성화 완료 전 단계가 하나라도 실패하면 `/etc/maetajak/worker.env.before-live` 백업으로 DRY_RUN 설정을 복구하고 DB 실행 잠금은 해제하지 않습니다.
 
-DB는 최근 Worker heartbeat, 운영 Gate URL, 고정 IP, 최근 준비 테스트, 검증된 Master와 회원이 모두 확인될 때만 활성화를 허용합니다. Worker heartbeat가 30초 넘게 끊긴 상태에서 주문을 가져오려 하면 자동으로 전체 실행이 중단됩니다.
+DB는 최근 Worker heartbeat, 운영 Gate URL, 고정 IP, 최근 준비 테스트, 검증된 Master와 회원이 모두 확인될 때만 활성화를 허용합니다. heartbeat가 30초보다 오래되면 주문을 가져가지 못하고(`claim_copy_order_intents`가 빈 결과, 30초는 워커 임대 시간이기도 합니다) 전체 실행을 중단하지는 않습니다. 전체 중단은 워커가 180초 넘게 끊겼다가 다시 heartbeat를 보낼 때 일어납니다(`WORKER_HEARTBEAT_GAP`, 아래 '워커 공백 자동 중단').
 
 `OBSERVE`와 `DRY_RUN`에서는 Target/Actual/Delta만 기록하고 실행 가능한 주문 의도는 저장하지 않습니다. 또한 LIVE 활성화 시각 이전에 생성된 모든 주문 의도는 DB에서 가져올 수 없으므로, 테스트 중 계산된 Delta가 나중에 실주문으로 바뀌지 않습니다. 준비 완료 시각은 Master 포지션에서 실제 Delta가 한 건 이상 계산된 DRY_RUN에만 기록됩니다.
 
 ## 자동 운영 배포
 
-운영 자동화가 설정된 뒤에는 `main`의 Worker·배포 관련 변경이 다음 순서로 처리됩니다.
+운영 자동화가 설정된 뒤에는 `main`의 Worker·배포 관련 변경이 다음 순서로 처리됩니다. 테스트와 빌드는 GitHub Actions(`deploy-production-worker.yml`)가 검증만 하며 서버에 배포하지 않습니다. 서버의 타이머가 직접 가져와 배포합니다.
 
-1. 테스트와 프로덕션 빌드
-2. Lightsail 타이머가 3분 이내 최신 `main` 확인
-3. 기존 Worker 정지와 DB 실행 잠금
-4. Lightsail 최신 `main` 반영
-5. `DRY_RUN` 고정, Preflight, Worker 재시작
-6. 정상 사이클과 회원 동기화 오류 부재 검증
+1. Lightsail 타이머가 3분마다 최신 `main` 확인. Worker가 `LIVE`이면 Worker 변경을 배포하지 않고 `AUTO_DEPLOY_PENDING_LIVE` 알림만 한 번 보냅니다(운영자가 DRY_RUN 배포 + LIVE 활성화 절차로 진행).
+2. 기존 Worker 정지와 DB 실행 잠금(`worker:halt`), 40초 임대 대기
+3. Lightsail 최신 `main` 반영, `DRY_RUN` 고정과 `WORKER_VERSION` 기록
+4. 이미지 빌드 — Worker가 멈춘 상태에서 진행하므로 빌드 시간만큼 주문·관측이 없습니다
+5. Preflight, Worker 시작
+6. 정상 사이클과 회원 동기화 오류 부재 검증, 알림 테스트
 
 실패하면 Worker는 중지되고 DB 실행 잠금은 유지됩니다. 성공해도 배포는 항상 DRY_RUN으로 종료하며 LIVE 상태를 자동 복구하지 않습니다. 실카피 재개는 DRY_RUN 목표 수량 검토와 운영자의 명시적 지시 후 `lightsail-enable-live.sh`의 별도 확인 절차로 진행합니다.
 
@@ -122,7 +122,11 @@ DB는 최근 Worker heartbeat, 운영 Gate URL, 고정 IP, 최근 준비 테스�
 
 최초 한 번 `sudo /opt/maetajak/deploy/install-auto-deploy.sh`를 실행하면 systemd 타이머가 설치됩니다. 인바운드 SSH 키나 GitHub Secret은 필요하지 않습니다. 변경이 없을 때는 짧은 `git fetch`만 수행하고, Worker 관련 변경이 있을 때만 재빌드합니다. UI 전용 변경은 서버 체크아웃만 갱신하며 Worker를 재시작하지 않습니다.
 
-DB 마이그레이션이 포함된 커밋은 자동 배포가 차단됩니다. 운영 SQL을 먼저 적용하고 검증한 뒤 서버 체크아웃을 갱신해야 합니다. 기존 운영 DB의 `supabase_migrations.schema_migrations`에는 이미 적용된 버전을 등록해 이력을 일관되게 유지합니다.
+DB 마이그레이션이 포함된 커밋은 운영 DB가 필요한 RPC와 `get_copy_safety_version()` 표식(2026-11-03부터 `worker_build_version_gate>=1` 포함)을 이미 갖춘 경우에만 자동 배포되고, 아니면 `auto_deploy=blocked_database_migration`으로 차단됩니다. 운영 SQL을 먼저 적용하고 검증한 뒤 배포합니다. 기존 운영 DB의 `supabase_migrations.schema_migrations`에는 이미 적용된 버전을 등록해 이력을 일관되게 유지합니다.
+
+### Worker 버전 표기 (2026-11-03, 0.6.0)
+
+배포 스크립트(`set-worker-mode.sh`, `lightsail-configure.sh`, `lightsail-update.sh`)는 `WORKER_VERSION`을 `<package.json version>+<git short SHA>`(예: `0.6.0+1a2b3c4d5e6f`, git이 없으면 `+nogit`)로 기록합니다(`deploy/worker-version.sh`). `copy_worker_runtime.worker_version`으로 구·신 워커를 구분합니다. 주문 게이트는 `private.copy_worker_version_supported()`가 허용한 빌드(0.5.0, 0.6.0[+build])만 받으므로 `20261103020000_worker_build_version_gate.sql`을 **0.6.0 워커보다 먼저** 적용합니다(순서가 바뀌면 주문을 가져가지 못할 뿐 잘못 주문하지는 않습니다).
 
 ## 긴급 중단
 

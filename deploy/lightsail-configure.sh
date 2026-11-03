@@ -48,6 +48,10 @@ if [[ ! "${worker_public_ip}" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
   exit 1
 fi
 
+# shellcheck source=deploy/worker-version.sh
+source "${APP_DIR}/deploy/worker-version.sh"
+worker_version="$(maetajak_worker_version "${APP_DIR}")"
+
 install -d -m 700 -o root -g root "${CONFIG_DIR}"
 umask 077
 temp_env="$(mktemp "${CONFIG_DIR}/worker.env.XXXXXX")"
@@ -62,7 +66,7 @@ trap 'rm -f "${temp_env:-}"' EXIT
   printf 'GATE_BROKER_SECRET_KEY=%s\n' "${gate_broker_secret_key}"
   printf 'BROKER_SYNC_INTERVAL_MS=3600000\n'
   printf 'WORKER_ID=maetajak-lightsail-seoul-01\n'
-  printf 'WORKER_VERSION=0.5.0\n'
+  printf 'WORKER_VERSION=%s\n' "${worker_version}"
   printf 'WORKER_PUBLIC_IP=%s\n' "${worker_public_ip}"
   printf 'TRADING_MODE=OBSERVE\n'
   printf 'RUN_READINESS_CHECK=false\n'

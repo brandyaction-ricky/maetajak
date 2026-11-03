@@ -399,9 +399,11 @@ test('qa-1 (f) ACTIVE member through DRY_RUN: no intents, increases consumed, LI
   assert.deepEqual(fmt(s.step().orders), ['ETH_USDT:LONG -5 R']);
 });
 
-function resumeRunner(mode, { masterPositions = [], memberPositions = [] } = {}) {
+function resumeRunner(mode, { masterPositions = [], memberPositions = [], masterObserved = true, masterListEmpty } = {}) {
   const calls = [];
   const runner = new TradingRunner({ supabase: null, mode });
+  // Q1: by default a Master cycle of this process has already run (and the DB's last Master legs were read).
+  if (masterObserved) { runner.masterObservedAt = Date.now(); runner.persistedMasterLoaded = true; }
   runner.rpc = async (name, params) => {
     calls.push([name, params]);
     if (name === 'get_member_copy_resume_ownership') return { master_positions: params.p_master_positions, member_positions: params.p_member_positions,
@@ -411,7 +413,9 @@ function resumeRunner(mode, { masterPositions = [], memberPositions = [] } = {})
   };
   const snapshot = () => { const startedAt = Date.now(); const at = new Date().toISOString();
     const base = { observed_started_at: at, observed_at: at, open_orders: [], total: 1_000, available: 1_000, positionMode: 'dual' };
-    return { startedAt, openOrders: [], master: { ...base, total: 100_000, positions: masterPositions },
+    const masterList = typeof masterPositions === 'function' ? masterPositions() : masterPositions;
+    return { startedAt, openOrders: [], master: { ...base, total: 100_000, positions: masterList,
+      list_empty: masterListEmpty ?? !masterList.length },
       member: { ...base, copy_ratio: 100, max_position_ratio: 30, positions: memberPositions } }; };
   runner.readResumeSnapshot = async () => snapshot();
   return { runner, calls };
@@ -475,7 +479,7 @@ test('qa-1 (g) C1: anchored new leg seen flat only through the empty-list fallba
   assert.deepEqual(fmt(s.step({ unconfirmed: h2 }).orders), ['XAU_USDT:LONG -20 R']);
 });
 
-test('qa-1 (g) P1: an empty Master list with no expectation (first member after a restart) is accepted silently as "no positions"', async () => {
+test('qa-1 (g) Q1 fixed: an empty Master list right after a restart no longer becomes an empty FUTURE_ONLY baseline', async () => {
   const requests = [];
   const fetchImpl = async (url) => {
     requests.push(new URL(url).pathname);
@@ -483,20 +487,189 @@ test('qa-1 (g) P1: an empty Master list with no expectation (first member after 
   };
   const positions = await getFuturesPositions({ apiKey: 'k', secretKey: 's', fetchImpl, baseUrl: 'https://example.invalid' });
   assert.deepEqual([...positions], []);
-  assert.equal(positions.listEmptyFallbackContracts, undefined, 'no marker that the list was empty');
-  // processMemberResume reads the Master with this.masterExpectations() (no resume context / anchors): after a restart
-  // nothing is expected, so a long-held Master leg that is not in its last 100 trades is absent from BOTH snapshots,
-  // and copy_resume_ownership stores the observed Master list as the FUTURE_ONLY baseline.
-  const runner = new TradingRunner({ supabase: null, mode: 'LIVE' });
-  assert.deepEqual(runner.masterExpectations(), { contracts: [], legs: [] });
-  const { runner: r2, calls } = resumeRunner('LIVE', { masterPositions: [] });
-  await r2.processMemberResume({ session: SESSION('REQUESTED'), masterContext: {}, memberContext: { trading_account_id: 'acc' },
+  assert.equal(positions.listEmptyFallbackContracts, undefined);
+  assert.equal(positions.listEmpty, true, 'the empty list is now marked (non-enumerable)');
+  assert.deepEqual(Object.keys(positions), []);
+  // A fresh process has observed nothing: the resume is refused before any read (retryable blocker).
+  const fresh = resumeRunner('LIVE', { masterPositions: [], masterObserved: false });
+  await fresh.runner.processMemberResume({ session: SESSION('REQUESTED'), masterContext: {}, memberContext: { trading_account_id: 'acc' },
     contracts: contractsMap(), system: { execution_enabled: true } });
-  assert.deepEqual(calls.find(([n]) => n === 'activate_member_copy_resume')[1].p_snapshot.master_positions, []);
-  // First ACTIVE cycle once the list is complete again: the pre-start Master leg is bought in full.
+  assert.deepEqual(fresh.calls.map(([n, p]) => [n, p.p_reason]), [['report_member_copy_resume_blocker', 'RESUME_MASTER_SNAPSHOT_UNCONFIRMED']]);
+  // The DB says the Master held ETH (last record of the previous process); the empty list leaves it unconfirmed.
+  const { runner, calls } = resumeRunner('LIVE', { masterPositions: [], masterObserved: false });
+  runner.rpc = ((rpc) => async (name, params) => (name === 'get_public_master_positions'
+    ? { observed_at: new Date(Date.now() - 30_000).toISOString(), positions: [{ contract: 'ETH_USDT', side: 'LONG', size: 1_000 }] }
+    : rpc(name, params)))(runner.rpc);
+  await runner.loadPersistedMasterLegs();
+  assert.deepEqual(runner.masterExpectations(), { contracts: ['ETH_USDT'], legs: ['ETH_USDT:LONG'] }, 'the Master read now asks Gate for ETH');
+  runner.cycleSeq = 1;
+  runner.trackMasterLegConfirmation({ list_empty: true, positions: [] }, new Map(), new Map(), new Set());
+  await runner.processMemberResume({ session: SESSION('REQUESTED'), masterContext: {}, memberContext: { trading_account_id: 'acc' },
+    contracts: contractsMap(), system: { execution_enabled: true } });
+  assert.equal(calls.find(([n]) => n === 'activate_member_copy_resume'), undefined, 'no activation with an empty baseline');
+  assert.deepEqual(calls.filter(([n]) => n === 'report_member_copy_resume_blocker').map(([, p]) => p.p_reason), ['RESUME_MASTER_SNAPSHOT_UNCONFIRMED']);
+  // Without the fix the first ACTIVE cycle would buy the pre-start holding (capped at 30%):
   const s = new Sim({ master: {} });
   s.master.set('ETH_USDT:LONG', 1_000);
-  assert.deepEqual(fmt(s.step().orders), ['ETH_USDT:LONG +15'], 'FUTURE_ONLY violated: pre-start holding bought (capped at 30%)');
+  assert.deepEqual(fmt(s.step().orders), ['ETH_USDT:LONG +15'], 'what an empty baseline would cost');
+});
+
+// ---------------------------------------------------------------- Q1 fix: resume Master snapshot confirmation
+const ETH_1000 = [{ contract: 'ETH_USDT', size: 1_000, markPrice: 4_000, positionSide: 'LONG', mode: 'dual_long' }];
+const resumeOnce = (runner) => runner.processMemberResume({ session: SESSION('REQUESTED'), masterContext: {},
+  memberContext: { trading_account_id: 'acc', user_id: 'u' }, contracts: contractsMap(), system: { execution_enabled: true } });
+const reasons = (calls) => calls.filter(([n]) => n === 'report_member_copy_resume_blocker').map(([, p]) => p.p_reason);
+const activation = (calls) => calls.find(([n]) => n === 'activate_member_copy_resume')?.[1].p_snapshot;
+
+test('Q1: empty list while the in-memory Master holds a leg -> blocked; retried once the list returns -> baseline holds it', async () => {
+  let list = [];
+  const { runner, calls } = resumeRunner('LIVE', { masterPositions: () => list });
+  runner.lastMasterSizes = new Map([['ETH_USDT:LONG', 1_000]]);
+  await resumeOnce(runner);
+  assert.deepEqual(reasons(calls), ['RESUME_MASTER_SNAPSHOT_UNCONFIRMED']);
+  assert.equal(activation(calls), undefined);
+  assert.ok(!calls.some(([n]) => n === 'prepare_member_copy_resume'), 'nothing stored from the incomplete read');
+  list = ETH_1000;
+  await resumeOnce(runner);
+  assert.deepEqual(activation(calls).master_positions, [{ contract: 'ETH_USDT', position_side: 'LONG', size: 1_000 }]);
+  // FUTURE_ONLY holds: with that baseline the first ACTIVE cycle buys nothing.
+  const s = new Sim({ master: { 'ETH_USDT:LONG': 1_000 } });
+  assert.deepEqual(fmt(s.step().orders), []);
+});
+
+test('Q1: empty list whose single-contract read still found the leg is refused too (any list glitch blocks a baseline)', async () => {
+  const { runner, calls } = resumeRunner('LIVE', { masterPositions: ETH_1000, masterListEmpty: true });
+  runner.lastMasterSizes = new Map([['ETH_USDT:LONG', 1_000]]);
+  await resumeOnce(runner);
+  assert.deepEqual(reasons(calls), ['RESUME_MASTER_SNAPSHOT_UNCONFIRMED']);
+});
+
+test('Q1: a non-empty list missing a leg the last cycle saw, or an unconfirmed contract, is refused', async () => {
+  const xau = [{ contract: 'XAU_USDT', size: 500, markPrice: 4_000, positionSide: 'LONG', mode: 'dual_long' }];
+  const { runner, calls } = resumeRunner('LIVE', { masterPositions: xau });
+  runner.lastMasterSizes = new Map([['ETH_USDT:LONG', 1_000], ['XAU_USDT:LONG', 500]]);
+  await resumeOnce(runner);
+  assert.deepEqual(reasons(calls), ['RESUME_MASTER_SNAPSHOT_UNCONFIRMED']);
+  assert.equal(runner.resumeMasterSnapshotBlocker({ positions: [...xau, ...ETH_1000], unconfirmed_contracts: ['BTC_USDT'] }),
+    'RESUME_MASTER_SNAPSHOT_UNCONFIRMED');
+  assert.equal(runner.resumeMasterSnapshotBlocker({ positions: [...xau, ...ETH_1000] }), null);
+});
+
+test('Q1: a genuinely flat Master (nothing in the DB, nothing in memory) resumes with an empty baseline', async () => {
+  const { runner, calls } = resumeRunner('LIVE', { masterPositions: [], masterObserved: false });
+  runner.rpc = ((rpc) => async (name, params) => (name === 'get_public_master_positions'
+    ? { observed_at: new Date().toISOString(), positions: [] } : rpc(name, params)))(runner.rpc);
+  await runner.loadPersistedMasterLegs();
+  runner.cycleSeq = 1;
+  runner.trackMasterLegConfirmation({ list_empty: true, positions: [] }, new Map(), new Map(), new Set());
+  await resumeOnce(runner);
+  assert.deepEqual(reasons(calls), []);
+  assert.deepEqual(activation(calls).master_positions, []);
+});
+
+test('Q1: the Master closed while the worker was down: two consecutive empty-list cycles confirm it, then resume proceeds', async () => {
+  const { runner, calls } = resumeRunner('LIVE', { masterPositions: [], masterObserved: false });
+  runner.rpc = ((rpc) => async (name, params) => (name === 'get_public_master_positions'
+    ? { observed_at: new Date(Date.now() - 600_000).toISOString(), positions: [{ contract: 'ETH_USDT', side: 'LONG', size: 1_000 }] }
+    : rpc(name, params)))(runner.rpc);
+  await runner.loadPersistedMasterLegs();
+  const cycle = (master) => { runner.cycleSeq += 1; runner.trackMasterLegConfirmation(master, runner.lastMasterSizes, new Map(), new Set()); };
+  cycle({ list_empty: true, positions: [] });
+  await resumeOnce(runner);
+  assert.deepEqual(reasons(calls), ['RESUME_MASTER_SNAPSHOT_UNCONFIRMED']);
+  cycle({ list_empty: true, positions: [] });
+  assert.equal(runner.unresolvedMasterLegs.size, 0);
+  await resumeOnce(runner);
+  assert.deepEqual(activation(calls).master_positions, []);
+  // A gap between the two flat reads, or an unconfirmed contract, starts over.
+  const r2 = resumeRunner('LIVE', { masterObserved: false }).runner;
+  r2.persistedMasterLoaded = true;
+  r2.unresolvedMasterLegs.set('ETH_USDT:LONG', { size: 1_000, source: 'DB', flatSeq: null });
+  r2.cycleSeq = 1; r2.trackMasterLegConfirmation({ list_empty: true, positions: [] }, new Map(), new Map(), new Set());
+  r2.cycleSeq = 2; r2.trackMasterLegConfirmation({ list_empty: true, positions: [] }, new Map(), new Map(), new Set(['ETH_USDT']));
+  r2.cycleSeq = 3; r2.trackMasterLegConfirmation({ list_empty: true, positions: [] }, new Map(), new Map(), new Set());
+  assert.equal(r2.unresolvedMasterLegs.size, 1, 'unconfirmed in between: not two consecutive flat reads');
+  // A flat read on a NON-empty list is authoritative at once.
+  r2.cycleSeq = 4; r2.trackMasterLegConfirmation({ list_empty: false, positions: [{}] }, new Map(), new Map(), new Set());
+  assert.equal(r2.unresolvedMasterLegs.size, 0);
+});
+
+test('Q1: mid-process glitch: a leg the last cycle saw vanishes from an empty list -> pending until confirmed', async () => {
+  const { runner, calls } = resumeRunner('LIVE', { masterPositions: [] });
+  runner.cycleSeq = 7;
+  runner.trackMasterLegConfirmation({ list_empty: true, positions: [] }, new Map([['ETH_USDT:LONG', 1_000]]), new Map(), new Set());
+  runner.lastMasterSizes = new Map();
+  assert.deepEqual([...runner.unresolvedMasterLegs.keys()], ['ETH_USDT:LONG']);
+  assert.deepEqual(runner.masterExpectations().legs, ['ETH_USDT:LONG'], 'still asked for on its own');
+  await resumeOnce(runner);
+  assert.deepEqual(reasons(calls), ['RESUME_MASTER_SNAPSHOT_UNCONFIRMED']);
+  // Present again in the next cycle: resolved.
+  runner.cycleSeq = 8;
+  runner.trackMasterLegConfirmation({ list_empty: false, positions: ETH_1000 }, new Map(), new Map([['ETH_USDT:LONG', 1_000]]), new Set());
+  assert.equal(runner.unresolvedMasterLegs.size, 0);
+});
+
+test('Q1: the DB observation is ignored when older than 24 h; a failed DB read keeps resume waiting and is retried', async () => {
+  const runner = new TradingRunner({ supabase: null, mode: 'LIVE' });
+  let reply = { observed_at: new Date(Date.now() - 25 * 3_600_000).toISOString(), positions: [{ contract: 'ETH_USDT', side: 'LONG', size: 1_000 }] };
+  let fail = true;
+  runner.rpc = async () => { if (fail) throw new Error('DB_TIMEOUT'); return reply; };
+  await runner.loadPersistedMasterLegs();
+  assert.equal(runner.persistedMasterLoaded, false);
+  runner.masterObservedAt = Date.now();
+  assert.equal(runner.resumeMasterSnapshotBlocker({ positions: [] }), 'RESUME_MASTER_SNAPSHOT_UNCONFIRMED');
+  fail = false;
+  await runner.loadPersistedMasterLegs();
+  assert.equal(runner.persistedMasterLoaded, true);
+  assert.equal(runner.unresolvedMasterLegs.size, 0, 'stale observation not used');
+  assert.equal(runner.resumeMasterSnapshotBlocker({ positions: [], list_empty: true }), null);
+  reply = null;
+  await runner.loadPersistedMasterLegs(); // loaded once per process: not read again
+  assert.equal(runner.persistedMasterLoaded, true);
+});
+
+test('Q1 syncOnce: restart + empty list -> resume blocked; next cycle list back -> resume activates with the Master baseline', async () => {
+  const now = () => new Date().toISOString();
+  let masterList = [];
+  const calls = [];
+  const masterReads = [];
+  const version = '00000000-0000-4000-8000-000000000009';
+  const runner = new TradingRunner({ supabase: {}, baseUrl: 'https://api.gateio.ws', mode: 'LIVE', channelId: 'maetajak' });
+  runner.rpc = async (name, params = {}) => {
+    calls.push([name, params]);
+    if (name === 'get_copy_worker_context') return { system: { execution_enabled: true, emergency_halted: false },
+      master: { trading_account_id: 'master' }, members: [{ trading_account_id: 'acc', user_id: 'u', copy_ratio: 100,
+        max_position_ratio: 30, previous_states: [] }] };
+    if (name === 'get_copy_resume_context') return [{ trading_account_id: 'acc', state: 'REQUESTED', version, ownership_status: 'CONFIRMED',
+      resume_authorized: true, unresolved_orders: 0, expires_at: new Date(Date.now() + 60_000).toISOString() }];
+    if (name === 'get_public_master_positions') return { observed_at: new Date(Date.now() - 20_000).toISOString(),
+      positions: [{ contract: 'ETH_USDT', side: 'LONG', size: 1_000 }] };
+    if (name === 'get_member_copy_resume_ownership') return { master_positions: params.p_master_positions,
+      member_positions: params.p_member_positions, copy_positions: [], target_anchors: [] };
+    if (name === 'activate_member_copy_resume') return { state: 'ACTIVE' };
+    if (name === 'get_copy_order_observation_guards' || name === 'get_copy_target_anchors') return [];
+    return null;
+  };
+  runner.loadContracts = async () => contractsMap();
+  runner.readAccount = async (account) => {
+    const master = account.trading_account_id === 'master';
+    if (master) masterReads.push(account.expected_contracts);
+    const positions = master ? masterList : [];
+    return { ...account, total: master ? 100_000 : 2_000, available: master ? 100_000 : 2_000, equityIncludesUnrealised: true,
+      positions, open_orders: [], positionMode: 'dual', list_empty: !positions.length, unconfirmed_contracts: [],
+      list_empty_fallback_contracts: [], observed_started_at: now(), observed_at: now(), copy_ratio: 100, max_position_ratio: 30 };
+  };
+  await runner.syncOnce();
+  assert.deepEqual(masterReads[0], ['ETH_USDT'], 'the restarted cycle asks Gate for the leg the DB recorded');
+  assert.ok(calls.findIndex(([n]) => n === 'get_public_master_positions') < calls.findIndex(([n]) => n === 'record_verified_copy_worker_cycle'));
+  await runner.processPendingResumes(1);
+  assert.deepEqual(reasons(calls), ['RESUME_MASTER_SNAPSHOT_UNCONFIRMED']);
+  assert.equal(activation(calls), undefined);
+  masterList = ETH_1000;
+  await runner.syncOnce();
+  await runner.processPendingResumes(1);
+  assert.deepEqual(activation(calls).master_positions, [{ contract: 'ETH_USDT', position_side: 'LONG', size: 1_000 }]);
+  assert.equal(calls.filter(([n]) => n === 'get_public_master_positions').length, 1, 'read once per process');
 });
 
 // ---------------------------------------------------------------- extra: hedge interactions

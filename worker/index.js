@@ -1,4 +1,5 @@
 import { createClient } from '@supabase/supabase-js';
+import { readFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { validateGateChannelId, verifyGateAccount } from './gate.js';
 import { RECONCILE_BEFORE_SUBMIT_BUDGET_MS, TradingRunner, safeError } from './trading-runner.js';
@@ -6,13 +7,19 @@ import { failureAlertDecision, sendWorkerAlert } from './alerts.js';
 import { resolveBrokerCredentials, syncGateBrokerMetrics } from './broker-metrics.js';
 import { createShutdown, createSupabaseFetch, cycleFailureCode, normalizeTradingMode, readIntervalMs } from './runtime.js';
 
+function packageVersion() {
+  try { return JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version || null; }
+  catch { return null; }
+}
 const supabaseUrl = process.env.SUPABASE_URL;
 const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 const pollIntervalMs = readIntervalMs(process.env.POLL_INTERVAL_MS, 5_000, 2_000);
 const syncIntervalMs = readIntervalMs(process.env.SYNC_INTERVAL_MS, 5_000, 2_000);
 const baseUrl = process.env.GATE_API_BASE_URL || 'https://api.gateio.ws';
 const workerId = `${process.env.WORKER_ID || 'maetajak-worker'}:${randomUUID()}`;
-const workerVersion = process.env.WORKER_VERSION || process.env.npm_package_version || 'dev';
+// Q4: the deploy writes WORKER_VERSION=<package.json version>+<git short SHA> (deploy/worker-version.sh). Without it
+// (plain `node worker/index.js` in the image, no npm env) the package.json version is reported.
+const workerVersion = String(process.env.WORKER_VERSION || process.env.npm_package_version || packageVersion() || 'dev').slice(0, 80);
 const workerPublicIp = process.env.WORKER_PUBLIC_IP || '';
 const gateChannelId = process.env.GATE_CHANNEL_ID || '';
 const tradingMode = normalizeTradingMode(process.env.TRADING_MODE);

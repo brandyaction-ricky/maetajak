@@ -139,7 +139,9 @@ if ! git diff --quiet "${local_sha}" "${remote_sha}" -- supabase/migrations; the
     const version = versionResponse.ok ? await versionResponse.json() : {};
     if (version.schema_version !== 3 || version.worker_version !== "0.5.0"
       || !version.current_state_atomic || !version.trade_alert_exchange_verification
-      || !(Number(version.reliability_patch) >= 1)) process.exit(1);
+      || !(Number(version.reliability_patch) >= 1)
+      // Q4 (20261103020000): the order gates accept the "<version>+<sha>" build the deploy writes.
+      || !(Number(version.worker_build_version_gate) >= 1)) process.exit(1);
   ' >/dev/null; then
     echo "auto_deploy=blocked_database_migration" >&2
     exit 1
