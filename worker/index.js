@@ -2,7 +2,7 @@ import { createClient } from '@supabase/supabase-js';
 import { randomUUID } from 'node:crypto';
 import { validateGateChannelId, verifyGateAccount } from './gate.js';
 import { TradingRunner, safeError } from './trading-runner.js';
-import { failureAlertDecision, sendWorkerAlert } from './alerts.js';
+import { failureAlertDecision, sendWorkerAlert, TRANSIENT_FAILURE_ALERT_CYCLES } from './alerts.js';
 import { syncGateBrokerMetrics } from './broker-metrics.js';
 import { createShutdown, createSupabaseFetch, cycleFailureCode, normalizeTradingMode, readIntervalMs } from './runtime.js';
 
@@ -48,7 +48,7 @@ const supabase = createClient(supabaseUrl, serviceRoleKey, {
 });
 const state = { verification: false, trading: false, broker: false, performance: false, stopping: false, lastDatabaseAlertAt: 0,
   leaseWaitSince: 0, lastLeaseAlertAt: 0, failureStreak: 0, healthyDryRunCycles: 0, lastReadinessAt: 0,
-  lastReportHalted: null, haltAlertSent: false };
+  lastReportHalted: null, haltAlertSent: false, streakAlerted: false };
 const LEASE_CONFLICT_ALERT_MS = 90_000;
 const READINESS_HEALTHY_CYCLES = 3;
 const READINESS_REFRESH_MS = 600_000;
@@ -169,7 +169,8 @@ export async function runTradingCycle() {
       state.lastReportHalted = Boolean(report.halted);
       if (!report.halted) state.haltAlertSent = false;
     }
-    if (state.failureStreak >= 3) {
+    // 2026-11-17: announce a recovery only for a streak that was announced (unannounced blips stay silent).
+    if (state.streakAlerted) {
       const haltKnown = report && Object.prototype.hasOwnProperty.call(report, 'halted');
       const resumed = haltKnown && report.halted === false;
       await sendAlert({ event: 'COPY_WORKER_RECOVERED', severity: resumed ? 'INFO' : 'WARNING',
@@ -177,6 +178,7 @@ export async function runTradingCycle() {
           action: resumed ? '주문 처리 자동 재개' : '카피 실행 상태 확인 필요 (중단 시 운영자 재개)' } });
     }
     state.failureStreak = 0;
+    state.streakAlerted = false;
     if (readinessCheck && tradingMode === 'DRY_RUN') {
       // C6: readiness = a DRY_RUN member-resume validation OR consecutive healthy DRY_RUN cycles that
       // observed the Master and at least one member and committed the verified cycle.
@@ -223,17 +225,21 @@ export async function runTradingCycle() {
         haltAlertSent: state.haltAlertSent });
       state.lastReportHalted = decision.lastReportHalted;
       state.haltAlertSent = decision.haltAlertSent;
-      if (decision.event) await sendAlert({ event: decision.event, severity: 'CRITICAL', details });
+      if (decision.event) {
+        const alert = await sendAlert({ event: decision.event, severity: 'CRITICAL', details });
+        if (alert?.sent) state.streakAlerted = true;
+      }
     }
     catch (reportError) {
       const reportCode = safeError(reportError, 'FAILURE_REPORT');
       state.failureStreak += 1;
       log('worker_failure_report_error', { code: reportCode });
       // Telegram must remain usable when the database itself is unreachable.
-      if (Date.now() - state.lastDatabaseAlertAt > 300_000) {
+      // 2026-11-17: only a lasting outage (same threshold as cycle failures), not one dropped request.
+      if (state.failureStreak >= TRANSIENT_FAILURE_ALERT_CYCLES && Date.now() - state.lastDatabaseAlertAt > 300_000) {
         const alert = await sendAlert({ event: 'WORKER_DATABASE_UNREACHABLE', severity: 'CRITICAL',
           details: { copy_event_id: runner.currentCopyEventId, error_code: reportCode, mode: tradingMode, action: '현재 주문 처리 회차 중단' } });
-        if (alert?.sent) state.lastDatabaseAlertAt = Date.now();
+        if (alert?.sent) { state.lastDatabaseAlertAt = Date.now(); state.streakAlerted = true; }
       }
     }
     state.healthyDryRunCycles = 0;
