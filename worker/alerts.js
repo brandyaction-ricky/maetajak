@@ -101,10 +101,14 @@ function readableValue(key, value) {
 }
 
 // Which alert a failed cycle sends. With the reliability DB (report returns `newly_halted`): orders
-// stop while failures>0 and the database halts only after 5 minutes, so failure 1 warns, failure 3
-// reports degraded (LIVE), and every halt transition alerts. A lost report response can hide
-// `newly_halted`; a LIVE halt first seen during a streak then alerts once (deduped by haltAlertSent).
-// Older databases keep the original 1st/3rd-failure alerts.
+// stop while failures>0 and the database halts only after 5 minutes, so failure 3 reports degraded (LIVE
+// while copying runs), a failure lasting TRANSIENT_FAILURE_ALERT_CYCLES cycles warns otherwise, and every
+// halt transition alerts. A lost report response can hide `newly_halted`; a LIVE halt first seen during a
+// streak then alerts once (deduped by haltAlertSent). Older databases keep the original 1st/3rd-failure alerts.
+// 2026-11-17: a single failed cycle (one dropped request to Supabase, retried 5 s later; production saw
+// 70-95 a day) is logged, not alerted: alerting failure 1 sent dozens of Telegram pairs a day even while
+// copying was halted. The heartbeat dead-man (90 s), the gap halt and the 5-minute halt stay the backstops.
+export const TRANSIENT_FAILURE_ALERT_CYCLES = 6;
 export function failureAlertDecision({ failure, tradingMode, lastReportHalted = null, haltAlertSent = false }) {
   const failures = Number(failure?.consecutive_failures);
   if (!failure || !Object.prototype.hasOwnProperty.call(failure, 'newly_halted')) {
@@ -116,8 +120,8 @@ export function failureAlertDecision({ failure, tradingMode, lastReportHalted = 
   let event = null;
   let sent = haltAlertSent;
   if (failure.newly_halted || inferredHalt) { event = 'COPY_SYSTEM_AUTO_HALTED'; sent = true; }
-  else if (failures === 1) event = 'WORKER_CYCLE_FAILED';
   else if (failures === 3 && !halted && tradingMode === 'LIVE') event = 'COPY_WORKER_DEGRADED';
+  else if (failures === TRANSIENT_FAILURE_ALERT_CYCLES && (halted || tradingMode !== 'LIVE')) event = 'WORKER_CYCLE_FAILED';
   return { event, lastReportHalted: halted, haltAlertSent: halted ? sent : false };
 }
 

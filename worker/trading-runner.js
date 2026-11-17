@@ -1541,10 +1541,16 @@ export class TradingRunner {
     const context = withRiskContext(withFundFlowNet(applyOrderObservationGuards(rawContext, observationGuards), fundFlowTotals),
       riskContext);
     const timings = { context_ms: elapsedMs(contextStartedAt) };
-    if (!context?.master) return {
-      observed: 0, masterObserved: 0, intents: 0, copyEventId: cycleId,
-      currentStatePayload: null, timings: { ...timings, total_ms: elapsedMs(cycleStartedAt) },
-    };
+    if (!context?.master) {
+      // 2026-11-17: no Master, no members to account for. Without this the performance sync kept the member
+      // list of the last cycle that had a Master (production: members deleted on 2026-10-21 still synced,
+      // ~4,300 APPROVED_MEMBER_REQUIRED errors a day).
+      this.latestPerformanceMembers = [];
+      return {
+        observed: 0, masterObserved: 0, intents: 0, copyEventId: cycleId,
+        currentStatePayload: null, timings: { ...timings, total_ms: elapsedMs(cycleStartedAt) },
+      };
+    }
     // Review F1: this cycle's record would overwrite the DB's last Master legs. Until this process has read them once,
     // no cycle is recorded (the cycle fails and is retried; resume stays blocked), so a failed first read followed by
     // an empty-list glitch cannot erase what the previous process observed.
