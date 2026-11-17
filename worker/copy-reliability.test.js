@@ -314,7 +314,7 @@ test('P1-1 alerts (re-review): every halt transition alerts, the lost-response c
     state = { lastReportHalted: decision.lastReportHalted, haltAlertSent: decision.haltAlertSent };
     return decision.event;
   };
-  assert.equal(step({ consecutive_failures: 1, newly_halted: false, halted: false }), 'WORKER_CYCLE_FAILED');
+  assert.equal(step({ consecutive_failures: 1, newly_halted: false, halted: false }), null);
   assert.equal(step({ consecutive_failures: 2, newly_halted: false, halted: false }), null);
   assert.equal(step({ consecutive_failures: 3, newly_halted: false, halted: false }), 'COPY_WORKER_DEGRADED');
   assert.equal(step({ consecutive_failures: 70, newly_halted: true, halted: true }), 'COPY_SYSTEM_AUTO_HALTED');
@@ -330,6 +330,30 @@ test('P1-1 alerts (re-review): every halt transition alerts, the lost-response c
   state = { lastReportHalted: true, haltAlertSent: false };
   assert.equal(step({ consecutive_failures: 3, newly_halted: false, halted: true }, 'DRY_RUN'), null);
   assert.equal(failureAlertDecision({ failure: { consecutive_failures: 3 }, tradingMode: 'LIVE' }).event, 'COPY_SYSTEM_AUTO_HALTED');
+});
+
+test('2026-11-17 alert noise: a single failed cycle is silent, a failure lasting 6 cycles warns once', async () => {
+  const { failureAlertDecision, TRANSIENT_FAILURE_ALERT_CYCLES } = await import('./alerts.js');
+  assert.equal(TRANSIENT_FAILURE_ALERT_CYCLES, 6);
+  const events = (mode, halted) => Array.from({ length: 8 }, (_, i) => failureAlertDecision({
+    failure: { consecutive_failures: i + 1, newly_halted: false, halted }, tradingMode: mode,
+    lastReportHalted: halted, haltAlertSent: false }).event);
+  // Copying halted (production 2026-11-17): only a lasting failure reaches Telegram, once.
+  assert.deepEqual(events('LIVE', true), [null, null, null, null, null, 'WORKER_CYCLE_FAILED', null, null]);
+  assert.deepEqual(events('DRY_RUN', false), [null, null, null, null, null, 'WORKER_CYCLE_FAILED', null, null]);
+  // LIVE while copying runs: degraded at 3 (orders paused) and nothing more until the halt.
+  assert.deepEqual(events('LIVE', false), [null, null, 'COPY_WORKER_DEGRADED', null, null, null, null, null]);
+});
+
+test('2026-11-17: a cycle without a Master clears the member list the performance sync uses', async () => {
+  const runner = new TradingRunner({ supabase: {}, mode: 'LIVE' });
+  runner.latestPerformanceMembers = [{ user_id: 'deleted-member' }];
+  runner.rpc = async (name) => (name === 'get_copy_worker_context' ? { system: {}, members: [] } : null);
+  runner.loadPersistedMasterLegs = async () => {};
+  const result = await runner.syncOnce().catch((error) => ({ error }));
+  assert.equal(result.error, undefined, String(result.error?.message));
+  assert.equal(result.masterObserved, 0);
+  assert.deepEqual(runner.latestPerformanceMembers, []);
 });
 
 test('P0-2 (re-review): a Master contract that stays unconfirmed alerts once after about a minute', async () => {

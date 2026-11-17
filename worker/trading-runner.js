@@ -1064,10 +1064,16 @@ export class TradingRunner {
     ]);
     const context = withFundFlowNet(applyOrderObservationGuards(rawContext, observationGuards), fundFlowTotals);
     const timings = { context_ms: elapsedMs(contextStartedAt) };
-    if (!context?.master) return {
-      observed: 0, masterObserved: 0, intents: 0, copyEventId: cycleId,
-      currentStatePayload: null, timings: { ...timings, total_ms: elapsedMs(cycleStartedAt) },
-    };
+    if (!context?.master) {
+      // 2026-11-17: no Master, no members to account for. Without this the performance sync kept the member
+      // list of the last cycle that had a Master (production: members deleted on 2026-10-21 still synced,
+      // ~4,300 APPROVED_MEMBER_REQUIRED errors a day).
+      this.latestPerformanceMembers = [];
+      return {
+        observed: 0, masterObserved: 0, intents: 0, copyEventId: cycleId,
+        currentStatePayload: null, timings: { ...timings, total_ms: elapsedMs(cycleStartedAt) },
+      };
+    }
     const memberContexts = Array.isArray(context.members) ? context.members : [];
     const sessions = new Map((resumeContext || []).map((s) => [s.trading_account_id, s]));
     const anchorsByAccount = new Map();
